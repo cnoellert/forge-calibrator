@@ -1,0 +1,157 @@
+<ShaderNodePreset SupportsAdaptiveDegradation="0" Description="Camera Match — 2VP camera solve from vanishing point lines. Drag axis widgets onto perspective edges to solve camera rotation, FOV, and position. Solved values encoded in bottom-left pixels for expression linking." Name="Camera Match" LimitInputsToTexture="True">
+   <Shader OutputBitDepth="Output" Index="1">
+
+      <!-- Front input -->
+      <Uniform Index="0" NoInput="Error" Tooltip="" DisplayName="Front" InputType="Front" Mipmaps="False" GL_TEXTURE_WRAP_T="GL_CLAMP_TO_EDGE" GL_TEXTURE_WRAP_S="GL_CLAMP_TO_EDGE" GL_TEXTURE_MAG_FILTER="GL_LINEAR" GL_TEXTURE_MIN_FILTER="GL_LINEAR" Type="sampler2D" Name="front">
+      </Uniform>
+
+      <!-- ============================================================= -->
+      <!-- VP1 Line 1                                                     -->
+      <!-- ============================================================= -->
+      <Uniform Inc="0.001" Tooltip="VP1 Line 1 Start" Row="0" Col="0" Page="0" DisplayName="L1 Start" Type="vec2" Name="vp1_l1_start" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.15"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.35"></SubUniform>
+      </Uniform>
+      <Uniform Inc="0.001" Tooltip="VP1 Line 1 End" Row="3" Col="0" Page="0" DisplayName="L1 End" Type="vec2" Name="vp1_l1_end" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.85"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.40"></SubUniform>
+      </Uniform>
+
+      <!-- VP1 Line 2 -->
+      <Uniform Inc="0.001" Tooltip="VP1 Line 2 Start" Row="0" Col="1" Page="0" DisplayName="L2 Start" Type="vec2" Name="vp1_l2_start" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.15"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.65"></SubUniform>
+      </Uniform>
+      <Uniform Inc="0.001" Tooltip="VP1 Line 2 End" Row="3" Col="1" Page="0" DisplayName="L2 End" Type="vec2" Name="vp1_l2_end" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.85"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.60"></SubUniform>
+      </Uniform>
+
+      <!-- ============================================================= -->
+      <!-- VP2 Line 1                                                     -->
+      <!-- ============================================================= -->
+      <Uniform Inc="0.001" Tooltip="VP2 Line 1 Start" Row="0" Col="0" Page="1" DisplayName="L1 Start" Type="vec2" Name="vp2_l1_start" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.35"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.15"></SubUniform>
+      </Uniform>
+      <Uniform Inc="0.001" Tooltip="VP2 Line 1 End" Row="3" Col="0" Page="1" DisplayName="L1 End" Type="vec2" Name="vp2_l1_end" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.40"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.85"></SubUniform>
+      </Uniform>
+
+      <!-- VP2 Line 2 -->
+      <Uniform Inc="0.001" Tooltip="VP2 Line 2 Start" Row="0" Col="1" Page="1" DisplayName="L2 Start" Type="vec2" Name="vp2_l2_start" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.65"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.15"></SubUniform>
+      </Uniform>
+      <Uniform Inc="0.001" Tooltip="VP2 Line 2 End" Row="3" Col="1" Page="1" DisplayName="L2 End" Type="vec2" Name="vp2_l2_end" IconType="Axis" IconDefaultState="True">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.60"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.85"></SubUniform>
+      </Uniform>
+
+      <!-- ============================================================= -->
+      <!-- Camera Setup                                                   -->
+      <!-- ============================================================= -->
+      <Uniform Max="5" Min="0" Default="1" Inc="1" Tooltip="World axis for VP1" Row="0" Col="0" Page="2" DisplayName="VP1 Axis" Type="int" Name="vp1_axis" ValueType="Popup">
+         <PopupEntry Title="+X" Value="0"></PopupEntry>
+         <PopupEntry Title="-X" Value="1"></PopupEntry>
+         <PopupEntry Title="+Y" Value="2"></PopupEntry>
+         <PopupEntry Title="-Y" Value="3"></PopupEntry>
+         <PopupEntry Title="+Z" Value="4"></PopupEntry>
+         <PopupEntry Title="-Z" Value="5"></PopupEntry>
+      </Uniform>
+      <Uniform Max="5" Min="0" Default="5" Inc="1" Tooltip="World axis for VP2" Row="1" Col="0" Page="2" DisplayName="VP2 Axis" Type="int" Name="vp2_axis" ValueType="Popup">
+         <PopupEntry Title="+X" Value="0"></PopupEntry>
+         <PopupEntry Title="-X" Value="1"></PopupEntry>
+         <PopupEntry Title="+Y" Value="2"></PopupEntry>
+         <PopupEntry Title="-Y" Value="3"></PopupEntry>
+         <PopupEntry Title="+Z" Value="4"></PopupEntry>
+         <PopupEntry Title="-Z" Value="5"></PopupEntry>
+      </Uniform>
+      <Uniform Row="0" Col="1" Page="2" Default="False" Tooltip="Enable origin point for camera translation" DisplayName="Use Origin" Type="bool" Name="use_origin">
+      </Uniform>
+      <Uniform Inc="0.001" Tooltip="World origin position in image" Row="1" Col="1" Page="2" DisplayName="Origin Point" Type="vec2" Name="origin_pt" IconType="Axis" IconDefaultState="False">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.5"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.5"></SubUniform>
+      </Uniform>
+
+      <!-- ============================================================= -->
+      <!-- Display                                                        -->
+      <!-- ============================================================= -->
+      <Uniform ResDependent="None" Max="1.0" Min="0.0" Default="1.0" Inc="0.05" Tooltip="Dim the source image to see VP lines more clearly (like fSpy)" Row="0" Col="0" Page="3" DisplayName="Image Opacity" Type="float" Name="image_opacity">
+      </Uniform>
+      <Uniform ResDependent="None" Max="10.0" Min="0.5" Default="2.0" Inc="0.5" Tooltip="" Row="1" Col="0" Page="3" DisplayName="Line Width" Type="float" Name="line_width">
+      </Uniform>
+      <Uniform ResDependent="None" Max="1.0" Min="0.0" Default="0.85" Inc="0.05" Tooltip="" Row="2" Col="0" Page="3" DisplayName="Line Opacity" Type="float" Name="line_opacity">
+      </Uniform>
+      <Uniform Row="0" Col="1" Page="3" Default="True" Tooltip="Show VP crosshair markers" DisplayName="VP Markers" Type="bool" Name="show_vp_markers">
+      </Uniform>
+      <Uniform Row="1" Col="1" Page="3" Default="True" Tooltip="Show dashed extension lines" DisplayName="Extended Lines" Type="bool" Name="show_extended">
+      </Uniform>
+      <Uniform Row="2" Col="1" Page="3" Default="True" Tooltip="Show solve status dot" DisplayName="Solve Info" Type="bool" Name="show_info">
+      </Uniform>
+      <Uniform Inc="0.01" Tooltip="VP1 line color" Row="0" Col="2" Page="3" DisplayName="VP1 Color" IconType="Pick" ValueType="Colour" Type="vec3" Name="vp1_color">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="1.0"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.3"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.1"></SubUniform>
+      </Uniform>
+      <Uniform Inc="0.01" Tooltip="VP2 line color" Row="1" Col="2" Page="3" DisplayName="VP2 Color" IconType="Pick" ValueType="Colour" Type="vec3" Name="vp2_color">
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.1"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.5"></SubUniform>
+         <SubUniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="1.0"></SubUniform>
+      </Uniform>
+
+      <!-- ============================================================= -->
+      <!-- Solved Camera Output Values (populated by Python companion)    -->
+      <!-- ============================================================= -->
+
+      <!-- Position -->
+      <Uniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.0" Inc="0.001" Tooltip="Solved camera X position" Row="0" Col="0" Page="4" DisplayName="Position X" Type="float" Name="out_pos_x">
+      </Uniform>
+      <Uniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.0" Inc="0.001" Tooltip="Solved camera Y position" Row="1" Col="0" Page="4" DisplayName="Position Y" Type="float" Name="out_pos_y">
+      </Uniform>
+      <Uniform ResDependent="None" Max="1000000.0" Min="-1000000.0" Default="0.0" Inc="0.001" Tooltip="Solved camera Z position" Row="2" Col="0" Page="4" DisplayName="Position Z" Type="float" Name="out_pos_z">
+      </Uniform>
+
+      <!-- Rotation -->
+      <Uniform ResDependent="None" Max="360.0" Min="-360.0" Default="0.0" Inc="0.01" Tooltip="Solved camera X rotation (degrees)" Row="0" Col="1" Page="4" DisplayName="Rotation X" Type="float" Name="out_rot_x">
+      </Uniform>
+      <Uniform ResDependent="None" Max="360.0" Min="-360.0" Default="0.0" Inc="0.01" Tooltip="Solved camera Y rotation (degrees)" Row="1" Col="1" Page="4" DisplayName="Rotation Y" Type="float" Name="out_rot_y">
+      </Uniform>
+      <Uniform ResDependent="None" Max="360.0" Min="-360.0" Default="0.0" Inc="0.01" Tooltip="Solved camera Z rotation (degrees)" Row="2" Col="1" Page="4" DisplayName="Rotation Z" Type="float" Name="out_rot_z">
+      </Uniform>
+
+      <!-- Lens -->
+      <Uniform ResDependent="None" Max="1000000.0" Min="0.0" Default="0.0" Inc="0.01" Tooltip="Solved focal length (mm)" Row="0" Col="2" Page="4" DisplayName="Focal Length" Type="float" Name="out_focal_mm">
+      </Uniform>
+      <Uniform ResDependent="None" Max="180.0" Min="0.0" Default="0.0" Inc="0.01" Tooltip="Solved horizontal FOV (degrees)" Row="1" Col="2" Page="4" DisplayName="H FOV" Type="float" Name="out_hfov">
+      </Uniform>
+      <Uniform ResDependent="None" Max="180.0" Min="0.0" Default="0.0" Inc="0.01" Tooltip="Solved vertical FOV (degrees)" Row="2" Col="2" Page="4" DisplayName="V FOV" Type="float" Name="out_vfov">
+      </Uniform>
+
+   </Shader>
+
+   <Page Name="VP1 Lines" Page="0">
+      <Col Name="Line 1" Col="0" Page="0"></Col>
+      <Col Name="Line 2" Col="1" Page="0"></Col>
+   </Page>
+   <Page Name="VP2 Lines" Page="1">
+      <Col Name="Line 1" Col="0" Page="1"></Col>
+      <Col Name="Line 2" Col="1" Page="1"></Col>
+   </Page>
+   <Page Name="Camera" Page="2">
+      <Col Name="Axes" Col="0" Page="2"></Col>
+      <Col Name="Origin" Col="1" Page="2"></Col>
+   </Page>
+   <Page Name="Display" Page="3">
+      <Col Name="Lines" Col="0" Page="3"></Col>
+      <Col Name="Markers" Col="1" Page="3"></Col>
+      <Col Name="Colors" Col="2" Page="3"></Col>
+   </Page>
+   <Page Name="Solved" Page="4">
+      <Col Name="Position" Col="0" Page="4"></Col>
+      <Col Name="Rotation" Col="1" Page="4"></Col>
+      <Col Name="Lens" Col="2" Page="4"></Col>
+   </Page>
+
+</ShaderNodePreset>
