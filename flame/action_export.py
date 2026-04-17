@@ -10,47 +10,45 @@ This module converts the solver's 4x4 camera transform into Flame-compatible
 values and generates Python code to apply them via Flame's Python API.
 
 Matrix convention notes:
-  - Solver outputs a camera→world 4x4 matrix (right-handed, Y-up)
-  - Flame uses right-handed Y-up coordinates
-  - Flame Action camera rotation order needs verification in-app
-    (assumed XYZ Euler here — adjust ROTATION_ORDER if needed)
+  - Solver outputs a camera→world 3x3 rotation in right-handed, Y-up,
+    camera-looks-down-minus-Z coordinates.
+  - Flame Action camera uses the same axes but negates X and Y rotations
+    relative to the right-hand rule: the internal cam→world matrix is
+    Rx(-rx) · Ry(-ry) · Rz(rz) (XYZ order). Verified empirically via FBX
+    export — see PASSOFF.md.
 """
 
 import numpy as np
 from typing import Optional
 
-# Flame rotation order — verify in Flame and change if needed
-ROTATION_ORDER = "xyz"
-
 
 def matrix_to_euler_xyz(R: np.ndarray) -> np.ndarray:
-    """Extract XYZ Euler angles (in degrees) from a 3x3 rotation matrix.
+    """Decompose a cam→world rotation matrix into Flame Euler angles (degrees).
 
-    Convention: R = Rx(ax) @ Ry(ay) @ Rz(az)
+    Flame's internal convention: R = Rx(-rx) · Ry(-ry) · Rz(rz), XYZ order.
+    Flame's identity camera also looks +Z_local (not -Z like OpenGL), so we
+    rotate the local camera frame 180° around Y before decomposing.
 
     Args:
-        R: 3x3 rotation matrix
+        R: 3x3 cam→world rotation matrix (OpenGL-convention: camera looks -Z_local)
 
     Returns:
-        np.ndarray [rx, ry, rz] in degrees
+        np.ndarray [rx, ry, rz] in degrees — ready to pass to
+        cam.rotation.set_value((rx, ry, rz)) on a free-mode camera.
     """
-    # From the rotation matrix R = Rx @ Ry @ Rz:
-    # R[0,2] = sin(ry)
-    # R[2,2] = cos(ry)*cos(rx)
-    # R[1,2] = -cos(ry)*sin(rx)  ... wait, let me use the standard decomposition
+    # OpenGL → Flame local frame: flip camera's +X and +Z (rotation 180° around Y)
+    RY_180 = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+    R = R @ RY_180
 
-    # For R = Rx @ Ry @ Rz (intrinsic XYZ):
-    sy = R[0, 2]
     cy = np.sqrt(R[0, 0] ** 2 + R[0, 1] ** 2)
 
-    if cy > 1e-6:  # not at gimbal lock
-        rx = np.arctan2(-R[1, 2], R[2, 2])
-        ry = np.arctan2(R[0, 2], cy)
+    if cy > 1e-6:
+        rx = np.arctan2( R[1, 2], R[2, 2])
+        ry = np.arctan2(-R[0, 2], cy)
         rz = np.arctan2(-R[0, 1], R[0, 0])
     else:
-        # Gimbal lock: ry = +/- 90 degrees
-        rx = np.arctan2(R[2, 1], R[1, 1])
-        ry = np.arctan2(R[0, 2], cy)
+        rx = np.arctan2(-R[2, 1], R[1, 1])
+        ry = np.arctan2(-R[0, 2], cy)
         rz = 0.0
 
     return np.degrees(np.array([rx, ry, rz]))

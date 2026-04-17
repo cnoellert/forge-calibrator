@@ -72,11 +72,16 @@ def axis_assignment(ax1, ax2):
     return np.vstack([r1, r2, r3])
 
 def euler_from_matrix(R):
+    # Flame's identity camera looks +Z_local (not -Z); rotate local frame
+    # 180° around Y to convert OpenGL-style cam→world to Flame's convention.
+    RY_180 = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+    R = R @ RY_180
+    # Flame uses R = Rx(-rx) · Ry(-ry) · Rz(rz) (X, Y inverted from RH rule)
     cy = np.sqrt(R[0,0]**2 + R[0,1]**2)
     if cy > 1e-6:
-        rx = np.arctan2(R[1,2], R[2,2])
+        rx = np.arctan2( R[1,2], R[2,2])
         ry = np.arctan2(-R[0,2], cy)
-        rz = np.arctan2(R[0,1], R[0,0])
+        rz = np.arctan2(-R[0,1], R[0,0])
     else:
         rx = np.arctan2(-R[2,1], R[1,1])
         ry = np.arctan2(-R[0,2], cy)
