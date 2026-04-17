@@ -100,17 +100,28 @@ def _fit_vp(lines_px):
     return (float(v[0] / v[2]), float(v[1] / v[2]))
 
 
-def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
+def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None,
+                 vp3_lines=None, quad_mode=False):
     """Solve from explicit line lists (N lines per VP, N ≥ 2). Adapts the 8-point
     `_solve` by fitting each VP via least squares and forwarding 4 representative
     points (the endpoints of lines 0 and 1 of each VP) so downstream math is
     unchanged; VPs used by the math come from the full least-squares fit.
+
+    vp3_lines: optional 3rd VP lines used for FromThirdVanishingPoint principal
+        point. Forwarded as a fitted VP3 pixel through `_solve`'s pp_px arg.
+    quad_mode: if True, override vp2_lines using VP1 endpoints as quad corners.
     """
     import numpy as np
+    if quad_mode and len(vp1_lines) >= 2:
+        (a, b), (c, d) = vp1_lines[0], vp1_lines[1]
+        vp2_lines = [(a, c), (b, d)]
     vp1 = _fit_vp(vp1_lines)
     vp2 = _fit_vp(vp2_lines)
     if vp1 is None or vp2 is None:
         return None
+    vp3_px = None
+    if vp3_lines is not None and len(vp3_lines) >= 2:
+        vp3_px = _fit_vp(vp3_lines)
     # Pack 8 points for downstream: solver computes VP from pair intersection,
     # so pick any two lines per VP that actually intersect AT the fitted VP.
     # Trick: pass one line as the actual first line, and a second "line" that
@@ -125,10 +136,11 @@ def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_b
         (q0, _q1) = lines[1] if len(lines) > 1 else lines[0]
         return [list(p0), list(p1), list(q0), [vp[0], vp[1]]]
     pts8 = _pack(vp1_lines, vp1) + _pack(vp2_lines, vp2)
-    return _solve(pts8, w, h, ax1=ax1, ax2=ax2, origin_px=origin_px, cam_back=cam_back)
+    return _solve(pts8, w, h, ax1=ax1, ax2=ax2, origin_px=origin_px,
+                  cam_back=cam_back, vp3_px=vp3_px)
 
 
-def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
+def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None, vp3_px=None):
     """Run the full 2VP solve from pixel coordinates.
 
     pts_px: list of 8 points [(x,y), ...] — VP1 line1 start/end, line2 start/end,
@@ -214,7 +226,23 @@ def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
         _write_trace(trace)
         return None
 
+    # Principal point: orthocentre of VP1/VP2/VP3 triangle if a 3rd VP was
+    # provided (fSpy's FromThirdVanishingPoint), else image centre.
     pp = np.array([0.0, 0.0])
+    if vp3_px is not None:
+        vp3 = px_to_ip(vp3_px[0], vp3_px[1])
+        a, b = vp1[0], vp1[1]
+        c, d = vp2[0], vp2[1]
+        e, f = vp3[0], vp3[1]
+        N = b*c + d*e + f*a - c*f - b*e - a*d
+        if abs(N) > 1e-12:
+            pp = np.array([
+                ((d-f)*b*b + (f-b)*d*d + (b-d)*f*f + a*b*(c-e) + c*d*(e-a) + e*f*(a-c)) / N,
+                ((e-c)*a*a + (a-e)*c*c + (c-a)*e*e + a*b*(f-d) + c*d*(b-f) + e*f*(d-b)) / N,
+            ])
+        trace["stages"]["vp3_imageplane"] = vp3.tolist()
+        trace["stages"]["principal_point_imageplane"] = pp.tolist()
+        trace["stages"]["principal_point_px"] = ip_to_px(pp)
 
     # Focal length
     puv = ortho_proj(pp, vp1, vp2)
@@ -260,27 +288,40 @@ def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
     cam_rot_flame = cam_rot
     trace["stages"]["cam_rot_flame_convention"] = cam_rot_flame.tolist()
 
-    # Euler angles — Flame uses R = Rx(-rx) · Ry(-ry) · Rz(rz) internally
-    # (X and Y inverted from right-hand rule; verified empirically via FBX export)
-    cy = np.sqrt(cam_rot_flame[0,0]**2 + cam_rot_flame[0,1]**2)
-    gimbal = cy <= 1e-6
+    # Euler angles — Flame's Action camera uses R = Rz(rz) · Ry(-ry) · Rx(-rx)
+    # internally: ZYX order with X and Y signs inverted. Verified empirically
+    # 2026-04-16 against the test.fspy fixture: pushing the ZYX-decomposed
+    # angles aligns the rendered surface to the wall to single-degree precision,
+    # while the previous XYZ-decomposed angles left a ~13° Z residual that
+    # required an external axis-rotation fix to compensate.
+    #
+    # Substituting α=-rx, β=-ry, γ=rz reduces to the standard ZYX-positive
+    # decomposition R = Rz(γ)·Ry(β)·Rx(α):
+    #   α = atan2(R[2,1], R[2,2])
+    #   β = arcsin(-R[2,0])
+    #   γ = atan2(R[1,0], R[0,0])
+    # Then rx = -α, ry = -β, rz = γ.
+    cb = np.sqrt(cam_rot_flame[0,0]**2 + cam_rot_flame[1,0]**2)
+    gimbal = cb <= 1e-6
     if not gimbal:
-        rx = np.arctan2( cam_rot_flame[1,2], cam_rot_flame[2,2])
-        ry = np.arctan2(-cam_rot_flame[0,2], cy)
-        rz = np.arctan2(-cam_rot_flame[0,1], cam_rot_flame[0,0])
+        rx = -np.arctan2( cam_rot_flame[2,1], cam_rot_flame[2,2])
+        ry = -np.arcsin(-cam_rot_flame[2,0])
+        rz =  np.arctan2( cam_rot_flame[1,0], cam_rot_flame[0,0])
     else:
-        rx = np.arctan2(-cam_rot_flame[2,1], cam_rot_flame[1,1])
-        ry = np.arctan2(-cam_rot_flame[0,2], cy)
-        rz = 0.0
+        # ry = ±90° → α and γ are coupled. Set rx = 0, derive rz from upper-left.
+        rx = 0.0
+        ry = -np.arcsin(-cam_rot_flame[2,0])
+        rz =  np.arctan2(-cam_rot_flame[0,1], cam_rot_flame[1,1])
     eul = np.degrees(np.array([rx, ry, rz]))
     trace["stages"]["gimbal_lock"] = bool(gimbal)
     trace["stages"]["flame_euler_deg"] = eul.tolist()
 
-    # Sanity: reconstruct R from Euler using Flame's convention and compare
+    # Sanity: reconstruct R from Euler using Flame's ZYX-with-X,Y-negated
+    # convention and verify it round-trips to cam_rot_flame.
     def _rx(a): c,s=np.cos(a),np.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]])
     def _ry(a): c,s=np.cos(a),np.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
     def _rz(a): c,s=np.cos(a),np.sin(a); return np.array([[c,-s,0],[s,c,0],[0,0,1]])
-    R_recon = _rx(-rx) @ _ry(-ry) @ _rz(rz)
+    R_recon = _rz(rz) @ _ry(-ry) @ _rx(-rx)
     trace["stages"]["R_recon_from_euler"] = R_recon.tolist()
     trace["stages"]["R_recon_matches_cam_rot_flame"] = bool(np.allclose(R_recon, cam_rot_flame, atol=1e-6))
 
@@ -290,10 +331,10 @@ def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
         v_cam = cam_rot.T @ np.asarray(d_world, dtype=float)
         if v_cam[2] >= 0:
             return {"cam_dir": v_cam.tolist(), "projects": "BEHIND camera"}
-        # Image plane sits at z=-f in cam coords, so pinhole projection scales
-        # the direction by f before mapping to normalized image-plane coords.
-        ipx = v_cam[0] / -v_cam[2] * f
-        ipy = v_cam[1] / -v_cam[2] * f
+        # Pinhole: ip = pp + f * (X,Y) / (-Z). The pp offset matters whenever
+        # the principal point isn't at image centre (FromThirdVanishingPoint).
+        ipx = pp[0] + v_cam[0] / -v_cam[2] * f
+        ipy = pp[1] + v_cam[1] / -v_cam[2] * f
         # Convert back to pixel
         a = w / h
         if a >= 1.0:
@@ -341,13 +382,14 @@ def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
         origin_px_resolved = [float(origin_px[0]), float(origin_px[1])]
         origin_ip = px_to_ip(origin_px_resolved[0], origin_px_resolved[1])
 
-    # Back-project origin pixel to a camera-space ray: image plane sits at z=-f,
-    # so the point on the image plane at normalized (ipx, ipy) corresponds to
-    # cam-space point (ipx, ipy, -f). Normalize, then scale to cam_back — that
-    # puts world origin at distance cam_back along the view ray from the camera.
-    ray_cam = np.array([origin_ip[0], origin_ip[1], -f], dtype=float)
-    ray_cam /= np.linalg.norm(ray_cam)
-    origin_in_cam = cam_back * ray_cam
+    # Back-project origin pixel to a camera-space point. Match fSpy's convention:
+    # origin sits at *perpendicular* depth cam_back (z_cam = -cam_back), not
+    # Euclidean distance — fSpy uses origin3D = k·(ox-pp.x, oy-pp.y, -1)·scale
+    # with k = tan(hfov/2) = 1/f, which simplifies to:
+    #     origin_in_cam = (cam_back / f) · (ox-pp.x, oy-pp.y, -f)
+    # → x = (cam_back/f)·(ox-pp.x), y = (cam_back/f)·(oy-pp.y), z = -cam_back.
+    ray_cam = np.array([origin_ip[0] - pp[0], origin_ip[1] - pp[1], -f], dtype=float)
+    origin_in_cam = (cam_back / f) * ray_cam
     # If cam is at world position P and world origin is at offset O in cam space,
     # then (0,0,0) = P + cam_rot @ O  →  P = -cam_rot @ O.
     cam_pos = -cam_rot @ origin_in_cam
@@ -369,6 +411,9 @@ def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
         "ax1": ax1, "ax2": ax2,
         "origin_px": list(origin_px_resolved),
         "cam_back_dist": float(cam_back),
+        # Principal point in pixels — only populated when VP3 was supplied
+        # (FromThirdVanishingPoint mode). Otherwise None (PP at image centre).
+        "principal_point_px": ip_to_px(pp) if vp3_px is not None else None,
     }
     trace["result"] = result
     _write_trace(trace)
@@ -525,8 +570,11 @@ def _open_camera_match(clip):
             self.setMouseTracking(True)
 
             # VP line endpoints in normalized coords (0-1, top-left origin).
-            # Always 12 points (3 lines per VP); lines 3 and 6 are only used
-            # and rendered when three_lines mode is enabled.
+            # Layout (16 points):
+            #   indices  0..5  → VP1 lines 0,1,2
+            #   indices  6..11 → VP2 lines 0,1,2
+            #   indices 12..15 → VP3 lines 0,1   (only used when self.use_vp3)
+            # Lines 3 (VP1) and 6 (VP2) are only used when self.three_lines.
             self.points = [
                 # VP1: line 0, 1, 2
                 [0.15, 0.35], [0.85, 0.40],
@@ -536,6 +584,9 @@ def _open_camera_match(clip):
                 [0.35, 0.15], [0.40, 0.85],
                 [0.65, 0.15], [0.60, 0.85],
                 [0.50, 0.15], [0.50, 0.85],
+                # VP3: line 0, 1 (no third line — PP fit needs only one VP3)
+                [0.30, 0.55], [0.10, 0.85],
+                [0.70, 0.55], [0.90, 0.85],
             ]
 
             self.dragging = -1
@@ -547,6 +598,8 @@ def _open_camera_match(clip):
             self.show_extended = True
             self.show_plane = True
             self.three_lines = False  # when True, 3 lines per VP with least-squares VP fit
+            self.use_vp3 = False      # when True, VP3 lines drive the principal point (orthocentre)
+            self.quad_mode = False    # when True, VP2 lines synthesized from VP1 endpoints (planar quad)
             self.solve_result = None
 
             # Axis assignments (index into _AX_LABELS); updated from the window.
@@ -595,29 +648,38 @@ def _open_camera_match(clip):
             self.update()
 
         def _active_lines(self):
-            """Return (vp1_lines, vp2_lines) as lists of (p0_px, p1_px) pairs
-            based on two_lines/three_lines mode. Layout: points[0:6]=VP1 (lines 0,1,2),
-            points[6:12]=VP2 (lines 0,1,2)."""
+            """Return (vp1_lines, vp2_lines, vp3_lines) as lists of (p0_px, p1_px)
+            pairs based on three_lines / use_vp3 modes. Layout:
+                points[0:6]   = VP1 (lines 0,1,2)
+                points[6:12]  = VP2 (lines 0,1,2)
+                points[12:16] = VP3 (lines 0,1)   — used iff self.use_vp3
+            vp3_lines is None when use_vp3 is False.
+            Quad mode is *not* applied here — _solve_lines synthesizes VP2 itself
+            so the VP2 endpoints in self.points stay untouched while quad is on."""
             n = 3 if self.three_lines else 2
-            def lines_for(base):
+            def lines_for(base, count):
                 out = []
-                for k in range(n):
+                for k in range(count):
                     p0 = self.points[base + 2*k]
                     p1 = self.points[base + 2*k + 1]
                     out.append((self._norm_to_px(*p0), self._norm_to_px(*p1)))
                 return out
-            return lines_for(0), lines_for(6)
+            vp1 = lines_for(0, n)
+            vp2 = lines_for(6, n)
+            vp3 = lines_for(12, 2) if self.use_vp3 else None
+            return vp1, vp2, vp3
 
         def run_solve(self, ax1, ax2):
             """Run solver with current point positions."""
             self.ax1 = ax1
             self.ax2 = ax2
-            vp1_lines, vp2_lines = self._active_lines()
+            vp1_lines, vp2_lines, vp3_lines = self._active_lines()
             origin_px = None
             if self.origin_norm is not None:
                 origin_px = self._norm_to_px(self.origin_norm[0], self.origin_norm[1])
             self.solve_result = _solve_lines(
-                vp1_lines, vp2_lines, img_w, img_h, ax1, ax2, origin_px=origin_px)
+                vp1_lines, vp2_lines, img_w, img_h, ax1, ax2,
+                origin_px=origin_px, vp3_lines=vp3_lines, quad_mode=self.quad_mode)
             self.update()
             return self.solve_result
 
@@ -795,6 +857,121 @@ def _open_camera_match(clip):
                     nlx = neg_x - ux * 16 + px_ * 12
                     nly = neg_y - uy * 16 + py_ * 12
                     self._draw_label_pill(painter, nlx, nly, neg_label, color, primary=False)
+
+        def _draw_quad_synth_pair(self, painter, ax_idx):
+            """Draw VP2 as the two synthesized quad edges (A→C, B→D) where
+            (A,B) is VP1.line0 and (C,D) is VP1.line1. No handles — the four
+            points are owned by VP1; this just visualizes that they form a quad."""
+            import math
+            color = _axis_color(ax_idx)
+            color_dim = _axis_color(ax_idx, alpha=90)
+            pen = QtGui.QPen()
+
+            A = self.points[0]; B = self.points[1]   # VP1 line0
+            C = self.points[2]; D = self.points[3]   # VP1 line1
+            edges = [(A, C), (B, D)]
+
+            # Fitted VP from the synthesized lines (= solver's actual VP2)
+            edges_px = [(self._norm_to_px(*p0), self._norm_to_px(*p1)) for p0, p1 in edges]
+            vp_px = _fit_vp(edges_px)
+            vp_w = self._norm_to_widget(vp_px[0] / img_w, vp_px[1] / img_h) if vp_px else None
+
+            for i, (p0, p1) in enumerate(edges):
+                sx, sy = self._norm_to_widget(p0[0], p0[1])
+                ex, ey = self._norm_to_widget(p1[0], p1[1])
+
+                if self.show_extended:
+                    pen.setColor(color_dim)
+                    pen.setStyle(QtCore.Qt.DashLine)
+                    pen.setWidth(1)
+                    painter.setPen(pen)
+                    painter.setBrush(QtCore.Qt.NoBrush)
+                    dx, dy = ex - sx, ey - sy
+                    length = math.hypot(dx, dy)
+                    if length > 0:
+                        scale = 5000 / length
+                        painter.drawLine(
+                            QtCore.QPointF(sx - dx*scale, sy - dy*scale),
+                            QtCore.QPointF(ex + dx*scale, ey + dy*scale))
+
+                pen.setColor(color)
+                pen.setStyle(QtCore.Qt.SolidLine)
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.drawLine(QtCore.QPointF(sx, sy), QtCore.QPointF(ex, ey))
+
+                # Direction chevron pointing toward the VP
+                if vp_w is not None:
+                    vx, vy = vp_w
+                    dx, dy = ex - sx, ey - sy
+                    proj_end = (vx - sx) * dx + (vy - sy) * dy
+                    vp_is_B = proj_end > 0
+                else:
+                    vp_is_B = True
+                if vp_is_B:
+                    pos_x, pos_y = ex, ey
+                    neg_x, neg_y = sx, sy
+                else:
+                    pos_x, pos_y = sx, sy
+                    neg_x, neg_y = ex, ey
+                self._draw_direction_chevron(painter, neg_x, neg_y, pos_x, pos_y, color)
+
+                # ax2 label pills on the first synthesized edge only
+                if i == 0:
+                    dx, dy = pos_x - neg_x, pos_y - neg_y
+                    L = math.hypot(dx, dy) or 1.0
+                    ux, uy = dx / L, dy / L
+                    px_, py_ = -uy, ux
+                    self._draw_label_pill(painter,
+                                          pos_x + ux * 16 + px_ * 12,
+                                          pos_y + uy * 16 + py_ * 12,
+                                          _AX_LABELS[ax_idx], color, primary=True)
+                    self._draw_label_pill(painter,
+                                          neg_x - ux * 16 + px_ * 12,
+                                          neg_y - uy * 16 + py_ * 12,
+                                          _AX_LABELS[ax_idx ^ 1], color, primary=False)
+
+        def _draw_vp3_pair(self, painter):
+            """Draw the two VP3 lines used for the FromThirdVanishingPoint
+            principal point. Neutral grey — VP3 has no axis assignment, it just
+            constrains the orthocentre that becomes the optical centre."""
+            import math
+            color = QtGui.QColor(220, 220, 220)
+            color_dim = QtGui.QColor(220, 220, 220, 90)
+            pen = QtGui.QPen()
+            for k in range(2):
+                s = self.points[12 + 2*k]
+                e = self.points[12 + 2*k + 1]
+                sx, sy = self._norm_to_widget(s[0], s[1])
+                ex, ey = self._norm_to_widget(e[0], e[1])
+                if self.show_extended:
+                    pen.setColor(color_dim)
+                    pen.setStyle(QtCore.Qt.DashLine)
+                    pen.setWidth(1)
+                    painter.setPen(pen)
+                    painter.setBrush(QtCore.Qt.NoBrush)
+                    dx, dy = ex - sx, ey - sy
+                    length = math.hypot(dx, dy)
+                    if length > 0:
+                        scale = 5000 / length
+                        painter.drawLine(
+                            QtCore.QPointF(sx - dx*scale, sy - dy*scale),
+                            QtCore.QPointF(ex + dx*scale, ey + dy*scale))
+                pen.setColor(color)
+                pen.setStyle(QtCore.Qt.SolidLine)
+                pen.setWidth(2)
+                painter.setPen(pen)
+                painter.drawLine(QtCore.QPointF(sx, sy), QtCore.QPointF(ex, ey))
+            # PP marker if a solve has run with VP3 enabled
+            if self.solve_result is not None:
+                pp_px = self.solve_result.get("principal_point_px")
+                if pp_px is not None:
+                    wx, wy = self._norm_to_widget(pp_px[0] / img_w, pp_px[1] / img_h)
+                    painter.setPen(QtGui.QPen(color, 1.5))
+                    painter.setBrush(QtCore.Qt.NoBrush)
+                    painter.drawEllipse(QtCore.QPointF(wx, wy), 6, 6)
+                    painter.drawLine(QtCore.QPointF(wx - 9, wy), QtCore.QPointF(wx + 9, wy))
+                    painter.drawLine(QtCore.QPointF(wx, wy - 9), QtCore.QPointF(wx, wy + 9))
 
         def _project_world(self, world_pt):
             """Project a 3D world point through the solved camera to widget coords.
@@ -984,21 +1161,35 @@ def _open_camera_match(clip):
             if self.show_plane and self.solve_result is not None:
                 self._draw_plane_overlay(p)
 
-            # VP1 + VP2 line pairs, colored by assigned axis
+            # VP1 always drawn. In quad mode, VP2 is rendered as the two
+            # synthesized edges (A→C, B→D) closing the quad — no separate
+            # handles since they share VP1's endpoints. VP3 drawn when on.
             self._draw_vp_pair(p, 0, self.ax1)
-            self._draw_vp_pair(p, 6, self.ax2)
+            if self.quad_mode:
+                self._draw_quad_synth_pair(p, self.ax2)
+            else:
+                self._draw_vp_pair(p, 6, self.ax2)
+            if self.use_vp3:
+                self._draw_vp3_pair(p)
 
-            # Handles — only render the endpoints for currently active lines.
-            # Layout: VP1 uses indices 0..5 (3 lines × 2 endpoints), VP2 uses 6..11.
-            # In 2-line mode we skip indices 4,5 (VP1 line 2) and 10,11 (VP2 line 2).
+            # Handles — only render endpoints for currently active lines.
+            #   VP1 indices 0..(2*n_lines)
+            #   VP2 indices 6..(6+2*n_lines)   skipped when quad_mode
+            #   VP3 indices 12..15             shown when use_vp3
             n_lines = 3 if self.three_lines else 2
-            active_indices = (list(range(0, 2*n_lines)) +
-                              list(range(6, 6 + 2*n_lines)))
+            active_indices = list(range(0, 2*n_lines))
+            if not self.quad_mode:
+                active_indices += list(range(6, 6 + 2*n_lines))
+            if self.use_vp3:
+                active_indices += [12, 13, 14, 15]
+            vp3_color = QtGui.QColor(220, 220, 220)
             for i in active_indices:
                 pt = self.points[i]
                 wx, wy = self._norm_to_widget(pt[0], pt[1])
-                ax_idx = self.ax1 if i < 6 else self.ax2
-                color = _axis_color(ax_idx)
+                if i >= 12:
+                    color = vp3_color
+                else:
+                    color = _axis_color(self.ax1 if i < 6 else self.ax2)
                 p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1.5))
                 p.setBrush(color)
                 p.drawEllipse(QtCore.QPointF(wx, wy), HANDLE_RADIUS, HANDLE_RADIUS)
@@ -1044,8 +1235,11 @@ def _open_camera_match(clip):
                         self.dragging_origin = True
                         return
                 n_lines = 3 if self.three_lines else 2
-                active_indices = (list(range(0, 2*n_lines)) +
-                                  list(range(6, 6 + 2*n_lines)))
+                active_indices = list(range(0, 2*n_lines))
+                if not self.quad_mode:
+                    active_indices += list(range(6, 6 + 2*n_lines))
+                if self.use_vp3:
+                    active_indices += [12, 13, 14, 15]
                 for i in active_indices:
                     pt = self.points[i]
                     wx, wy = self._norm_to_widget(pt[0], pt[1])
@@ -1166,6 +1360,16 @@ def _open_camera_match(clip):
             self.three_lines_check.setChecked(False)
             self.three_lines_check.toggled.connect(self._on_three_lines)
             vp_layout.addWidget(self.three_lines_check)
+
+            self.quad_mode_check = QtWidgets.QCheckBox("Quad mode (VP2 from VP1 corners)")
+            self.quad_mode_check.setChecked(False)
+            self.quad_mode_check.toggled.connect(self._on_quad_mode)
+            vp_layout.addWidget(self.quad_mode_check)
+
+            self.vp3_check = QtWidgets.QCheckBox("VP3 → principal point (orthocentre)")
+            self.vp3_check.setChecked(False)
+            self.vp3_check.toggled.connect(self._on_vp3)
+            vp_layout.addWidget(self.vp3_check)
             panel.addWidget(vp_group)
 
             # ── Display group ──
@@ -1258,6 +1462,14 @@ def _open_camera_match(clip):
         def _on_three_lines(self, checked):
             self.image_widget.three_lines = checked
             self._on_solve()  # re-solve with new line count
+
+        def _on_quad_mode(self, checked):
+            self.image_widget.quad_mode = checked
+            self._on_solve()
+
+        def _on_vp3(self, checked):
+            self.image_widget.use_vp3 = checked
+            self._on_solve()
 
         def _on_solve(self, *args):
             ax1 = self.vp1_axis.currentIndex()

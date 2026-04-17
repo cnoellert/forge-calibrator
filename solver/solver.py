@@ -300,6 +300,8 @@ def solve_2vp(
     ref_point1_px: Optional[np.ndarray] = None,
     ref_point2_px: Optional[np.ndarray] = None,
     ref_axis: Optional[str] = None,
+    vp3_lines: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]] = None,
+    quad_mode: bool = False,
 ) -> Optional[dict]:
     """Full 2-vanishing-point solve pipeline.
 
@@ -315,11 +317,25 @@ def solve_2vp(
         reference_distance: Real-world reference distance
         ref_point1_px, ref_point2_px: Reference measurement points in pixel coords
         ref_axis: Axis the reference measurement lies along
+        vp3_lines: Optional 3rd VP lines, used only to derive the principal
+            point as the orthocentre of the VP1/VP2/VP3 triangle (fSpy's
+            "FromThirdVanishingPoint" mode). Ignored if `principal_point` is
+            explicitly provided.
+        quad_mode: If True, override `vp2_lines` by treating VP1's four
+            endpoints (A,B from line0; C,D from line1) as a planar quad and
+            building VP2 from the perpendicular edges (A,C) and (B,D).
+            Mirrors fSpy's `quadModeEnabled`.
 
     Returns:
         Dict with solved camera parameters, or None on failure.
     """
-    from .math_util import line_intersection
+    from .math_util import line_intersection, orthocentre
+
+    # Quad mode: synthesize VP2 lines from VP1 endpoints (the four points are
+    # treated as a planar quadrilateral; opposite edges define the two VPs).
+    if quad_mode:
+        a, b, c, d = vp1_lines  # line0=(a,b), line1=(c,d)
+        vp2_lines = (a, c, b, d)
 
     # Convert line endpoints to image plane
     vp1_ip_pts = [px_to_image_plane(p[0], p[1], w, h) for p in vp1_lines]
@@ -332,8 +348,17 @@ def solve_2vp(
     if vp1 is None or vp2 is None:
         return None
 
-    # Principal point defaults to image centre (0, 0 in ImagePlane)
-    pp = principal_point if principal_point is not None else np.array([0.0, 0.0])
+    # Principal point: explicit override > orthocentre from VP3 > image centre
+    if principal_point is not None:
+        pp = principal_point
+    elif vp3_lines is not None:
+        vp3_ip_pts = [px_to_image_plane(p[0], p[1], w, h) for p in vp3_lines]
+        vp3 = line_intersection(vp3_ip_pts[0], vp3_ip_pts[1], vp3_ip_pts[2], vp3_ip_pts[3])
+        pp = orthocentre(vp1, vp2, vp3) if vp3 is not None else np.array([0.0, 0.0])
+        if pp is None:
+            pp = np.array([0.0, 0.0])
+    else:
+        pp = np.array([0.0, 0.0])
 
     # Focal length
     f = compute_focal_length(vp1, vp2, pp)
