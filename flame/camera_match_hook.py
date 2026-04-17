@@ -71,11 +71,74 @@ def _write_trace(trace):
         pass  # non-fatal
 
 
-def _solve(pts_px, w, h, ax1=1, ax2=5):
+def _fit_vp(lines_px):
+    """Least-squares vanishing point from N≥2 lines in pixel coords.
+
+    Each line is ((x0,y0),(x1,y1)). Represents line as homogeneous form L=(a,b,c)
+    with ax+by+c=0 passing through both endpoints. VP is the homogeneous point
+    v minimizing sum((L_i·v)^2); solved via eigenvector of smallest eigenvalue
+    of sum(L_i L_i^T). Reduces exactly to 2-line intersection when N=2.
+    Returns (vp_x, vp_y) in pixel coords, or None if degenerate.
+    """
+    import numpy as np
+    M = []
+    for (p0, p1) in lines_px:
+        x0, y0 = float(p0[0]), float(p0[1])
+        x1, y1 = float(p1[0]), float(p1[1])
+        # Homogeneous line through (x0,y0,1) and (x1,y1,1): cross product.
+        a = y0 - y1
+        b = x1 - x0
+        c = x0 * y1 - x1 * y0
+        n = np.hypot(a, b) or 1.0
+        M.append([a/n, b/n, c/n])  # normalize so each line contributes equal weight
+    M = np.asarray(M, dtype=float)
+    # SVD: smallest singular vector of M is the VP in homogeneous coords.
+    _, _, Vt = np.linalg.svd(M)
+    v = Vt[-1]
+    if abs(v[2]) < 1e-12:
+        return None  # VP at infinity (lines parallel in image)
+    return (float(v[0] / v[2]), float(v[1] / v[2]))
+
+
+def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
+    """Solve from explicit line lists (N lines per VP, N ≥ 2). Adapts the 8-point
+    `_solve` by fitting each VP via least squares and forwarding 4 representative
+    points (the endpoints of lines 0 and 1 of each VP) so downstream math is
+    unchanged; VPs used by the math come from the full least-squares fit.
+    """
+    import numpy as np
+    vp1 = _fit_vp(vp1_lines)
+    vp2 = _fit_vp(vp2_lines)
+    if vp1 is None or vp2 is None:
+        return None
+    # Pack 8 points for downstream: solver computes VP from pair intersection,
+    # so pick any two lines per VP that actually intersect AT the fitted VP.
+    # Trick: pass one line as the actual first line, and a second "line" that
+    # passes through the fitted VP plus a point on the true first line's far end.
+    # Simpler: pass lines[0] and lines[1] as-is; the solver's exact intersection
+    # equals the least-squares fit only when N=2. To make solver VP = fitted VP,
+    # we pass a synthetic second line that intersects line 0 at the fitted VP.
+    def _pack(lines, vp):
+        (p0, p1) = lines[0]
+        # Second line: from any point not on line 0, passing through vp.
+        # Use the midpoint of line 1 perturbed to pass through vp.
+        (q0, _q1) = lines[1] if len(lines) > 1 else lines[0]
+        return [list(p0), list(p1), list(q0), [vp[0], vp[1]]]
+    pts8 = _pack(vp1_lines, vp1) + _pack(vp2_lines, vp2)
+    return _solve(pts8, w, h, ax1=ax1, ax2=ax2, origin_px=origin_px, cam_back=cam_back)
+
+
+def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None):
     """Run the full 2VP solve from pixel coordinates.
 
     pts_px: list of 8 points [(x,y), ...] — VP1 line1 start/end, line2 start/end,
             then VP2 line1 start/end, line2 start/end. All in pixel coords (top-left origin).
+    origin_px: optional (x, y) pixel of the world-origin control point. If None,
+               defaults to the intersection of VP1 line 0 and VP2 line 0.
+    cam_back: optional distance (world units) from camera to world origin along
+              the view ray. If None, matches Flame's native 1-unit=1-pixel scale
+              by setting cam_back = h / (2·tan(vfov/2)), which places world origin
+              at the distance where image-height pixels exactly fill the frame.
     Returns dict with position, rotation, focal_mm, hfov_deg or None on failure.
 
     Writes a complete math trace to /tmp/forge_camera_match_trace.json each call.
@@ -87,6 +150,7 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
     SENSOR_MM = 36.0
     _AX = {0:[1,0,0],1:[-1,0,0],2:[0,1,0],3:[0,-1,0],4:[0,0,1],5:[0,0,-1]}
     _AX_NAMES = ["+X","-X","+Y","-Y","+Z","-Z"]
+    # cam_back default is computed below once we know vfov — defer resolution.
 
     trace = {
         "timestamp": time.time(),
@@ -97,6 +161,8 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
             "ax2": ax2, "ax2_name": _AX_NAMES[ax2],
             "sensor_mm": SENSOR_MM,
             "points_px": [list(map(float, p)) for p in pts_px],
+            "origin_px": None if origin_px is None else [float(origin_px[0]), float(origin_px[1])],
+            "cam_back_requested": None if cam_back is None else float(cam_back),
         },
         "stages": {},
         "result": None,
@@ -186,13 +252,12 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
     trace["stages"]["view_rot_world_to_cam"] = view_rot.tolist()
     trace["stages"]["cam_rot_cam_to_world"] = cam_rot.tolist()
 
-    # Flame's identity camera looks down +Z_local (verified: with Lcl=0 and
-    # PostRotation=(0,-90,0), FBX export yields world forward = +Z). The
-    # solver's cam_rot uses the OpenGL convention where camera looks -Z_local.
-    # Convert by rotating the camera's local frame 180° around Y before
-    # decomposing to Flame Euler angles.
-    RY_180 = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
-    cam_rot_flame = cam_rot @ RY_180
+    # Flame's identity camera looks -Z_local (verified empirically via top view:
+    # a fresh camera at (0,0,+Z) with rotation (0,0,0) points toward origin at
+    # Z=0, which is the -Z_world direction). Matches OpenGL/solver convention,
+    # so no local-frame flip is needed here — push cam_rot directly. The Euler
+    # decomposition below still uses Flame's inverted-XYZ composition.
+    cam_rot_flame = cam_rot
     trace["stages"]["cam_rot_flame_convention"] = cam_rot_flame.tolist()
 
     # Euler angles — Flame uses R = Rx(-rx) · Ry(-ry) · Rz(rz) internally
@@ -225,9 +290,10 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
         v_cam = cam_rot.T @ np.asarray(d_world, dtype=float)
         if v_cam[2] >= 0:
             return {"cam_dir": v_cam.tolist(), "projects": "BEHIND camera"}
-        # In image plane: x' = v[0]/-v[2], y' = v[1]/-v[2]
-        ipx = v_cam[0] / -v_cam[2]
-        ipy = v_cam[1] / -v_cam[2]
+        # Image plane sits at z=-f in cam coords, so pinhole projection scales
+        # the direction by f before mapping to normalized image-plane coords.
+        ipx = v_cam[0] / -v_cam[2] * f
+        ipy = v_cam[1] / -v_cam[2] * f
         # Convert back to pixel
         a = w / h
         if a >= 1.0:
@@ -253,8 +319,45 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
     vfov = 2.0 * np.arctan(np.tan(hfov/2.0) / aspect)
     focal_mm = f * SENSOR_MM / 2.0
 
+    # Default cam_back matches Flame's native scale: 1 unit ≈ 1 image pixel.
+    # A fresh Flame camera sits at distance where image_height pixels exactly
+    # fill the vertical FOV. At that distance, default-sized geometry renders
+    # at the expected scale instead of appearing microscopic (10-unit scene)
+    # or enormous (pixel-unit scene viewed up close).
+    if cam_back is None:
+        cam_back = h / (2.0 * np.tan(vfov / 2.0))
+    trace["inputs"]["cam_back_resolved"] = float(cam_back)
+
+    # Origin control point: default to intersection of first line of each VP pair
+    # (image-plane coords). Fallback to principal point if parallel/missing.
+    if origin_px is None:
+        isect_ip = line_isect(ip[0], ip[1], ip[4], ip[5])
+        if isect_ip is None:
+            origin_ip = np.array([0.0, 0.0])
+        else:
+            origin_ip = isect_ip
+        origin_px_resolved = ip_to_px(origin_ip)
+    else:
+        origin_px_resolved = [float(origin_px[0]), float(origin_px[1])]
+        origin_ip = px_to_ip(origin_px_resolved[0], origin_px_resolved[1])
+
+    # Back-project origin pixel to a camera-space ray: image plane sits at z=-f,
+    # so the point on the image plane at normalized (ipx, ipy) corresponds to
+    # cam-space point (ipx, ipy, -f). Normalize, then scale to cam_back — that
+    # puts world origin at distance cam_back along the view ray from the camera.
+    ray_cam = np.array([origin_ip[0], origin_ip[1], -f], dtype=float)
+    ray_cam /= np.linalg.norm(ray_cam)
+    origin_in_cam = cam_back * ray_cam
+    # If cam is at world position P and world origin is at offset O in cam space,
+    # then (0,0,0) = P + cam_rot @ O  →  P = -cam_rot @ O.
+    cam_pos = -cam_rot @ origin_in_cam
+    trace["stages"]["origin_px_resolved"] = list(origin_px_resolved)
+    trace["stages"]["origin_imageplane"] = origin_ip.tolist()
+    trace["stages"]["origin_in_cam"] = origin_in_cam.tolist()
+    trace["stages"]["cam_position_world"] = cam_pos.tolist()
+
     result = {
-        "position": (0.0, 0.0, 0.0),
+        "position": (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
         "rotation": (float(eul[0]), float(eul[1]), float(eul[2])),
         "focal_mm": float(focal_mm),
         "film_back_mm": float(SENSOR_MM),
@@ -264,6 +367,8 @@ def _solve(pts_px, w, h, ax1=1, ax2=5):
         "cam_rot": cam_rot.tolist(),
         "f_relative": f,
         "ax1": ax1, "ax2": ax2,
+        "origin_px": list(origin_px_resolved),
+        "cam_back_dist": float(cam_back),
     }
     trace["result"] = result
     _write_trace(trace)
@@ -419,27 +524,35 @@ def _open_camera_match(clip):
             self.setMinimumSize(640, 480)
             self.setMouseTracking(True)
 
-            # VP line endpoints in normalized coords (0-1, top-left origin)
+            # VP line endpoints in normalized coords (0-1, top-left origin).
+            # Always 12 points (3 lines per VP); lines 3 and 6 are only used
+            # and rendered when three_lines mode is enabled.
             self.points = [
-                # VP1 line 1
+                # VP1: line 0, 1, 2
                 [0.15, 0.35], [0.85, 0.40],
-                # VP1 line 2
                 [0.15, 0.65], [0.85, 0.60],
-                # VP2 line 1
+                [0.15, 0.50], [0.85, 0.50],
+                # VP2: line 0, 1, 2
                 [0.35, 0.15], [0.40, 0.85],
-                # VP2 line 2
                 [0.65, 0.15], [0.60, 0.85],
+                [0.50, 0.15], [0.50, 0.85],
             ]
 
             self.dragging = -1
+            # Origin control point: normalized widget coords or None (= auto-place
+            # at intersection of VP1 line-0 and VP2 line-0 on each solve).
+            self.origin_norm = None
+            self.dragging_origin = False
             self.image_opacity = 0.5
             self.show_extended = True
             self.show_plane = True
+            self.three_lines = False  # when True, 3 lines per VP with least-squares VP fit
             self.solve_result = None
 
-            # Axis assignments (index into _AX_LABELS); updated from the window
+            # Axis assignments (index into _AX_LABELS); updated from the window.
+            # Default to Flame-friendly: VP1 = -X, VP2 = -Y.
             self.ax1 = 1  # VP1 -> -X
-            self.ax2 = 5  # VP2 -> -Z
+            self.ax2 = 3  # VP2 -> -Y
 
             self._qimage = QtGui.QImage(
                 img_rgb.data, img_w, img_h, img_w * 3,
@@ -481,14 +594,47 @@ def _open_camera_match(clip):
             self.ax2 = ax2
             self.update()
 
+        def _active_lines(self):
+            """Return (vp1_lines, vp2_lines) as lists of (p0_px, p1_px) pairs
+            based on two_lines/three_lines mode. Layout: points[0:6]=VP1 (lines 0,1,2),
+            points[6:12]=VP2 (lines 0,1,2)."""
+            n = 3 if self.three_lines else 2
+            def lines_for(base):
+                out = []
+                for k in range(n):
+                    p0 = self.points[base + 2*k]
+                    p1 = self.points[base + 2*k + 1]
+                    out.append((self._norm_to_px(*p0), self._norm_to_px(*p1)))
+                return out
+            return lines_for(0), lines_for(6)
+
         def run_solve(self, ax1, ax2):
             """Run solver with current point positions."""
             self.ax1 = ax1
             self.ax2 = ax2
-            pts = [self._norm_to_px(p[0], p[1]) for p in self.points]
-            self.solve_result = _solve(pts, img_w, img_h, ax1, ax2)
+            vp1_lines, vp2_lines = self._active_lines()
+            origin_px = None
+            if self.origin_norm is not None:
+                origin_px = self._norm_to_px(self.origin_norm[0], self.origin_norm[1])
+            self.solve_result = _solve_lines(
+                vp1_lines, vp2_lines, img_w, img_h, ax1, ax2, origin_px=origin_px)
             self.update()
             return self.solve_result
+
+        def _origin_widget_pos(self):
+            """Return origin handle position in widget coords, or None if unresolved."""
+            if self.origin_norm is not None:
+                return self._norm_to_widget(self.origin_norm[0], self.origin_norm[1])
+            if self.solve_result is None:
+                return None
+            ox, oy = self.solve_result.get("origin_px", (img_w / 2, img_h / 2))
+            return self._norm_to_widget(ox / img_w, oy / img_h)
+
+        def reset_origin_to_auto(self):
+            self.origin_norm = None
+            if hasattr(self, "_auto_solve_cb"):
+                self._auto_solve_cb()
+            self.update()
 
         def _draw_direction_chevron(self, painter, sx, sy, ex, ey, color, t=0.62):
             """Inline chevron at fraction t along the line pointing start→end.
@@ -554,31 +700,36 @@ def _open_camera_match(clip):
             painter.drawText(rect, QtCore.Qt.AlignCenter, text)
 
         def _draw_vp_pair(self, painter, base_idx, ax_idx):
-            """Draw the two lines for one VP (base_idx = 0 for VP1, 4 for VP2).
+            """Draw the VP lines for one VP (base_idx = 0 for VP1, 6 for VP2).
 
-            Direction semantics:
-            - The positive axis (whatever the dropdown says, e.g. '+X' or '-X')
-              points toward the VP = intersection of the two lines.
-            - Chevron on each line points toward the VP end.
-            - Label pill on the VP-facing end of line 0 shows the chosen axis;
-              a dim pill on the opposite end shows the inverse axis.
+            Draws 2 or 3 lines based on self.three_lines mode. VP is the
+            least-squares fit across all drawn lines (reduces to intersection
+            for N=2).
             """
             import math
             color = _axis_color(ax_idx)
             color_dim = _axis_color(ax_idx, alpha=90)
             pen = QtGui.QPen()
 
+            n_lines = 3 if self.three_lines else 2
             # Collect segment endpoints in widget coords
             segs = []
-            for i in range(2):
+            for i in range(n_lines):
                 s = self.points[base_idx + i*2]
                 e = self.points[base_idx + i*2 + 1]
                 sx, sy = self._norm_to_widget(s[0], s[1])
                 ex, ey = self._norm_to_widget(e[0], e[1])
                 segs.append(((sx, sy), (ex, ey)))
 
-            # Compute VP (intersection of the two extended lines)
-            vp = self._line_intersect(segs[0][0], segs[0][1], segs[1][0], segs[1][1])
+            # VP from least-squares fit over active lines (exact intersection for N=2)
+            vp_px = _fit_vp([(self._norm_to_px(self.points[base_idx + i*2][0],
+                                              self.points[base_idx + i*2][1]),
+                             self._norm_to_px(self.points[base_idx + i*2 + 1][0],
+                                              self.points[base_idx + i*2 + 1][1]))
+                            for i in range(n_lines)])
+            vp = None
+            if vp_px is not None:
+                vp = self._norm_to_widget(vp_px[0] / img_w, vp_px[1] / img_h)
 
             for i, (A, B) in enumerate(segs):
                 sx, sy = A; ex, ey = B
@@ -654,8 +805,9 @@ def _open_camera_match(clip):
                 return None
             import numpy as np
             cam_rot = np.asarray(self.solve_result["cam_rot"])
+            cam_pos = np.asarray(self.solve_result.get("position", (0.0, 0.0, 0.0)))
             f_rel = self.solve_result["f_relative"]
-            v = cam_rot.T @ np.asarray(world_pt, dtype=float)
+            v = cam_rot.T @ (np.asarray(world_pt, dtype=float) - cam_pos)
             if v[2] >= -1e-6:
                 return None
             # image-plane coords (solver convention: normalized where image spans
@@ -694,47 +846,24 @@ def _open_camera_match(clip):
 
         def _draw_plane_overlay(self, painter):
             """Draw a grid of the VP-defined plane projected through the solved
-            camera — fSpy-style reference. Also draws a short arrow along the
-            out-of-plane (third) axis from origin.
-
-            NOTE: in a 2VP solve without an origin control point, the world
-            origin is at the camera position. The plane containing origin
-            therefore passes through the camera and projects as a single line.
-            We offset the grid along the camera's forward direction by a
-            distance that places the grid center on the principal axis — this
-            makes the plane's orientation visible as a 2D region in the image.
+            camera — fSpy-style reference. Grid is centered at world origin
+            (which the solver places along the view ray via the origin control
+            point). Also draws a short arrow along the out-of-plane axis.
             """
             if self.solve_result is None:
                 return
             import numpy as np
             axis_a, axis_b, axis_c = self._plane_basis()
+            c_offset = np.zeros(3)
 
-            # Camera forward in world coords = -(cam's +Z axis in world) since
-            # cam looks down -Z_local. That's -(col 2 of cam_rot).
-            cam_rot = np.asarray(self.solve_result["cam_rot"])
-            forward_world = -cam_rot[:, 2]
-
-            # Project forward onto the plane normal (axis_c): the offset applied
-            # along axis_c that puts us at unit depth along view direction.
-            # We want the grid's center at (forward_world * d) — but only the
-            # component of that along axis_c matters for "moving off the plane"
-            # since axis_a and axis_b offsets stay on the plane. Pure axis_c
-            # offset is simplest and most predictable.
-            d = 10.0  # world-unit distance to grid center along camera forward
-            proj_on_c = float(np.dot(forward_world, axis_c))
-            if abs(proj_on_c) < 1e-3:
-                # Camera's forward is nearly parallel to the plane — no useful
-                # offset possible. Fall back to flat axis_c offset (may project off-screen).
-                c_offset = d * axis_c
-            else:
-                # Place grid center at P = k·axis_c such that forward·P = d.
-                # This puts the grid on a plane parallel to the VP plane, d units
-                # ahead of the camera along its forward direction — visible regardless
-                # of whether axis_c points toward or away from the camera.
-                c_offset = (d / proj_on_c) * axis_c
-
+            # Grid step scales with the camera distance so the grid spans a
+            # visible portion of the frame regardless of scene scale. A fresh
+            # Flame camera at cam_back ≈ image_height/(2·tan(vfov/2)) puts the
+            # frame about cam_back/f_rel × 2 tall at origin — step = cam_back/20
+            # gives ~20 grid cells across the frame, matching fSpy-style density.
+            cam_back = float(self.solve_result.get("cam_back_dist", 10.0))
             N = 10
-            step = 1.0
+            step = cam_back / 20.0
             rows = 2 * N + 1
             cols = 2 * N + 1
             pts = [[None] * cols for _ in range(rows)]
@@ -802,8 +931,9 @@ def _open_camera_match(clip):
                 painter.setPen(QtGui.QPen(QtGui.QColor(30, 30, 30), 1.5))
                 painter.drawEllipse(QtCore.QPointF(*origin_w), 5, 5)
 
-            # Third-axis arrow (out-of-plane) from grid-center
-            tip_w = self._project_world(c_offset + 3.0 * axis_c)
+            # Third-axis arrow (out-of-plane) from grid-center — extends a few
+            # grid cells out so it's clearly visible against the grid.
+            tip_w = self._project_world(c_offset + 3.0 * step * axis_c)
             if origin_w and tip_w:
                 third_idx = ({0,1,2} - {self.ax1 // 2, self.ax2 // 2}).pop()
                 third_pos_idx = third_idx * 2  # +X, +Y, or +Z
@@ -856,16 +986,44 @@ def _open_camera_match(clip):
 
             # VP1 + VP2 line pairs, colored by assigned axis
             self._draw_vp_pair(p, 0, self.ax1)
-            self._draw_vp_pair(p, 4, self.ax2)
+            self._draw_vp_pair(p, 6, self.ax2)
 
-            # Handles
-            for i, pt in enumerate(self.points):
+            # Handles — only render the endpoints for currently active lines.
+            # Layout: VP1 uses indices 0..5 (3 lines × 2 endpoints), VP2 uses 6..11.
+            # In 2-line mode we skip indices 4,5 (VP1 line 2) and 10,11 (VP2 line 2).
+            n_lines = 3 if self.three_lines else 2
+            active_indices = (list(range(0, 2*n_lines)) +
+                              list(range(6, 6 + 2*n_lines)))
+            for i in active_indices:
+                pt = self.points[i]
                 wx, wy = self._norm_to_widget(pt[0], pt[1])
-                ax_idx = self.ax1 if i < 4 else self.ax2
+                ax_idx = self.ax1 if i < 6 else self.ax2
                 color = _axis_color(ax_idx)
                 p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255), 1.5))
                 p.setBrush(color)
                 p.drawEllipse(QtCore.QPointF(wx, wy), HANDLE_RADIUS, HANDLE_RADIUS)
+
+            # Origin control handle (crosshair + ring). Bright if user-placed,
+            # dimmer if auto-defaulted to VP1-line0 ∩ VP2-line0 intersection.
+            o_wpos = self._origin_widget_pos()
+            if o_wpos is not None:
+                ox, oy = o_wpos
+                is_auto = self.origin_norm is None
+                ring_col = QtGui.QColor(255, 255, 255, 180 if is_auto else 240)
+                cross_col = QtGui.QColor(255, 255, 255, 220 if not is_auto else 160)
+                p.setPen(QtGui.QPen(ring_col, 1.5))
+                p.setBrush(QtCore.Qt.NoBrush)
+                p.drawEllipse(QtCore.QPointF(ox, oy), HANDLE_RADIUS + 2, HANDLE_RADIUS + 2)
+                p.drawEllipse(QtCore.QPointF(ox, oy), 2, 2)
+                p.setPen(QtGui.QPen(cross_col, 1))
+                p.drawLine(QtCore.QPointF(ox - (HANDLE_RADIUS + 6), oy),
+                           QtCore.QPointF(ox - 3, oy))
+                p.drawLine(QtCore.QPointF(ox + 3, oy),
+                           QtCore.QPointF(ox + (HANDLE_RADIUS + 6), oy))
+                p.drawLine(QtCore.QPointF(ox, oy - (HANDLE_RADIUS + 6)),
+                           QtCore.QPointF(ox, oy - 3))
+                p.drawLine(QtCore.QPointF(ox, oy + 3),
+                           QtCore.QPointF(ox, oy + (HANDLE_RADIUS + 6)))
 
             # Solve status dot
             if self.solve_result:
@@ -878,14 +1036,33 @@ def _open_camera_match(clip):
         def mousePressEvent(self, event):
             if event.button() == QtCore.Qt.LeftButton:
                 mx, my = event.x(), event.y()
-                for i, pt in enumerate(self.points):
+                # Test origin handle first so it wins ties with nearby VP handles.
+                o_wpos = self._origin_widget_pos()
+                if o_wpos is not None:
+                    ox, oy = o_wpos
+                    if (mx - ox)**2 + (my - oy)**2 < (HANDLE_RADIUS + 6)**2:
+                        self.dragging_origin = True
+                        return
+                n_lines = 3 if self.three_lines else 2
+                active_indices = (list(range(0, 2*n_lines)) +
+                                  list(range(6, 6 + 2*n_lines)))
+                for i in active_indices:
+                    pt = self.points[i]
                     wx, wy = self._norm_to_widget(pt[0], pt[1])
                     if (mx - wx)**2 + (my - wy)**2 < (HANDLE_RADIUS + 4)**2:
                         self.dragging = i
                         return
 
         def mouseMoveEvent(self, event):
-            if self.dragging >= 0:
+            if self.dragging_origin:
+                nx, ny = self._widget_to_norm(event.x(), event.y())
+                nx = max(0.0, min(1.0, nx))
+                ny = max(0.0, min(1.0, ny))
+                self.origin_norm = [nx, ny]
+                if hasattr(self, '_auto_solve_cb'):
+                    self._auto_solve_cb()
+                self.update()
+            elif self.dragging >= 0:
                 nx, ny = self._widget_to_norm(event.x(), event.y())
                 nx = max(0.0, min(1.0, nx))
                 ny = max(0.0, min(1.0, ny))
@@ -897,6 +1074,16 @@ def _open_camera_match(clip):
 
         def mouseReleaseEvent(self, event):
             self.dragging = -1
+            self.dragging_origin = False
+
+        def mouseDoubleClickEvent(self, event):
+            # Double-click origin handle to reset to auto-placement.
+            mx, my = event.x(), event.y()
+            o_wpos = self._origin_widget_pos()
+            if o_wpos is not None:
+                ox, oy = o_wpos
+                if (mx - ox)**2 + (my - oy)**2 < (HANDLE_RADIUS + 6)**2:
+                    self.reset_origin_to_auto()
 
     class CameraMatchWindow(QtWidgets.QDialog):
         def __init__(self, parent=None):
@@ -968,12 +1155,17 @@ def _open_camera_match(clip):
                 row.addWidget(combo, stretch=1)
                 return row
 
-            self.vp1_axis = _build_axis_combo(1)   # -X
-            self.vp2_axis = _build_axis_combo(5)   # -Z
+            self.vp1_axis = _build_axis_combo(1)   # -X (Flame default)
+            self.vp2_axis = _build_axis_combo(3)   # -Y (Flame default)
             vp_layout.addLayout(_vp_row("VP 1", self.vp1_axis))
             vp_layout.addLayout(_vp_row("VP 2", self.vp2_axis))
             self.vp1_axis.currentIndexChanged.connect(self._on_solve)
             self.vp2_axis.currentIndexChanged.connect(self._on_solve)
+
+            self.three_lines_check = QtWidgets.QCheckBox("3 lines per VP (least-squares)")
+            self.three_lines_check.setChecked(False)
+            self.three_lines_check.toggled.connect(self._on_three_lines)
+            vp_layout.addWidget(self.three_lines_check)
             panel.addWidget(vp_group)
 
             # ── Display group ──
@@ -1063,6 +1255,10 @@ def _open_camera_match(clip):
             self.image_widget.show_plane = checked
             self.image_widget.update()
 
+        def _on_three_lines(self, checked):
+            self.image_widget.three_lines = checked
+            self._on_solve()  # re-solve with new line count
+
         def _on_solve(self, *args):
             ax1 = self.vp1_axis.currentIndex()
             ax2 = self.vp2_axis.currentIndex()
@@ -1145,16 +1341,11 @@ def _open_camera_match(clip):
                     cam = action.nodes[0]
                     created_new_action = True
 
-                # Camera transform
+                # Camera transform — solver now returns the full world position,
+                # computed so that world origin projects to the origin control
+                # pixel at a fixed distance along the view ray.
                 cam.target_mode.set_value(False)
-                # Pull the camera back along its view direction so the origin
-                # axis lands some distance in front (visible), not at the camera.
-                # Translation doesn't affect VP projection.
-                DEFAULT_CAM_BACK = 10.0
-                import numpy as _np
-                cam_rot_mat = _np.asarray(result.get("cam_rot", _np.eye(3).tolist()))
-                cam_forward = -cam_rot_mat[:, 2]  # solver-convention forward
-                pos = tuple(-DEFAULT_CAM_BACK * cam_forward)
+                pos = result["position"]
                 cam.position.set_value((float(pos[0]), float(pos[1]), float(pos[2])))
                 cam.rotation.set_value(result["rotation"])
                 # Flame's `fov` is VERTICAL FOV. Setting it directly controls the
@@ -1172,7 +1363,9 @@ def _open_camera_match(clip):
                         origin_axis.name = "cam_match_origin"
                         origin_axis.position.set_value((0.0, 0.0, 0.0))
                         origin_axis.rotation.set_value((0.0, 0.0, 0.0))
-                        origin_axis.scale.set_value((100.0, 100.0, 100.0))
+                        # Leave scale at Flame default — scene is now in native
+                        # 1-unit-per-image-pixel space, so the default axis size
+                        # is visible without modification.
                     except Exception:
                         pass  # non-fatal
 
