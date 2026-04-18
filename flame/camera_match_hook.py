@@ -457,10 +457,8 @@ _WIRETAP_RW_FRAME = "/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 # of clipping to pure white, which matters for marking VP lines against
 # bright skies / blown windows. The sRGB display + ACES 2.0 SDR 100 nits
 # view matches a standard desktop monitor.
-_OCIO_CONFIG_PATH = (
-    "/opt/Autodesk/colour_mgmt/configs/flame_configs/2026.0/"
-    "aces2.0_config/config.ocio"
-)
+_OCIO_CONFIGS_ROOT = "/opt/Autodesk/colour_mgmt/configs/flame_configs"
+_OCIO_CONFIG_SUBPATH = "aces2.0_config/config.ocio"
 _OCIO_DISPLAY = "sRGB - Display"
 _OCIO_VIEW = "ACES 2.0 - SDR 100 nits (Rec.709)"
 _OCIO_PASSTHROUGH = "Display passthrough (sRGB / already encoded)"
@@ -538,19 +536,61 @@ def _map_wiretap_cs_to_dropdown(wt_cs):
         return "Linear Rec.709 (sRGB)"
     # Display-encoded / video — no scene-referred transform needed.
     return _OCIO_PASSTHROUGH
-_OCIO_CFG_CACHE = {"cfg": None, "loaded": False}
+_OCIO_CFG_CACHE = {"cfg": None, "loaded": False, "path": None}
 _OCIO_PROC_CACHE = {}
+
+
+def _resolve_ocio_config_path():
+    """Find the newest shipped aces2.0_config under Flame's colour_mgmt tree.
+
+    We deliberately don't honour $OCIO here: the tool's preview pipeline is
+    pinned to ACES-2.0-specific view names ("ACES 2.0 - SDR 100 nits (Rec.709)")
+    that only exist in Autodesk's aces2.0_config. A studio-custom $OCIO would
+    load but fail silently at setView time. Glob the shipped configs instead
+    so the tool auto-tracks Flame version bumps (2026.0 → 2027.0 → …).
+
+    Returns a path str or None."""
+    import glob, os, re
+    pattern = os.path.join(_OCIO_CONFIGS_ROOT, "*", _OCIO_CONFIG_SUBPATH)
+    hits = glob.glob(pattern)
+    if not hits:
+        return None
+
+    def _ver_key(p):
+        # /opt/Autodesk/colour_mgmt/configs/flame_configs/2026.0/aces2.0_config/config.ocio
+        #                                                  ^^^^^^ pull this segment
+        parts = p.split(os.sep)
+        try:
+            idx = parts.index("flame_configs")
+            ver = parts[idx + 1]
+        except (ValueError, IndexError):
+            return (0, 0, p)
+        m = re.match(r"(\d+)\.(\d+)", ver)
+        if not m:
+            return (0, 0, p)
+        return (int(m.group(1)), int(m.group(2)), p)
+
+    hits.sort(key=_ver_key, reverse=True)
+    return hits[0]
 
 
 def _get_ocio_cfg():
     if _OCIO_CFG_CACHE["loaded"]:
         return _OCIO_CFG_CACHE["cfg"]
     _OCIO_CFG_CACHE["loaded"] = True
+    path = _resolve_ocio_config_path()
+    _OCIO_CFG_CACHE["path"] = path
+    if path is None:
+        print(f"OCIO config not found under {_OCIO_CONFIGS_ROOT}/*/{_OCIO_CONFIG_SUBPATH}"
+              " — preview will use passthrough for float sources.")
+        _OCIO_CFG_CACHE["cfg"] = None
+        return None
     try:
         import PyOpenColorIO as OCIO
-        _OCIO_CFG_CACHE["cfg"] = OCIO.Config.CreateFromFile(_OCIO_CONFIG_PATH)
+        _OCIO_CFG_CACHE["cfg"] = OCIO.Config.CreateFromFile(path)
+        print(f"OCIO config: {path}")
     except Exception as e:
-        print("OCIO config load failed:", e)
+        print(f"OCIO config load failed ({path}): {e}")
         _OCIO_CFG_CACHE["cfg"] = None
     return _OCIO_CFG_CACHE["cfg"]
 
