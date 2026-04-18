@@ -100,6 +100,20 @@ def _fit_vp(lines_px):
     return (float(v[0] / v[2]), float(v[1] / v[2]))
 
 
+def _line_residual_px(p0, p1, vp):
+    """Perpendicular pixel distance from VP to the infinite line through p0,p1.
+    Zero = line extension hits VP exactly. Used to score each user-drawn line
+    against the least-squares VP fit in 3-line mode."""
+    import numpy as np
+    x0, y0 = float(p0[0]), float(p0[1])
+    x1, y1 = float(p1[0]), float(p1[1])
+    a = y0 - y1
+    b = x1 - x0
+    c = x0 * y1 - x1 * y0
+    n = np.hypot(a, b) or 1.0
+    return abs(a * vp[0] + b * vp[1] + c) / n
+
+
 def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None,
                  vp3_lines=None, quad_mode=False):
     """Solve from explicit line lists (N lines per VP, N ≥ 2). Adapts the 8-point
@@ -122,19 +136,20 @@ def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_b
     vp3_px = None
     if vp3_lines is not None and len(vp3_lines) >= 2:
         vp3_px = _fit_vp(vp3_lines)
-    # Pack 8 points for downstream: solver computes VP from pair intersection,
-    # so pick any two lines per VP that actually intersect AT the fitted VP.
-    # Trick: pass one line as the actual first line, and a second "line" that
-    # passes through the fitted VP plus a point on the true first line's far end.
-    # Simpler: pass lines[0] and lines[1] as-is; the solver's exact intersection
-    # equals the least-squares fit only when N=2. To make solver VP = fitted VP,
-    # we pass a synthetic second line that intersects line 0 at the fitted VP.
+    # Pack 8 points for downstream: _solve recomputes each VP via 2-line
+    # intersection (line_isect(ip[0..1], ip[2..3])). To force solver VP =
+    # least-squares VP, we pass two synthetic "lines" that BOTH terminate
+    # at the fitted vp — their intersection is then vp by construction.
+    # Anchors are distinct user-line endpoints for numerical stability.
+    #
+    # Why not pass user line 0 as-is: in 3-line mode the LSQ vp is generally
+    # *not* on user line 0 (it has a non-zero residual), so line_isect(line0,
+    # synthetic_through_vp) returns a point biased toward line 0, not vp.
+    # For N=2 this collapses to the exact intersection (vp is on both lines).
     def _pack(lines, vp):
-        (p0, p1) = lines[0]
-        # Second line: from any point not on line 0, passing through vp.
-        # Use the midpoint of line 1 perturbed to pass through vp.
-        (q0, _q1) = lines[1] if len(lines) > 1 else lines[0]
-        return [list(p0), list(p1), list(q0), [vp[0], vp[1]]]
+        p0 = lines[0][0]
+        q0 = lines[1][0] if len(lines) > 1 else lines[0][1]
+        return [list(p0), [vp[0], vp[1]], list(q0), [vp[0], vp[1]]]
     pts8 = _pack(vp1_lines, vp1) + _pack(vp2_lines, vp2)
     return _solve(pts8, w, h, ax1=ax1, ax2=ax2, origin_px=origin_px,
                   cam_back=cam_back, vp3_px=vp3_px)
@@ -435,31 +450,302 @@ class _NoHooks(object):
     def postExportAsset(self, *a, **k): pass
     def exportOverwriteFile(self, *a, **k): return "overwrite"
 
-def _export_frame(clip):
-    """Export one frame of a clip to a temp JPEG. Returns (image_path, tmp_dir) or (None, None)."""
-    import flame
-    import os
-    import tempfile
-    import shutil
+_WIRETAP_RW_FRAME = "/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 
-    tmp_dir = tempfile.mkdtemp(prefix="camera_match_")
-    exp = flame.PyExporter()
-    exp.foreground = True
+# Preview colour pipeline. Uses Flame's shipped ACES 2.0 config so the
+# preview goes through a real RRT+ODT — highlights roll off softly instead
+# of clipping to pure white, which matters for marking VP lines against
+# bright skies / blown windows. The sRGB display + ACES 2.0 SDR 100 nits
+# view matches a standard desktop monitor.
+_OCIO_CONFIG_PATH = (
+    "/opt/Autodesk/colour_mgmt/configs/flame_configs/2026.0/"
+    "aces2.0_config/config.ocio"
+)
+_OCIO_DISPLAY = "sRGB - Display"
+_OCIO_VIEW = "ACES 2.0 - SDR 100 nits (Rec.709)"
+_OCIO_PASSTHROUGH = "Display passthrough (sRGB / already encoded)"
+_OCIO_SOURCE_OPTIONS = [
+    _OCIO_PASSTHROUGH,        # data is already display-encoded — no transform
+    "ARRI LogC4",
+    "ARRI LogC3 (EI800)",
+    "Linear ARRI Wide Gamut 4",
+    "Linear ARRI Wide Gamut 3",
+    "ACEScg",
+    "ACES2065-1",
+    "Linear Rec.709 (sRGB)",
+    "sRGB Encoded Rec.709 (sRGB)",
+]
+_OCIO_DEFAULT_SOURCE = _OCIO_PASSTHROUGH
+
+
+def _clip_wiretap_colour_space(clip):
+    """Read the wiretap-reported colour space string for a PyClipNode (or its
+    inner PyClip). Returns None on failure. Cheap — opens its own short-lived
+    Wiretap session."""
     try:
-        exp.export(clip, _JPEG_PRESET, tmp_dir, hooks=_NoHooks())
+        py_clip = clip.clip if hasattr(clip, "clip") else clip
+        node_id = py_clip.get_wiretap_node_id()
+    except Exception:
+        return None
+    if not node_id:
+        return None
+    try:
+        sdk = "/opt/Autodesk/wiretap/tools/current/python"
+        if sdk not in sys.path:
+            sys.path.insert(0, sdk)
+        from adsk.libwiretapPythonClientAPI import (
+            WireTapClientInit, WireTapClientUninit,
+            WireTapServerHandle, WireTapNodeHandle, WireTapClipFormat,
+        )
     except Exception as e:
-        print("Export error:", e)
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return None, None
+        print("Wiretap SDK import failed:", e)
+        return None
+    WireTapClientInit()
+    try:
+        server = WireTapServerHandle("127.0.0.1:IFFFS")
+        nh = WireTapNodeHandle(server, node_id)
+        fmt = WireTapClipFormat()
+        if not nh.getClipFormat(fmt):
+            return None
+        return fmt.colourSpace() or None
+    except Exception as e:
+        print("Wiretap colour-space probe failed:", e)
+        return None
+    finally:
+        WireTapClientUninit()
 
-    # Find the exported file
-    for root, dirs, files in os.walk(tmp_dir):
-        for f in files:
-            if f.lower().endswith((".jpg", ".jpeg")):
-                return os.path.join(root, f), tmp_dir
 
-    shutil.rmtree(tmp_dir, ignore_errors=True)
-    return None, None
+def _map_wiretap_cs_to_dropdown(wt_cs):
+    """Best-effort map from Wiretap's colour space string to one of the
+    _OCIO_SOURCE_OPTIONS entries. Returns the passthrough option for any
+    obviously display-encoded source (sRGB / Rec.709 video / unknown)."""
+    if not wt_cs:
+        return _OCIO_PASSTHROUGH
+    s = wt_cs.lower()
+    if "logc4" in s:
+        return "ARRI LogC4"
+    if "logc3" in s or "logc " in s or s.startswith("logc"):
+        return "ARRI LogC3 (EI800)"
+    if "arri wide gamut 4" in s and "log" not in s:
+        return "Linear ARRI Wide Gamut 4"
+    if "arri wide gamut 3" in s and "log" not in s:
+        return "Linear ARRI Wide Gamut 3"
+    if "acescg" in s:
+        return "ACEScg"
+    if "aces2065" in s or "ap0" in s:
+        return "ACES2065-1"
+    if ("linear" in s and ("rec.709" in s or "rec709" in s or "srgb" in s)):
+        return "Linear Rec.709 (sRGB)"
+    # Display-encoded / video — no scene-referred transform needed.
+    return _OCIO_PASSTHROUGH
+_OCIO_CFG_CACHE = {"cfg": None, "loaded": False}
+_OCIO_PROC_CACHE = {}
+
+
+def _get_ocio_cfg():
+    if _OCIO_CFG_CACHE["loaded"]:
+        return _OCIO_CFG_CACHE["cfg"]
+    _OCIO_CFG_CACHE["loaded"] = True
+    try:
+        import PyOpenColorIO as OCIO
+        _OCIO_CFG_CACHE["cfg"] = OCIO.Config.CreateFromFile(_OCIO_CONFIG_PATH)
+    except Exception as e:
+        print("OCIO config load failed:", e)
+        _OCIO_CFG_CACHE["cfg"] = None
+    return _OCIO_CFG_CACHE["cfg"]
+
+
+def _get_ocio_processor(src_cs):
+    """CPU processor: src colorspace → display/view with tonemapped rolloff.
+    Cached per source. Uses DisplayViewTransform so the ACES RRT+ODT is
+    actually applied — a plain getProcessor(src, dst) would just colour-space
+    convert and hard-clip."""
+    if src_cs in _OCIO_PROC_CACHE:
+        return _OCIO_PROC_CACHE[src_cs]
+    cfg = _get_ocio_cfg()
+    proc = None
+    if cfg is not None:
+        try:
+            import PyOpenColorIO as OCIO
+            dvt = OCIO.DisplayViewTransform()
+            dvt.setSrc(src_cs)
+            dvt.setDisplay(_OCIO_DISPLAY)
+            dvt.setView(_OCIO_VIEW)
+            proc = cfg.getProcessor(dvt).getDefaultCPUProcessor()
+        except Exception as e:
+            print(f"OCIO DVT {src_cs} -> {_OCIO_DISPLAY}/{_OCIO_VIEW} failed: {e}")
+            proc = None
+    _OCIO_PROC_CACHE[src_cs] = proc
+    return proc
+
+
+def _read_source_frame(clip, target_frame=None, source_colourspace=None):
+    """Read one frame of a clip using Flame's Wiretap CLI.
+
+    The source codec may be Sony/ARRI-proprietary MXF that cv2/ffmpeg can't
+    decode, so we go through Flame's decoder via the wiretap_rw_frame tool:
+    it pulls a single frame by wiretap node id, writes raw pixels (or a
+    standard image container if the source is a soft-imported still) to
+    disk, and we decode that.
+
+    When source_colourspace is set (e.g. "ARRI LogC4"), the float pixel
+    buffer is run through an OCIO transform to sRGB for a faithful preview.
+    When None or "Gamma 2.2 (no OCIO)", falls back to a naive pow(x, 1/2.2)
+    display encode.
+
+    Returns (img_rgb_np_uint8, width, height) or (None, None, None).
+    Frame indexing: target_frame is in clip-source frame numbering
+    (e.g. 1001..4667 for start_frame=1001); we convert to the 0-based wiretap
+    frame_index by subtracting start_frame.
+    """
+    import os
+    import subprocess
+    import tempfile
+    import numpy as np
+    import cv2
+
+    if not os.path.isfile(_WIRETAP_RW_FRAME):
+        print("wiretap_rw_frame not found:", _WIRETAP_RW_FRAME)
+        return None, None, None
+
+    try:
+        py_clip = clip.clip
+        node_id = py_clip.get_wiretap_node_id()
+    except Exception as e:
+        print("get_wiretap_node_id failed:", e)
+        return None, None, None
+    if not node_id:
+        print("Clip has empty wiretap node id — is it in the Media Panel?")
+        return None, None, None
+
+    try:
+        duration = int(clip.duration.get_value())
+        start_frame = int(py_clip.start_frame)
+    except Exception:
+        duration, start_frame = 1, 1
+
+    if target_frame is None:
+        target_frame = start_frame
+    target_frame = max(start_frame, min(start_frame + duration - 1, int(target_frame)))
+    frame_index = target_frame - start_frame  # 0-based
+
+    try:
+        res = clip.resolution.get_value()
+        w, h, bit_depth = int(res.width), int(res.height), int(res.bit_depth)
+    except Exception as e:
+        print("resolution read failed:", e)
+        return None, None, None
+
+    with tempfile.TemporaryDirectory(prefix="camera_match_wt_") as tmp:
+        out_base = os.path.join(tmp, "frame")
+        cmd = [_WIRETAP_RW_FRAME, "-n", node_id, "-i", str(frame_index), "-f", out_base]
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            print("wiretap_rw_frame timed out")
+            return None, None, None
+        except Exception as e:
+            print("wiretap_rw_frame exec error:", e)
+            return None, None, None
+
+        files = [f for f in os.listdir(tmp) if f.startswith("frame")]
+        if not files:
+            print("wiretap_rw_frame wrote no output. stdout:", r.stdout.strip(),
+                  "stderr:", r.stderr.strip())
+            return None, None, None
+        raw = open(os.path.join(tmp, files[0]), "rb").read()
+
+    # Magic-byte sniff: wiretap may hand back a standard image container for
+    # soft-imported stills (tiff/png/jpg/exr/dpx), or a raw pixel buffer for
+    # transcoded / proxy-rendered sources.
+    head = raw[:8]
+    fmt = None
+    if head[:8] == b"\x89PNG\r\n\x1a\n":
+        fmt = "png"
+    elif head[:2] == b"\xff\xd8":
+        fmt = "jpg"
+    elif head[:4] in (b"II*\x00", b"MM\x00*"):
+        fmt = "tiff"
+    elif head[:4] == b"\x76\x2f\x31\x01":
+        fmt = "exr"
+    elif head[:4] in (b"SDPX", b"XPDS"):
+        fmt = "dpx"
+
+    if fmt is not None:
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
+        if img is None:
+            print(f"cv2.imdecode failed for container fmt={fmt}")
+            return None, None, None
+        if img.ndim == 2:
+            img = np.stack([img, img, img], axis=-1)
+        if img.shape[-1] == 4:
+            img = img[..., :3]
+        if img.dtype == np.uint16:
+            img = (img // 257).astype(np.uint8)
+        elif img.dtype in (np.float32, np.float64):
+            img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        return rgb, int(rgb.shape[1]), int(rgb.shape[0])
+
+    # Raw pixel buffer. The file observed to be `header + W*H*C*bytes_per_sample`;
+    # slicing the tail gives the pixel payload regardless of header size.
+    channels = 3  # Flame wiretap delivers RGB for ClipFormat(RGB)
+    if bit_depth == 32:
+        dtype = np.float32
+    elif bit_depth == 16:
+        # Could be half-float or uint16; default to half since Flame's internal
+        # scene bit-depth is usually float. If that's wrong for a given clip
+        # we'll see it flipped saturated vs dim and can revisit.
+        dtype = np.float16
+    elif bit_depth == 8:
+        dtype = np.uint8
+    else:
+        print(f"Unhandled wiretap raw bit_depth: {bit_depth}")
+        return None, None, None
+    sample_size = np.dtype(dtype).itemsize
+    expected = w * h * channels * sample_size
+    if len(raw) < expected:
+        print(f"Raw buffer too small: got {len(raw)} bytes, expected ≥ {expected}")
+        return None, None, None
+    payload = raw[-expected:]
+    arr = np.frombuffer(payload, dtype=dtype).reshape(h, w, channels)
+
+    # Wiretap's raw buffer is bottom-up (OpenGL convention) AND delivered in
+    # GBR channel order despite the "rgb_float_le" format tag (empirically
+    # verified: full reverse left G/B swapped, while picking [2,0,1] gives
+    # correct R/G/B for Qt's Format_RGB888). Flip vertically and re-order
+    # channels to RGB in one shot.
+    arr = np.ascontiguousarray(arr[::-1][..., [2, 0, 1]])
+
+    # uint8 path — source was already 8-bit, almost always display-encoded
+    # (Rec.709 video / sRGB JPEG). Pass through directly.
+    if arr.dtype == np.uint8:
+        return arr, w, h
+
+    # Float path. Three flavors:
+    #   - Display passthrough → clip to 0..1 and quantise; data is already
+    #     in display-referred form, no transform should touch it.
+    #   - Known OCIO source → DisplayViewTransform via ACES 2.0 SDR view
+    #     (gives soft highlight rolloff, gamut compression).
+    #   - OCIO unavailable / processor missing → same passthrough behavior.
+    a = np.ascontiguousarray(arr.astype(np.float32))
+    is_passthrough = (
+        source_colourspace is None or source_colourspace == _OCIO_PASSTHROUGH
+    )
+    if not is_passthrough:
+        proc = _get_ocio_processor(source_colourspace)
+        if proc is not None:
+            try:
+                proc.applyRGB(a)
+                rgb = (np.clip(a, 0.0, 1.0) * 255.0).astype(np.uint8)
+                return rgb, w, h
+            except Exception as e:
+                print(f"OCIO applyRGB failed for {source_colourspace}: {e}; "
+                      "falling back to passthrough")
+    a = np.clip(a, 0.0, 1.0)
+    rgb = (a * 255.0).astype(np.uint8)
+    return rgb, w, h
 
 
 # =========================================================================
@@ -474,27 +760,24 @@ def _open_camera_match(clip):
     import cv2
     from PySide6 import QtWidgets, QtGui, QtCore
 
-    # Export frame
-    img_path, tmp_dir = _export_frame(clip)
-    if img_path is None:
+    # Probe Wiretap for the clip's tagged colour space and pick the matching
+    # source-space option for the OCIO transform. Falls back to display
+    # passthrough when the tag is missing or already display-encoded.
+    wt_cs = _clip_wiretap_colour_space(clip)
+    initial_source_cs = _map_wiretap_cs_to_dropdown(wt_cs)
+
+    # Read one frame directly from the clip's source media. Defaults to the
+    # clip's first source frame; user flips frames via the side-panel spinner.
+    img_rgb, img_w, img_h = _read_source_frame(
+        clip, source_colourspace=initial_source_cs)
+    if img_rgb is None:
         flame.messages.show_in_dialog(
             title="Camera Match",
-            message="Could not export frame from clip.",
+            message="Could not read frame from clip source. "
+                    "Check the clip's media path is accessible.",
             type="error", buttons=["OK"])
         return
-
-    # Load image
-    img_bgr = cv2.imread(img_path)
-    if img_bgr is None:
-        flame.messages.show_in_dialog(
-            title="Camera Match",
-            message="Could not read exported image.",
-            type="error", buttons=["OK"])
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        return
-
-    img_h, img_w = img_bgr.shape[:2]
-    img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+    tmp_dir = None  # no longer needed — we read media directly off disk
 
     HANDLE_RADIUS = 7
 
@@ -611,6 +894,16 @@ def _open_camera_match(clip):
                 img_rgb.data, img_w, img_h, img_w * 3,
                 QtGui.QImage.Format_RGB888
             ).copy()  # copy so numpy can be freed
+
+        def reload_image(self, img_rgb_np):
+            """Swap the backing image (e.g. when the user switches frames).
+            Assumes the new image has the same dimensions as the original —
+            resolutions don't change frame-to-frame within a clip."""
+            self._qimage = QtGui.QImage(
+                img_rgb_np.data, img_w, img_h, img_w * 3,
+                QtGui.QImage.Format_RGB888
+            ).copy()
+            self.update()
 
         def _norm_to_widget(self, nx, ny):
             """Convert normalized image coords to widget coords."""
@@ -858,6 +1151,32 @@ def _open_camera_match(clip):
                     nly = neg_y - uy * 16 + py_ * 12
                     self._draw_label_pill(painter, nlx, nly, neg_label, color, primary=False)
 
+                # Per-line residual (3-line mode only — 2-line mode is exact).
+                # Pixel-space perpendicular distance from the fitted VP to the
+                # line through this segment's endpoints. Zero = line passes
+                # exactly through VP; large = that line is "lying" to the fit.
+                if self.three_lines and vp_px is not None:
+                    p0_img = self._norm_to_px(*self.points[base_idx + i*2])
+                    p1_img = self._norm_to_px(*self.points[base_idx + i*2 + 1])
+                    resid = _line_residual_px(p0_img, p1_img, vp_px)
+                    if resid < 1.0:
+                        rtext = f"Δ{resid:.2f}px"
+                    elif resid < 10.0:
+                        rtext = f"Δ{resid:.1f}px"
+                    else:
+                        rtext = f"Δ{int(round(resid))}px"
+                    # Place at t=0.35 along the segment with a perpendicular
+                    # offset so it never collides with handles (t=0,1) or the
+                    # chevron (t=0.62). Side chosen so we don't fight the +/−
+                    # pills on line 0.
+                    dx, dy = ex - sx, ey - sy
+                    L = math.hypot(dx, dy) or 1.0
+                    ux, uy = dx / L, dy / L
+                    px_, py_ = -uy, ux
+                    lx = sx + ux * L * 0.35 - px_ * 14
+                    ly = sy + uy * L * 0.35 - py_ * 14
+                    self._draw_label_pill(painter, lx, ly, rtext, color, primary=False)
+
         def _draw_quad_synth_pair(self, painter, ax_idx):
             """Draw VP2 as the two synthesized quad edges (A→C, B→D) where
             (A,B) is VP1.line0 and (C,D) is VP1.line1. No handles — the four
@@ -1000,6 +1319,75 @@ def _open_camera_match(clip):
                 nx = (ipx / a + 1.0) / 2.0
                 ny = (1.0 - ipy) / 2.0
             return self._norm_to_widget(nx, ny)
+
+        def _back_project_to_plane(self, px, py):
+            """Back-project an image pixel through the solved camera onto the
+            VP-defined plane through world origin. Returns (x,y,z) or None if
+            the ray is parallel to the plane or hits behind the camera.
+            """
+            if self.solve_result is None:
+                return None
+            import numpy as np
+            a = img_w / img_h
+            rx, ry = px / img_w, py / img_h
+            if a >= 1.0:
+                ipx = -1.0 + 2.0 * rx
+                ipy = (1.0 - 2.0 * ry) / a
+            else:
+                ipx = (-1.0 + 2.0 * rx) * a
+                ipy = 1.0 - 2.0 * ry
+            # Principal point in image plane (0,0 unless VP3/FromThirdVP active).
+            pp_ipx, pp_ipy = 0.0, 0.0
+            pp_px = self.solve_result.get("principal_point_px")
+            if pp_px is not None:
+                pp_rx, pp_ry = pp_px[0] / img_w, pp_px[1] / img_h
+                if a >= 1.0:
+                    pp_ipx = -1.0 + 2.0 * pp_rx
+                    pp_ipy = (1.0 - 2.0 * pp_ry) / a
+                else:
+                    pp_ipx = (-1.0 + 2.0 * pp_rx) * a
+                    pp_ipy = 1.0 - 2.0 * pp_ry
+            f = self.solve_result["f_relative"]
+            ray_cam = np.array([ipx - pp_ipx, ipy - pp_ipy, -f], dtype=float)
+            cam_rot = np.asarray(self.solve_result["cam_rot"])
+            cam_pos = np.asarray(self.solve_result["position"], dtype=float)
+            ray_world = cam_rot @ ray_cam
+            _AX = {0:[1,0,0],1:[-1,0,0],2:[0,1,0],3:[0,-1,0],4:[0,0,1],5:[0,0,-1]}
+            n = np.cross(np.asarray(_AX[self.solve_result["ax1"]], dtype=float),
+                         np.asarray(_AX[self.solve_result["ax2"]], dtype=float))
+            nd = float(np.dot(n, ray_world))
+            if abs(nd) < 1e-9:
+                return None  # ray parallel to plane
+            t = -float(np.dot(n, cam_pos)) / nd
+            if t <= 0:
+                return None  # behind camera
+            hit = cam_pos + t * ray_world
+            return (float(hit[0]), float(hit[1]), float(hit[2]))
+
+        def endpoint_axes(self):
+            """Enumerate all currently-active line endpoints back-projected onto
+            the VP plane. Returns a list of (label, (x,y,z)) tuples, skipping
+            any endpoint whose ray doesn't hit the plane in front of the camera.
+            """
+            if self.solve_result is None:
+                return []
+            n = 3 if self.three_lines else 2
+            groups = [("vp1", 0, n)]
+            if not self.quad_mode:
+                groups.append(("vp2", 6, n))
+            if self.use_vp3:
+                groups.append(("vp3", 12, 2))
+            out = []
+            for tag, base, count in groups:
+                for li in range(count):
+                    for ei, suffix in ((0, "a"), (1, "b")):
+                        idx = base + 2 * li + ei
+                        px, py = self._norm_to_px(*self.points[idx])
+                        hit = self._back_project_to_plane(px, py)
+                        if hit is None:
+                            continue
+                        out.append((f"knot_{tag}_L{li}{suffix}", hit))
+            return out
 
         def _plane_basis(self):
             """Return two unit world-axis vectors that span the VP-defined plane."""
@@ -1322,6 +1710,56 @@ def _open_camera_match(clip):
             subtitle.setWordWrap(True)
             panel.addWidget(subtitle)
 
+            # Frame spinner — only useful when the clip has more than one frame.
+            # Range spans the clip's source frame numbering (e.g. 1001..4667 for
+            # a 3667-frame shot starting at 1001). Default to the current mark
+            # if set, else the first frame.
+            try:
+                _dur = int(clip.duration.get_value())
+            except Exception:
+                _dur = 1
+            try:
+                _start = int(clip.clip.start_frame)
+            except Exception:
+                _start = 1
+            if _dur > 1:
+                frame_row = QtWidgets.QHBoxLayout()
+                frame_row.setSpacing(8)
+                fl = QtWidgets.QLabel("Frame")
+                fl.setObjectName("fieldLabel")
+                fl.setFixedWidth(40)
+                self.frame_spin = QtWidgets.QSpinBox()
+                self.frame_spin.setRange(_start, _start + _dur - 1)
+                self.frame_spin.setValue(_start)
+                self.frame_spin.setKeyboardTracking(False)  # fire only on commit
+                self.frame_spin.valueChanged.connect(self._on_frame_changed)
+                frame_row.addWidget(fl)
+                frame_row.addWidget(self.frame_spin, stretch=1)
+                panel.addLayout(frame_row)
+
+            # Source colourspace selector — feeds the OCIO preview transform
+            # to sRGB so log/linear footage looks correct instead of washed-out.
+            cs_row = QtWidgets.QHBoxLayout()
+            cs_row.setSpacing(8)
+            cs_lbl = QtWidgets.QLabel("Source")
+            cs_lbl.setObjectName("fieldLabel")
+            cs_lbl.setFixedWidth(40)
+            self.cs_combo = QtWidgets.QComboBox()
+            for opt in _OCIO_SOURCE_OPTIONS:
+                self.cs_combo.addItem(opt)
+            try:
+                self.cs_combo.setCurrentText(initial_source_cs)
+            except Exception:
+                self.cs_combo.setCurrentText(_OCIO_DEFAULT_SOURCE)
+            # Show the raw Wiretap tag in the tooltip so the user can sanity-
+            # check the auto-detect against the clip's actual metadata.
+            if wt_cs:
+                self.cs_combo.setToolTip(f"Wiretap colour space: {wt_cs}")
+            self.cs_combo.currentTextChanged.connect(self._on_source_cs_changed)
+            cs_row.addWidget(cs_lbl)
+            cs_row.addWidget(self.cs_combo, stretch=1)
+            panel.addLayout(cs_row)
+
             sep1 = QtWidgets.QFrame()
             sep1.setObjectName("sep")
             sep1.setFrameShape(QtWidgets.QFrame.HLine)
@@ -1428,6 +1866,19 @@ def _open_camera_match(clip):
             self.lbl_status.setObjectName("fieldLabel")
             panel.addWidget(self.lbl_status)
 
+            # ── Apply options ──
+            apply_group = QtWidgets.QGroupBox("APPLY OPTIONS")
+            apply_layout = QtWidgets.QVBoxLayout(apply_group)
+            apply_layout.setSpacing(6)
+            self.drop_axes_check = QtWidgets.QCheckBox("Drop axes at line endpoints")
+            self.drop_axes_check.setChecked(False)
+            self.drop_axes_check.setToolTip(
+                "Back-project every VP line endpoint onto the solved plane and "
+                "drop an Axis at each world position. Useful for anchoring "
+                "geometry to real scene features.")
+            apply_layout.addWidget(self.drop_axes_check)
+            panel.addWidget(apply_group)
+
             # Spacer + buttons
             panel.addStretch(1)
 
@@ -1513,7 +1964,9 @@ def _open_camera_match(clip):
             def _val(x):
                 return x.get_value() if hasattr(x, "get_value") else str(x)
 
-            # Find Action nodes with cameras
+            # Find Action nodes with cameras. Skip the built-in "Perspective"
+            # viewport camera — it drives the Action 3D-view tumble camera, not
+            # the rendered scene; overwriting it is almost never the intent.
             cameras = []
             try:
                 for node in flame.batch.nodes:
@@ -1521,9 +1974,12 @@ def _open_camera_match(clip):
                         continue
                     action_name = _val(node.name)
                     for inode in node.nodes:
-                        if "Camera" in _val(inode.type):
-                            cam_name = _val(inode.name)
-                            cameras.append((node, inode, f"{action_name} > {cam_name}"))
+                        if "Camera" not in _val(inode.type):
+                            continue
+                        cam_name = _val(inode.name)
+                        if cam_name == "Perspective":
+                            continue
+                        cameras.append((node, inode, f"{action_name} > {cam_name}"))
             except Exception as e:
                 self.lbl_status.setText(f"● Apply failed: {e}")
                 self.lbl_status.setObjectName("statusBad")
@@ -1566,10 +2022,28 @@ def _open_camera_match(clip):
                 # default film back is 16mm Super 16.)
                 cam.fov.set_value(float(result["vfov_deg"]))
 
-                # When creating a new Action, drop a small Axis at world origin so
-                # the user can immediately see where the solved origin landed and
-                # verify the axis directions against the plate.
+                # When creating a new Action: wire the calibrated clip into the
+                # Back input, park the node near the clip in the schematic, and
+                # drop a small origin Axis so the user can see where the solved
+                # world origin landed.
                 if created_new_action:
+                    # Back input wiring. "Default" on an Action input socket
+                    # maps to Background (= Back) per flame.batch.connect_nodes
+                    # docs, so this works without needing the clip's specific
+                    # output socket name (which defaults to the clip's name).
+                    try:
+                        flame.batch.connect_nodes(clip, "Default", action, "Default")
+                    except Exception:
+                        pass  # non-fatal: user can wire manually
+                    # Schematic placement: Flame's pos_x/pos_y are int-typed
+                    # PyAttributes; must go through set_value() with int. Direct
+                    # assignment or float values raise a C++ converter error.
+                    try:
+                        action.pos_x.set_value(int(clip.pos_x.get_value()) + 370)
+                        action.pos_y.set_value(int(clip.pos_y.get_value()))
+                    except Exception:
+                        pass
+                    # Origin marker
                     try:
                         origin_axis = action.create_node("Axis")
                         origin_axis.name = "cam_match_origin"
@@ -1580,6 +2054,23 @@ def _open_camera_match(clip):
                         # is visible without modification.
                     except Exception:
                         pass  # non-fatal
+
+                # Optional: drop an Axis at every back-projected line endpoint.
+                # Checked by default off — user opts in when they want scene
+                # anchors at the grout intersections / VP line endpoints.
+                dropped_axes = 0
+                if self.drop_axes_check.isChecked():
+                    for label, pos_w in self.image_widget.endpoint_axes():
+                        try:
+                            ax = action.create_node("Axis")
+                            ax.name = label
+                            ax.position.set_value((float(pos_w[0]),
+                                                   float(pos_w[1]),
+                                                   float(pos_w[2])))
+                            ax.rotation.set_value((0.0, 0.0, 0.0))
+                            dropped_axes += 1
+                        except Exception:
+                            pass  # non-fatal, skip this endpoint
 
                 # Readback for trace
                 applied = {
@@ -1610,7 +2101,10 @@ def _open_camera_match(clip):
                 except Exception:
                     pass
 
-                self.lbl_status.setText("● Applied to camera")
+                if dropped_axes:
+                    self.lbl_status.setText(f"● Applied — {dropped_axes} axes dropped")
+                else:
+                    self.lbl_status.setText("● Applied to camera")
                 self.lbl_status.setObjectName("statusOK")
             except Exception as e:
                 self.lbl_status.setText(f"● Apply failed: {e}")
@@ -1618,10 +2112,38 @@ def _open_camera_match(clip):
             self.lbl_status.style().unpolish(self.lbl_status)
             self.lbl_status.style().polish(self.lbl_status)
 
+        def _current_frame(self):
+            return int(self.frame_spin.value()) if hasattr(self, "frame_spin") else None
+
+        def _on_frame_changed(self, new_frame):
+            """Re-read the requested source frame via the current source
+            colourspace and swap the viewport image. VP lines and solve state
+            are preserved; on failure the old image stays and status shows."""
+            src_cs = self.cs_combo.currentText() if hasattr(self, "cs_combo") else None
+            rgb, _w, _h = _read_source_frame(
+                clip, target_frame=int(new_frame), source_colourspace=src_cs)
+            if rgb is None:
+                self.lbl_status.setText(f"● Frame {new_frame} read failed")
+                self.lbl_status.setObjectName("statusBad")
+                self.lbl_status.style().unpolish(self.lbl_status)
+                self.lbl_status.style().polish(self.lbl_status)
+                return
+            self.image_widget.reload_image(rgb)
+
+        def _on_source_cs_changed(self, _text):
+            """Re-decode the currently-visible frame with the new source
+            colourspace. Cheaper than a full reopen, no state lost."""
+            fr = self._current_frame()
+            if fr is not None:
+                self._on_frame_changed(fr)
+            else:
+                # Single-frame/stills clip — re-read with no target frame.
+                src_cs = self.cs_combo.currentText()
+                rgb, _w, _h = _read_source_frame(clip, source_colourspace=src_cs)
+                if rgb is not None:
+                    self.image_widget.reload_image(rgb)
+
         def closeEvent(self, event):
-            # Clean up temp files
-            if tmp_dir and os.path.exists(tmp_dir):
-                shutil.rmtree(tmp_dir, ignore_errors=True)
             event.accept()
 
     # Show the window
@@ -1642,24 +2164,28 @@ def _scope_batch_clip(selection):
     return False
 
 def _launch_camera_match(selection):
-    """Launch the Camera Match window for the selected clip."""
+    """Launch the Camera Match window for the selected clip.
+
+    Passes the PyClipNode (not its inner PyClip) through to _open_camera_match
+    — downstream code needs both the batch node (for pos_x, connect_nodes on
+    Apply) and the inner PyClip (for wiretap node id, start_frame on read).
+    """
     import flame
 
-    # Get PyClip from the selected PyClipNode via .clip attribute
-    clip = None
+    clip_node = None
     for item in selection:
         if isinstance(item, flame.PyClipNode):
-            clip = item.clip
+            clip_node = item
             break
 
-    if clip is None:
+    if clip_node is None:
         flame.messages.show_in_dialog(
             title="Camera Match",
             message="Select a Clip node in Batch.",
             type="error", buttons=["OK"])
         return
 
-    _open_camera_match(clip)
+    _open_camera_match(clip_node)
 
 def get_batch_custom_ui_actions():
     return [
