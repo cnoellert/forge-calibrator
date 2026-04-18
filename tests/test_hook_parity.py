@@ -23,7 +23,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from flame import camera_match_hook as hook
-from solver.solver import solve_2vp
+from forge_core.solver.solver import solve_2vp
 
 
 W, H = 5184, 3456

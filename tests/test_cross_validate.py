@@ -12,9 +12,9 @@ import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from solver.coordinates import px_to_image_plane
-from solver.math_util import line_intersection
-from solver.solver import (
+from forge_core.solver.coordinates import px_to_image_plane
+from forge_core.solver.math_util import line_intersection
+from forge_core.solver.solver import (
     compute_focal_length,
     compute_camera_rotation_matrix,
     compute_view_transform,

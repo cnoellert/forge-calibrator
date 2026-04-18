@@ -16,9 +16,9 @@ import os
 # Add parent dir to path so solver package is importable
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from solver.coordinates import px_to_image_plane, image_plane_to_px
-from solver.math_util import line_intersection, orthogonal_projection_on_line, orthocentre
-from solver.solver import (
+from forge_core.solver.coordinates import px_to_image_plane, image_plane_to_px
+from forge_core.solver.math_util import line_intersection, orthogonal_projection_on_line, orthocentre
+from forge_core.solver.solver import (
     compute_focal_length,
     compute_camera_rotation_matrix,
     axis_assignment_matrix,
