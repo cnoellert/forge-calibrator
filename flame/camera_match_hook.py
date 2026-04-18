@@ -38,6 +38,22 @@ def _ensure_forge_env():
         return False
 
 
+def _ensure_forge_core_on_path():
+    """Put the parent directory of forge_core/ on sys.path.
+
+    forge_core/ ships as a sibling of this file:
+        dev:     <repo>/forge_core            (sibling of <repo>/flame/)
+        install: /opt/Autodesk/shared/python/forge_core
+                                              (sibling of /opt/…/camera_match/)
+    In both layouts, the parent of this file's directory is also the parent
+    of forge_core/, so adding it to sys.path makes `import forge_core` work.
+    """
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    parent = os.path.dirname(this_dir)
+    if parent not in sys.path:
+        sys.path.insert(0, parent)
+
+
 # =========================================================================
 # Inline solver — all numpy usage contained in _solve()
 # =========================================================================
@@ -456,9 +472,8 @@ _WIRETAP_RW_FRAME = "/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 # preview goes through a real RRT+ODT — highlights roll off softly instead
 # of clipping to pure white, which matters for marking VP lines against
 # bright skies / blown windows. The sRGB display + ACES 2.0 SDR 100 nits
-# view matches a standard desktop monitor.
-_OCIO_CONFIGS_ROOT = "/opt/Autodesk/colour_mgmt/configs/flame_configs"
-_OCIO_CONFIG_SUBPATH = "aces2.0_config/config.ocio"
+# view matches a standard desktop monitor. Config-path resolution lives in
+# forge_core.colour.ocio.resolve_flame_aces2_config().
 _OCIO_DISPLAY = "sRGB - Display"
 _OCIO_VIEW = "ACES 2.0 - SDR 100 nits (Rec.709)"
 _OCIO_PASSTHROUGH = "Display passthrough (sRGB / already encoded)"
@@ -536,87 +551,37 @@ def _map_wiretap_cs_to_dropdown(wt_cs):
         return "Linear Rec.709 (sRGB)"
     # Display-encoded / video — no scene-referred transform needed.
     return _OCIO_PASSTHROUGH
-_OCIO_CFG_CACHE = {"cfg": None, "loaded": False, "path": None}
-_OCIO_PROC_CACHE = {}
+# OCIO pipeline is lazy-constructed on first use. The reusable OcioPipeline
+# class lives in forge_core.colour.ocio; the hook just keeps the Flame-specific
+# config-path resolver + the display/view names its preview is pinned to.
+_OCIO_PIPELINE = None
 
 
-def _resolve_ocio_config_path():
-    """Find the newest shipped aces2.0_config under Flame's colour_mgmt tree.
+def _get_ocio_pipeline():
+    """Lazy-build the OcioPipeline for the hook's fixed display/view target.
 
-    We deliberately don't honour $OCIO here: the tool's preview pipeline is
-    pinned to ACES-2.0-specific view names ("ACES 2.0 - SDR 100 nits (Rec.709)")
-    that only exist in Autodesk's aces2.0_config. A studio-custom $OCIO would
-    load but fail silently at setView time. Glob the shipped configs instead
-    so the tool auto-tracks Flame version bumps (2026.0 → 2027.0 → …).
+    Kept as a module-level singleton so repeated _read_source_frame calls
+    reuse the cached OCIO config and per-source processors across UI events."""
+    global _OCIO_PIPELINE
+    if _OCIO_PIPELINE is not None:
+        return _OCIO_PIPELINE
 
-    Returns a path str or None."""
-    import glob, os, re
-    pattern = os.path.join(_OCIO_CONFIGS_ROOT, "*", _OCIO_CONFIG_SUBPATH)
-    hits = glob.glob(pattern)
-    if not hits:
-        return None
+    # Resolve the hook's sys.path so forge_core (sibling of flame/) is importable.
+    # Production install lands camera_match.py at /opt/Autodesk/shared/python/
+    # camera_match/ — forge_core/ must ship alongside.
+    _ensure_forge_core_on_path()
 
-    def _ver_key(p):
-        # /opt/Autodesk/colour_mgmt/configs/flame_configs/2026.0/aces2.0_config/config.ocio
-        #                                                  ^^^^^^ pull this segment
-        parts = p.split(os.sep)
-        try:
-            idx = parts.index("flame_configs")
-            ver = parts[idx + 1]
-        except (ValueError, IndexError):
-            return (0, 0, p)
-        m = re.match(r"(\d+)\.(\d+)", ver)
-        if not m:
-            return (0, 0, p)
-        return (int(m.group(1)), int(m.group(2)), p)
-
-    hits.sort(key=_ver_key, reverse=True)
-    return hits[0]
-
-
-def _get_ocio_cfg():
-    if _OCIO_CFG_CACHE["loaded"]:
-        return _OCIO_CFG_CACHE["cfg"]
-    _OCIO_CFG_CACHE["loaded"] = True
-    path = _resolve_ocio_config_path()
-    _OCIO_CFG_CACHE["path"] = path
-    if path is None:
-        print(f"OCIO config not found under {_OCIO_CONFIGS_ROOT}/*/{_OCIO_CONFIG_SUBPATH}"
-              " — preview will use passthrough for float sources.")
-        _OCIO_CFG_CACHE["cfg"] = None
-        return None
-    try:
-        import PyOpenColorIO as OCIO
-        _OCIO_CFG_CACHE["cfg"] = OCIO.Config.CreateFromFile(path)
-        print(f"OCIO config: {path}")
-    except Exception as e:
-        print(f"OCIO config load failed ({path}): {e}")
-        _OCIO_CFG_CACHE["cfg"] = None
-    return _OCIO_CFG_CACHE["cfg"]
+    from forge_core.colour.ocio import OcioPipeline, resolve_flame_aces2_config
+    path = resolve_flame_aces2_config()
+    _OCIO_PIPELINE = OcioPipeline(
+        config_path=path, display=_OCIO_DISPLAY, view=_OCIO_VIEW,
+    )
+    return _OCIO_PIPELINE
 
 
 def _get_ocio_processor(src_cs):
-    """CPU processor: src colorspace → display/view with tonemapped rolloff.
-    Cached per source. Uses DisplayViewTransform so the ACES RRT+ODT is
-    actually applied — a plain getProcessor(src, dst) would just colour-space
-    convert and hard-clip."""
-    if src_cs in _OCIO_PROC_CACHE:
-        return _OCIO_PROC_CACHE[src_cs]
-    cfg = _get_ocio_cfg()
-    proc = None
-    if cfg is not None:
-        try:
-            import PyOpenColorIO as OCIO
-            dvt = OCIO.DisplayViewTransform()
-            dvt.setSrc(src_cs)
-            dvt.setDisplay(_OCIO_DISPLAY)
-            dvt.setView(_OCIO_VIEW)
-            proc = cfg.getProcessor(dvt).getDefaultCPUProcessor()
-        except Exception as e:
-            print(f"OCIO DVT {src_cs} -> {_OCIO_DISPLAY}/{_OCIO_VIEW} failed: {e}")
-            proc = None
-    _OCIO_PROC_CACHE[src_cs] = proc
-    return proc
+    """Thin wrapper so _read_source_frame can keep its existing call site."""
+    return _get_ocio_pipeline().get_processor(src_cs)
 
 
 def _read_source_frame(clip, target_frame=None, source_colourspace=None):
