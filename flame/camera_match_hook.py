@@ -466,8 +466,6 @@ class _NoHooks(object):
     def postExportAsset(self, *a, **k): pass
     def exportOverwriteFile(self, *a, **k): return "overwrite"
 
-_WIRETAP_RW_FRAME = "/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
-
 # Preview colour pipeline. Uses Flame's shipped ACES 2.0 config so the
 # preview goes through a real RRT+ODT — highlights roll off softly instead
 # of clipping to pure white, which matters for marking VP lines against
@@ -492,40 +490,11 @@ _OCIO_DEFAULT_SOURCE = _OCIO_PASSTHROUGH
 
 
 def _clip_wiretap_colour_space(clip):
-    """Read the wiretap-reported colour space string for a PyClipNode (or its
-    inner PyClip). Returns None on failure. Cheap — opens its own short-lived
-    Wiretap session."""
-    try:
-        py_clip = clip.clip if hasattr(clip, "clip") else clip
-        node_id = py_clip.get_wiretap_node_id()
-    except Exception:
-        return None
-    if not node_id:
-        return None
-    try:
-        sdk = "/opt/Autodesk/wiretap/tools/current/python"
-        if sdk not in sys.path:
-            sys.path.insert(0, sdk)
-        from adsk.libwiretapPythonClientAPI import (
-            WireTapClientInit, WireTapClientUninit,
-            WireTapServerHandle, WireTapNodeHandle, WireTapClipFormat,
-        )
-    except Exception as e:
-        print("Wiretap SDK import failed:", e)
-        return None
-    WireTapClientInit()
-    try:
-        server = WireTapServerHandle("127.0.0.1:IFFFS")
-        nh = WireTapNodeHandle(server, node_id)
-        fmt = WireTapClipFormat()
-        if not nh.getClipFormat(fmt):
-            return None
-        return fmt.colourSpace() or None
-    except Exception as e:
-        print("Wiretap colour-space probe failed:", e)
-        return None
-    finally:
-        WireTapClientUninit()
+    """Thin wrapper over forge_flame.wiretap.get_clip_colour_space.
+    Kept as a hook-level name so existing call sites don't need to change."""
+    _ensure_forge_core_on_path()
+    from forge_flame.wiretap import get_clip_colour_space
+    return get_clip_colour_space(clip)
 
 
 def _map_wiretap_cs_to_dropdown(wt_cs):
@@ -585,172 +554,60 @@ def _get_ocio_processor(src_cs):
 
 
 def _read_source_frame(clip, target_frame=None, source_colourspace=None):
-    """Read one frame of a clip using Flame's Wiretap CLI.
+    """Read one frame of a Flame clip and return it as a display-ready uint8 RGB.
 
-    The source codec may be Sony/ARRI-proprietary MXF that cv2/ffmpeg can't
-    decode, so we go through Flame's decoder via the wiretap_rw_frame tool:
-    it pulls a single frame by wiretap node id, writes raw pixels (or a
-    standard image container if the source is a soft-imported still) to
-    disk, and we decode that.
+    Orchestrates three extracted helpers:
 
-    When source_colourspace is set (e.g. "ARRI LogC4"), the float pixel
-    buffer is run through an OCIO transform to sRGB for a faithful preview.
-    When None or "Gamma 2.2 (no OCIO)", falls back to a naive pow(x, 1/2.2)
-    display encode.
+      - ``forge_flame.wiretap.extract_frame_bytes`` pulls the frame via the
+        wiretap_rw_frame CLI. Necessary because cv2/ffmpeg can't decode Sony/
+        ARRI-proprietary MXF wrappers; Flame's decoder handles them natively.
+      - ``forge_core.image.buffer`` decodes the bytes. Wiretap may hand back
+        either a standard image container (soft-imported stills) or a raw
+        pixel buffer — buffer.decode_image_container handles the former,
+        decode_raw_rgb_buffer handles the latter (stripping the leading
+        header, flipping vertically, reordering GBR → RGB).
+      - ``apply_ocio_or_passthrough`` runs float buffers through OCIO's
+        DisplayViewTransform (ACES 2.0 SDR) so highlights roll off softly.
+        When source_colourspace is None / Passthrough, it clips+quantises.
 
-    Returns (img_rgb_np_uint8, width, height) or (None, None, None).
-    Frame indexing: target_frame is in clip-source frame numbering
-    (e.g. 1001..4667 for start_frame=1001); we convert to the 0-based wiretap
-    frame_index by subtracting start_frame.
-    """
-    import os
-    import subprocess
-    import tempfile
+    Frame indexing: target_frame is in clip-source frame numbering (e.g.
+    1001..4667 for start_frame=1001).
+
+    Returns (img_rgb_uint8, width, height) or (None, None, None) on failure."""
+    _ensure_forge_core_on_path()
+    from forge_flame.wiretap import extract_frame_bytes
+    from forge_core.image.buffer import (
+        decode_image_container, decode_raw_rgb_buffer, apply_ocio_or_passthrough,
+    )
+
+    extracted = extract_frame_bytes(clip, target_frame)
+    if extracted is None:
+        return None, None, None
+    raw, w, h, bit_depth = extracted
+
+    # Container path: PNG/JPEG/TIFF/EXR/DPX for soft-imported stills.
+    img = decode_image_container(raw)
+    if img is not None:
+        return img, int(img.shape[1]), int(img.shape[0])
+
+    # Raw buffer path: Wiretap's bottom-up, GBR-ordered float (or uint8) dump.
+    arr = decode_raw_rgb_buffer(raw, w, h, bit_depth)
+    if arr is None:
+        print(f"decode_raw_rgb_buffer rejected buffer "
+              f"({len(raw)} bytes, {w}x{h}, bit_depth={bit_depth})")
+        return None, None, None
+
+    # uint8 → already display-encoded (Rec.709 video / sRGB JPG). Pass through.
     import numpy as np
-    import cv2
-
-    if not os.path.isfile(_WIRETAP_RW_FRAME):
-        print("wiretap_rw_frame not found:", _WIRETAP_RW_FRAME)
-        return None, None, None
-
-    try:
-        py_clip = clip.clip
-        node_id = py_clip.get_wiretap_node_id()
-    except Exception as e:
-        print("get_wiretap_node_id failed:", e)
-        return None, None, None
-    if not node_id:
-        print("Clip has empty wiretap node id — is it in the Media Panel?")
-        return None, None, None
-
-    try:
-        duration = int(clip.duration.get_value())
-        start_frame = int(py_clip.start_frame)
-    except Exception:
-        duration, start_frame = 1, 1
-
-    if target_frame is None:
-        target_frame = start_frame
-    target_frame = max(start_frame, min(start_frame + duration - 1, int(target_frame)))
-    frame_index = target_frame - start_frame  # 0-based
-
-    try:
-        res = clip.resolution.get_value()
-        w, h, bit_depth = int(res.width), int(res.height), int(res.bit_depth)
-    except Exception as e:
-        print("resolution read failed:", e)
-        return None, None, None
-
-    with tempfile.TemporaryDirectory(prefix="camera_match_wt_") as tmp:
-        out_base = os.path.join(tmp, "frame")
-        cmd = [_WIRETAP_RW_FRAME, "-n", node_id, "-i", str(frame_index), "-f", out_base]
-        try:
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        except subprocess.TimeoutExpired:
-            print("wiretap_rw_frame timed out")
-            return None, None, None
-        except Exception as e:
-            print("wiretap_rw_frame exec error:", e)
-            return None, None, None
-
-        files = [f for f in os.listdir(tmp) if f.startswith("frame")]
-        if not files:
-            print("wiretap_rw_frame wrote no output. stdout:", r.stdout.strip(),
-                  "stderr:", r.stderr.strip())
-            return None, None, None
-        raw = open(os.path.join(tmp, files[0]), "rb").read()
-
-    # Magic-byte sniff: wiretap may hand back a standard image container for
-    # soft-imported stills (tiff/png/jpg/exr/dpx), or a raw pixel buffer for
-    # transcoded / proxy-rendered sources.
-    head = raw[:8]
-    fmt = None
-    if head[:8] == b"\x89PNG\r\n\x1a\n":
-        fmt = "png"
-    elif head[:2] == b"\xff\xd8":
-        fmt = "jpg"
-    elif head[:4] in (b"II*\x00", b"MM\x00*"):
-        fmt = "tiff"
-    elif head[:4] == b"\x76\x2f\x31\x01":
-        fmt = "exr"
-    elif head[:4] in (b"SDPX", b"XPDS"):
-        fmt = "dpx"
-
-    if fmt is not None:
-        arr = np.frombuffer(raw, dtype=np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            print(f"cv2.imdecode failed for container fmt={fmt}")
-            return None, None, None
-        if img.ndim == 2:
-            img = np.stack([img, img, img], axis=-1)
-        if img.shape[-1] == 4:
-            img = img[..., :3]
-        if img.dtype == np.uint16:
-            img = (img // 257).astype(np.uint8)
-        elif img.dtype in (np.float32, np.float64):
-            img = (np.clip(img, 0.0, 1.0) * 255).astype(np.uint8)
-        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        return rgb, int(rgb.shape[1]), int(rgb.shape[0])
-
-    # Raw pixel buffer. The file observed to be `header + W*H*C*bytes_per_sample`;
-    # slicing the tail gives the pixel payload regardless of header size.
-    channels = 3  # Flame wiretap delivers RGB for ClipFormat(RGB)
-    if bit_depth == 32:
-        dtype = np.float32
-    elif bit_depth == 16:
-        # Could be half-float or uint16; default to half since Flame's internal
-        # scene bit-depth is usually float. If that's wrong for a given clip
-        # we'll see it flipped saturated vs dim and can revisit.
-        dtype = np.float16
-    elif bit_depth == 8:
-        dtype = np.uint8
-    else:
-        print(f"Unhandled wiretap raw bit_depth: {bit_depth}")
-        return None, None, None
-    sample_size = np.dtype(dtype).itemsize
-    expected = w * h * channels * sample_size
-    if len(raw) < expected:
-        print(f"Raw buffer too small: got {len(raw)} bytes, expected ≥ {expected}")
-        return None, None, None
-    payload = raw[-expected:]
-    arr = np.frombuffer(payload, dtype=dtype).reshape(h, w, channels)
-
-    # Wiretap's raw buffer is bottom-up (OpenGL convention) AND delivered in
-    # GBR channel order despite the "rgb_float_le" format tag (empirically
-    # verified: full reverse left G/B swapped, while picking [2,0,1] gives
-    # correct R/G/B for Qt's Format_RGB888). Flip vertically and re-order
-    # channels to RGB in one shot.
-    arr = np.ascontiguousarray(arr[::-1][..., [2, 0, 1]])
-
-    # uint8 path — source was already 8-bit, almost always display-encoded
-    # (Rec.709 video / sRGB JPEG). Pass through directly.
     if arr.dtype == np.uint8:
         return arr, w, h
 
-    # Float path. Three flavors:
-    #   - Display passthrough → clip to 0..1 and quantise; data is already
-    #     in display-referred form, no transform should touch it.
-    #   - Known OCIO source → DisplayViewTransform via ACES 2.0 SDR view
-    #     (gives soft highlight rolloff, gamut compression).
-    #   - OCIO unavailable / processor missing → same passthrough behavior.
-    a = np.ascontiguousarray(arr.astype(np.float32))
+    # Float → OCIO view transform when a known source is tagged, else passthrough.
     is_passthrough = (
         source_colourspace is None or source_colourspace == _OCIO_PASSTHROUGH
     )
-    if not is_passthrough:
-        proc = _get_ocio_processor(source_colourspace)
-        if proc is not None:
-            try:
-                proc.applyRGB(a)
-                rgb = (np.clip(a, 0.0, 1.0) * 255.0).astype(np.uint8)
-                return rgb, w, h
-            except Exception as e:
-                print(f"OCIO applyRGB failed for {source_colourspace}: {e}; "
-                      "falling back to passthrough")
-    a = np.clip(a, 0.0, 1.0)
-    rgb = (a * 255.0).astype(np.uint8)
-    return rgb, w, h
+    proc = None if is_passthrough else _get_ocio_processor(source_colourspace)
+    return apply_ocio_or_passthrough(arr, proc), w, h
 
 
 # =========================================================================

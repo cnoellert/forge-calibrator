@@ -24,12 +24,15 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_HOOK="$REPO_ROOT/flame/camera_match_hook.py"
 SOURCE_FORGE_CORE="$REPO_ROOT/forge_core"
+SOURCE_FORGE_FLAME="$REPO_ROOT/forge_flame"
 
 INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
-# forge_core ships as a SIBLING of camera_match/ under /opt/Autodesk/shared/python/
-# — the hook imports it by absolute path (import forge_core), so it must be
-# importable alongside camera_match at runtime. Keep them side-by-side.
+# forge_core (host-agnostic) and forge_flame (Flame-specific adapters like the
+# Wiretap reader) both ship as SIBLINGS of camera_match/ under /opt/Autodesk/
+# shared/python/. The hook imports both by absolute path, so they must be
+# importable alongside camera_match at runtime.
 FORGE_CORE_DEST="/opt/Autodesk/shared/python/forge_core"
+FORGE_FLAME_DEST="/opt/Autodesk/shared/python/forge_flame"
 FORGE_ENV="${FORGE_ENV:-$HOME/miniconda3/envs/forge}"
 WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
@@ -88,6 +91,11 @@ if [[ ! -d "$SOURCE_FORGE_CORE" ]]; then
   exit 1
 fi
 ok "forge_core present ($(find "$SOURCE_FORGE_CORE" -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ') .py files)"
+if [[ ! -d "$SOURCE_FORGE_FLAME" ]]; then
+  err "missing source forge_flame: $SOURCE_FORGE_FLAME"
+  exit 1
+fi
+ok "forge_flame present ($(find "$SOURCE_FORGE_FLAME" -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ') .py files)"
 
 # ---- precheck: forge conda env ------------------------------------------------
 step "Forge conda env"
@@ -183,20 +191,25 @@ ok "wrote $TARGET_HOOK"
 run "printf '# Camera Match package marker — keeps Flame'\\''s loader from treating\\n# this directory as a namespace package, which breaks importlib.reload.\\n' > \"$TARGET_INIT\""
 ok "wrote $TARGET_INIT"
 
-# sync forge_core/ alongside camera_match/. Using rsync with --delete so a
-# removed module on the source side actually disappears on the install side;
-# excluding __pycache__ so bytecode from local dev doesn't stomp Flame's.
-step "forge_core"
-if command -v rsync >/dev/null 2>&1; then
-  run "rsync -a --delete --exclude __pycache__ \"$SOURCE_FORGE_CORE/\" \"$FORGE_CORE_DEST/\""
-  ok "synced $SOURCE_FORGE_CORE → $FORGE_CORE_DEST"
-else
-  # rsync absent → fall back to rm -rf + cp -a. Slower but correct.
-  run "rm -rf \"$FORGE_CORE_DEST\""
-  run "cp -a \"$SOURCE_FORGE_CORE\" \"$FORGE_CORE_DEST\""
-  run "find \"$FORGE_CORE_DEST\" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true"
-  ok "copied $SOURCE_FORGE_CORE → $FORGE_CORE_DEST"
-fi
+# sync forge_core/ and forge_flame/ alongside camera_match/. rsync --delete
+# so a removed module on the source side actually disappears on the install
+# side; __pycache__ excluded so bytecode from local dev doesn't stomp Flame's.
+step "forge_core + forge_flame"
+_sync_dir() {
+  local src="$1" dst="$2" label="$3"
+  if command -v rsync >/dev/null 2>&1; then
+    run "rsync -a --delete --exclude __pycache__ \"$src/\" \"$dst/\""
+    ok "synced $label: $src → $dst"
+  else
+    # rsync absent → fall back to rm -rf + cp -a. Slower but correct.
+    run "rm -rf \"$dst\""
+    run "cp -a \"$src\" \"$dst\""
+    run "find \"$dst\" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true"
+    ok "copied $label: $src → $dst"
+  fi
+}
+_sync_dir "$SOURCE_FORGE_CORE"  "$FORGE_CORE_DEST"  "forge_core"
+_sync_dir "$SOURCE_FORGE_FLAME" "$FORGE_FLAME_DEST" "forge_flame"
 
 # nuke pycache so Flame doesn't serve stale bytecode
 if [[ -d "$TARGET_PYCACHE" ]]; then
