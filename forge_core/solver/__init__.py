@@ -8,6 +8,7 @@ from a Single Image" (IRISA)
 """
 
 from .coordinates import px_to_image_plane, image_plane_to_px
+from .fitting import fit_vp_from_lines, line_to_vp_residual_px
 from .math_util import (
     line_intersection,
     orthogonal_projection_on_line,

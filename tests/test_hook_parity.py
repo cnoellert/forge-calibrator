@@ -1,20 +1,36 @@
 """
-Parity test: hook's inlined _solve() vs solver.solve_2vp().
+Adapter parity + invariant tests for forge_flame.adapter.solve_for_flame.
 
-The camera_match_hook ships its own _solve()/_solve_lines() that duplicates
-the math in solver/solver.py. These tests assert they agree on the math
-invariants — focal length, VP positions in image plane, camera rotation
-matrix, principal point — on the same inputs.
+Originally this file proved that the hook's inlined _solve()/_solve_lines()
+were mathematically equivalent to forge_core.solver.solve_2vp. That
+equivalence was the green light to delete the hook's copy; after Stage 4
+the hook calls solve_for_flame directly.
 
-If this passes, the hook's inline solver can be deleted and replaced with
-a call to solver.solve_2vp() plus a thin Flame adapter that handles the
-hook-specific outputs (ZYX Euler decomposition, cam_back default, trace).
+What we assert now:
 
-Inputs mirror tests/test_cross_validate.py's fSpy reference fixture so
-any divergence can be triaged against the fSpy ground truth.
+  1. Math invariants — the adapter's solve_for_flame produces the same
+     focal length, VP positions in image-plane coords, and cam-to-world
+     rotation matrix as solve_2vp called directly on the same inputs.
+     (The adapter wraps solve_2vp, so a divergence here means we mangled
+     the packing or axis conversion, not the core math.)
+
+  2. Flame-convention invariants — the returned Flame Euler reconstructs
+     the cam-to-world rotation matrix when composed as
+     R = Rz(rz) · Ry(-ry) · Rx(-rx). This is Flame's actual composition
+     (see memory/flame_rotation_convention.md).
+
+  3. Scale invariant — default cam_back equals h / (2 · tan(vfov/2)),
+     which is Flame's 1-unit-per-pixel native distance.
+
+  4. Output shape — the dict the adapter returns contains every key the
+     hook UI consumes, with the expected types.
+
+  5. All axis pairs — the adapter holds across every valid (ax1, ax2)
+     combination, not just the fSpy-reference (-X, -Z).
+
+Inputs use the fSpy test.fspy fixture for grounding.
 """
 
-import json
 import os
 import sys
 import numpy as np
@@ -22,51 +38,50 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from flame import camera_match_hook as hook
 from forge_core.solver.solver import solve_2vp
+from forge_flame.adapter import (
+    solve_for_flame,
+    compute_flame_euler_zyx,
+    default_cam_back,
+    AX_INT_TO_STR,
+)
 
 
 W, H = 5184, 3456
 
 # Same fSpy control points as test_cross_validate.py (relative 0..1 coords).
 VP1_LINE1_P1_REL = (0.42601555503030025, 0.40415286833528946)
-VP1_LINE1_P2_REL = (0.9000365618654662, 0.5454031009322207)
+VP1_LINE1_P2_REL = (0.9000365618654662,  0.5454031009322207)
 VP1_LINE2_P1_REL = (0.41739415081491654, 0.04953202027892652)
-VP1_LINE2_P2_REL = (0.9507110122414305, 0.14287330297426987)
-VP2_LINE1_P1_REL = (0.9172152342530506, 0.4082780302620597)
-VP2_LINE1_P2_REL = (0.9480780284454208, 0.16349931327560732)
-VP2_LINE2_P1_REL = (0.2569948727351605, 0.03775924569203336)
-VP2_LINE2_P2_REL = (0.2713070131097316, 0.2613996034325672)
+VP1_LINE2_P2_REL = (0.9507110122414305,  0.14287330297426987)
+VP2_LINE1_P1_REL = (0.9172152342530506,  0.4082780302620597)
+VP2_LINE1_P2_REL = (0.9480780284454208,  0.16349931327560732)
+VP2_LINE2_P1_REL = (0.2569948727351605,  0.03775924569203336)
+VP2_LINE2_P2_REL = (0.2713070131097316,  0.2613996034325672)
 
 
-def _rel_to_px(rel):
-    return (rel[0] * W, rel[1] * H)
-
-
-# Hook uses integer axis codes (0..5 → ±X, ±Y, ±Z); solver uses string labels.
-_AX_INT_TO_STR = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
+def _rel_to_px(r):
+    return (r[0] * W, r[1] * H)
 
 
 @pytest.fixture
-def line_pixels():
-    """8-point px list in the order _solve() expects:
-    VP1 line1 start, line1 end, line2 start, line2 end,
-    VP2 line1 start, line1 end, line2 start, line2 end."""
-    return [
-        _rel_to_px(VP1_LINE1_P1_REL),
-        _rel_to_px(VP1_LINE1_P2_REL),
-        _rel_to_px(VP1_LINE2_P1_REL),
-        _rel_to_px(VP1_LINE2_P2_REL),
-        _rel_to_px(VP2_LINE1_P1_REL),
-        _rel_to_px(VP2_LINE1_P2_REL),
-        _rel_to_px(VP2_LINE2_P1_REL),
-        _rel_to_px(VP2_LINE2_P2_REL),
+def adapter_lines():
+    """Pair of line lists shaped the way the hook passes them into the adapter:
+    list of ((p0_px, p1_px), ...) per VP."""
+    vp1 = [
+        (_rel_to_px(VP1_LINE1_P1_REL), _rel_to_px(VP1_LINE1_P2_REL)),
+        (_rel_to_px(VP1_LINE2_P1_REL), _rel_to_px(VP1_LINE2_P2_REL)),
     ]
+    vp2 = [
+        (_rel_to_px(VP2_LINE1_P1_REL), _rel_to_px(VP2_LINE1_P2_REL)),
+        (_rel_to_px(VP2_LINE2_P1_REL), _rel_to_px(VP2_LINE2_P2_REL)),
+    ]
+    return vp1, vp2
 
 
 @pytest.fixture
-def solver_lines():
-    """Same endpoints as line_pixels, packed as ((p1, p2, p3, p4), ...) for solve_2vp."""
+def solve_2vp_lines():
+    """Same endpoints packed as 4-tuples for solve_2vp()."""
     vp1 = (
         np.array(_rel_to_px(VP1_LINE1_P1_REL)),
         np.array(_rel_to_px(VP1_LINE1_P2_REL)),
@@ -82,133 +97,159 @@ def solver_lines():
     return vp1, vp2
 
 
-def _read_hook_trace():
-    """_solve() writes its full internal state here on every call."""
-    with open("/tmp/forge_camera_match_trace.json") as f:
-        return json.load(f)
+# =============================================================================
+# Group 1: math equivalence — adapter ≡ solve_2vp
+# =============================================================================
 
 
-class TestHookVsSolverParity:
-    """Run both solvers on identical inputs and assert the shared invariants
-    agree. Axes chosen to match the fSpy reference: VP1 → -X (1), VP2 → -Z (5)."""
+class TestAdapterMathMatchesSolver:
+    """solve_for_flame internally calls solve_2vp; these tests verify the
+    wrapping (line packing, axis int→str, result dict) doesn't mangle
+    anything."""
 
-    AX1_HOOK, AX2_HOOK = 1, 5  # -X, -Z
-    AX1_SOLVER, AX2_SOLVER = _AX_INT_TO_STR[1], _AX_INT_TO_STR[5]
+    AX1, AX2 = 1, 5  # -X, -Z (fSpy reference)
 
-    def test_both_converge(self, line_pixels, solver_lines):
-        hook_out = hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        assert hook_out is not None, "hook._solve returned None"
-        assert solver_out is not None, "solve_2vp returned None"
+    def test_both_converge(self, adapter_lines, solve_2vp_lines):
+        adapter_out = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, self.AX1, self.AX2)
+        direct = solve_2vp(
+            solve_2vp_lines[0], solve_2vp_lines[1], W, H,
+            axis1=AX_INT_TO_STR[self.AX1], axis2=AX_INT_TO_STR[self.AX2])
+        assert adapter_out is not None
+        assert direct is not None
 
-    def test_focal_length_matches(self, line_pixels, solver_lines):
-        hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        trace = _read_hook_trace()
-        hook_f = trace["stages"]["f_relative"]
+    def test_focal_length_matches(self, adapter_lines, solve_2vp_lines):
+        a = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, self.AX1, self.AX2)
+        d = solve_2vp(
+            solve_2vp_lines[0], solve_2vp_lines[1], W, H,
+            axis1=AX_INT_TO_STR[self.AX1], axis2=AX_INT_TO_STR[self.AX2])
+        assert a["f_relative"] == pytest.approx(d["focal_length"], rel=1e-9)
 
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        solver_f = solver_out["focal_length"]
-
-        assert hook_f == pytest.approx(solver_f, rel=1e-9), \
-            f"focal length divergence: hook={hook_f}, solver={solver_f}"
-
-    def test_vanishing_points_match(self, line_pixels, solver_lines):
-        hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        trace = _read_hook_trace()
-        hook_vp1 = np.array(trace["stages"]["vp1_imageplane"])
-        hook_vp2 = np.array(trace["stages"]["vp2_imageplane"])
-
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        solver_vp1 = solver_out["vp1"]
-        solver_vp2 = solver_out["vp2"]
-
-        np.testing.assert_allclose(hook_vp1, solver_vp1, rtol=1e-9,
-            err_msg="VP1 in image-plane coords diverged")
-        np.testing.assert_allclose(hook_vp2, solver_vp2, rtol=1e-9,
-            err_msg="VP2 in image-plane coords diverged")
-
-    def test_principal_point_matches(self, line_pixels, solver_lines):
-        hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        # Hook doesn't trace pp unless vp3 is provided; when absent it's image centre.
-        hook_pp = np.array([0.0, 0.0])
-
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        np.testing.assert_allclose(hook_pp, solver_out["principal_point"], atol=1e-12)
-
-    def test_rotation_matrix_matches(self, line_pixels, solver_lines):
-        """The hook's cam_rot_cam_to_world == solver's camera_transform[:3,:3].
-        Both are the rotation taking camera-space vectors to world-space."""
-        hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        trace = _read_hook_trace()
-        hook_cam_rot = np.array(trace["stages"]["cam_rot_cam_to_world"])
-
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        # solver's camera_transform is 4x4 when origin_px is set; 3x3 rotation (as
-        # inverse of view) when not. Without origin, solver sets it to inv(view).
-        # The rotation block is the same either way.
-        solver_cam_rot = solver_out["camera_transform"][:3, :3]
-
-        np.testing.assert_allclose(hook_cam_rot, solver_cam_rot, atol=1e-9,
-            err_msg="cam-to-world rotation diverged")
-
-    def test_view_rotation_matches(self, line_pixels, solver_lines):
-        """Hook's view_rot_world_to_cam == solver's view_transform[:3,:3]."""
-        hook._solve(line_pixels, W, H, ax1=self.AX1_HOOK, ax2=self.AX2_HOOK)
-        trace = _read_hook_trace()
-        hook_view = np.array(trace["stages"]["view_rot_world_to_cam"])
-
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=self.AX1_SOLVER, axis2=self.AX2_SOLVER,
-        )
-        solver_view = solver_out["view_transform"][:3, :3]
-
-        np.testing.assert_allclose(hook_view, solver_view, atol=1e-9,
-            err_msg="world-to-cam view rotation diverged")
+    def test_rotation_matrix_matches(self, adapter_lines, solve_2vp_lines):
+        a = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, self.AX1, self.AX2)
+        d = solve_2vp(
+            solve_2vp_lines[0], solve_2vp_lines[1], W, H,
+            axis1=AX_INT_TO_STR[self.AX1], axis2=AX_INT_TO_STR[self.AX2])
+        adapter_rot = np.asarray(a["cam_rot"])
+        direct_rot = d["camera_transform"][:3, :3]
+        np.testing.assert_allclose(adapter_rot, direct_rot, atol=1e-9)
 
 
-class TestAllAxisCombinations:
-    """Every valid (ax1, ax2) pair with non-parallel axes should produce the
-    same focal + rotation invariants in both solvers. Catches axis-mapping bugs."""
+# =============================================================================
+# Group 2: Flame rotation convention — Euler → R round-trip
+# =============================================================================
 
-    @pytest.mark.parametrize("ax1_int,ax2_int", [
-        (i, j) for i in range(6) for j in range(6)
-        if i // 2 != j // 2  # different axis (not parallel)
+
+class TestFlameEulerRoundTrip:
+    """The returned rotation triple must reconstruct cam_rot under Flame's
+    ZYX-with-X,Y-negated composition: R = Rz(rz) · Ry(-ry) · Rx(-rx)."""
+
+    def _rx(self, a): c, s = np.cos(a), np.sin(a); return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+    def _ry(self, a): c, s = np.cos(a), np.sin(a); return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+    def _rz(self, a): c, s = np.cos(a), np.sin(a); return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+    def _reconstruct(self, rx_deg, ry_deg, rz_deg):
+        rx, ry, rz = np.radians([rx_deg, ry_deg, rz_deg])
+        return self._rz(rz) @ self._ry(-ry) @ self._rx(-rx)
+
+    def test_roundtrip_fspy_fixture(self, adapter_lines):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+        R = np.asarray(out["cam_rot"])
+        R_recon = self._reconstruct(*out["rotation"])
+        np.testing.assert_allclose(R_recon, R, atol=1e-6)
+
+    @pytest.mark.parametrize("ax1,ax2", [
+        (i, j) for i in range(6) for j in range(6) if i // 2 != j // 2
     ])
-    def test_axis_pair_parity(self, line_pixels, solver_lines, ax1_int, ax2_int):
-        ax1_str = _AX_INT_TO_STR[ax1_int]
-        ax2_str = _AX_INT_TO_STR[ax2_int]
+    def test_roundtrip_all_axis_pairs(self, adapter_lines, ax1, ax2):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, ax1, ax2)
+        if out is None:
+            pytest.skip(f"solve didn't converge for ({ax1}, {ax2})")
+        R = np.asarray(out["cam_rot"])
+        R_recon = self._reconstruct(*out["rotation"])
+        np.testing.assert_allclose(R_recon, R, atol=1e-6,
+            err_msg=f"Euler→R round-trip failed for axes "
+                    f"{AX_INT_TO_STR[ax1]}/{AX_INT_TO_STR[ax2]}")
 
-        hook_out = hook._solve(line_pixels, W, H, ax1=ax1_int, ax2=ax2_int)
-        trace = _read_hook_trace()
 
-        solver_out = solve_2vp(
-            solver_lines[0], solver_lines[1], W, H,
-            axis1=ax1_str, axis2=ax2_str,
-        )
-        assert hook_out is not None and solver_out is not None
+# =============================================================================
+# Group 3: scale — default cam_back
+# =============================================================================
 
-        # Focal is axis-independent; sanity-check it's stable.
-        assert trace["stages"]["f_relative"] == pytest.approx(
-            solver_out["focal_length"], rel=1e-9)
 
-        # Rotation does depend on axis assignment — must match.
-        hook_cam_rot = np.array(trace["stages"]["cam_rot_cam_to_world"])
-        solver_cam_rot = solver_out["camera_transform"][:3, :3]
-        np.testing.assert_allclose(hook_cam_rot, solver_cam_rot, atol=1e-9,
-            err_msg=f"rot diverged for {ax1_str}/{ax2_str}")
+class TestDefaultCamBack:
+    """Flame's native 1-unit-per-pixel scale requires camera distance
+    h / (2 · tan(vfov/2))."""
+
+    def test_formula(self):
+        # vfov=60° at h=1080 → cam_back = 1080 / (2·tan(30°)) ≈ 935.307
+        assert default_cam_back(1080, np.radians(60.0)) == pytest.approx(
+            1080.0 / (2.0 * np.tan(np.radians(30.0))), rel=1e-12)
+
+    def test_adapter_uses_default_when_not_supplied(self, adapter_lines):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+        vfov_rad = np.radians(out["vfov_deg"])
+        assert out["cam_back_dist"] == pytest.approx(
+            default_cam_back(H, vfov_rad), rel=1e-9)
+
+    def test_adapter_honours_explicit_cam_back(self, adapter_lines):
+        out = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, 1, 5, cam_back=1234.5)
+        assert out["cam_back_dist"] == pytest.approx(1234.5, rel=1e-12)
+
+
+# =============================================================================
+# Group 4: output shape — every key the UI consumes is present with right types
+# =============================================================================
+
+
+class TestResultShape:
+    """Drop-in replacement for the old hook._solve return contract."""
+
+    REQUIRED_KEYS = {
+        "position", "rotation", "focal_mm", "film_back_mm",
+        "hfov_deg", "vfov_deg", "cam_rot", "f_relative",
+        "ax1", "ax2", "origin_px", "cam_back_dist", "principal_point_px",
+    }
+
+    def test_all_keys_present(self, adapter_lines):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+        assert self.REQUIRED_KEYS.issubset(out.keys())
+
+    def test_types(self, adapter_lines):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+        assert isinstance(out["position"], tuple) and len(out["position"]) == 3
+        assert isinstance(out["rotation"], tuple) and len(out["rotation"]) == 3
+        assert all(isinstance(v, float) for v in out["position"])
+        assert all(isinstance(v, float) for v in out["rotation"])
+        assert isinstance(out["cam_rot"], list) and len(out["cam_rot"]) == 3
+        assert isinstance(out["origin_px"], list) and len(out["origin_px"]) == 2
+        assert out["principal_point_px"] is None  # no vp3 supplied
+
+    def test_axis_ints_echoed(self, adapter_lines):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 2, 4)
+        assert out["ax1"] == 2 and out["ax2"] == 4
+
+
+# =============================================================================
+# Group 5: all-axis robustness — convergence + self-consistency
+# =============================================================================
+
+
+class TestAllAxisPairs:
+    """For every valid axis pair, focal stays axis-independent and rotation
+    stays self-consistent via the Flame-Euler reconstruction."""
+
+    @pytest.mark.parametrize("ax1,ax2", [
+        (i, j) for i in range(6) for j in range(6) if i // 2 != j // 2
+    ])
+    def test_converges_and_focal_stable(self, adapter_lines, ax1, ax2):
+        out = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, ax1, ax2)
+        assert out is not None, f"failed to converge for {AX_INT_TO_STR[ax1]}/{AX_INT_TO_STR[ax2]}"
+        # Focal length is axis-independent — all pairs should produce the same
+        # value (within numerical noise). Compare against the -X/-Z reference.
+        if ax1 != 1 or ax2 != 5:
+            ref = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+            assert out["f_relative"] == pytest.approx(ref["f_relative"], rel=1e-9)

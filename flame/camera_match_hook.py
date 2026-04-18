@@ -55,416 +55,44 @@ def _ensure_forge_core_on_path():
 
 
 # =========================================================================
-# Inline solver — all numpy usage contained in _solve()
+# Module-level constants used by the UI
 # =========================================================================
 
 _AX_LABELS = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
+# Trace file — written by forge_flame.adapter.solve_for_flame on every solve,
+# read by the UI's "Open trace" affordance for post-mortem inspection.
+# Keep in sync with forge_flame.adapter.TRACE_PATH.
 _TRACE_PATH = "/tmp/forge_camera_match_trace.json"
 
 
-def _write_trace(trace):
-    """Dump a solver trace dict to a JSON file for post-mortem inspection."""
-    import json
-    def _co(o):
-        try:
-            import numpy as np
-            if isinstance(o, np.ndarray):
-                return o.tolist()
-            if isinstance(o, (np.floating, np.integer)):
-                return float(o)
-        except Exception:
-            pass
-        if isinstance(o, (tuple, list)):
-            return [_co(x) for x in o]
-        if isinstance(o, dict):
-            return {k: _co(v) for k, v in o.items()}
-        return o
-    try:
-        with open(_TRACE_PATH, "w") as fp:
-            json.dump(_co(trace), fp, indent=2)
-    except Exception:
-        pass  # non-fatal
+# =========================================================================
+# Thin re-exports so UI code can keep its existing _fit_vp / _line_residual_px
+# call sites. Real implementations live in forge_core.solver.fitting.
+# =========================================================================
 
 
 def _fit_vp(lines_px):
-    """Least-squares vanishing point from N≥2 lines in pixel coords.
-
-    Each line is ((x0,y0),(x1,y1)). Represents line as homogeneous form L=(a,b,c)
-    with ax+by+c=0 passing through both endpoints. VP is the homogeneous point
-    v minimizing sum((L_i·v)^2); solved via eigenvector of smallest eigenvalue
-    of sum(L_i L_i^T). Reduces exactly to 2-line intersection when N=2.
-    Returns (vp_x, vp_y) in pixel coords, or None if degenerate.
-    """
-    import numpy as np
-    M = []
-    for (p0, p1) in lines_px:
-        x0, y0 = float(p0[0]), float(p0[1])
-        x1, y1 = float(p1[0]), float(p1[1])
-        # Homogeneous line through (x0,y0,1) and (x1,y1,1): cross product.
-        a = y0 - y1
-        b = x1 - x0
-        c = x0 * y1 - x1 * y0
-        n = np.hypot(a, b) or 1.0
-        M.append([a/n, b/n, c/n])  # normalize so each line contributes equal weight
-    M = np.asarray(M, dtype=float)
-    # SVD: smallest singular vector of M is the VP in homogeneous coords.
-    _, _, Vt = np.linalg.svd(M)
-    v = Vt[-1]
-    if abs(v[2]) < 1e-12:
-        return None  # VP at infinity (lines parallel in image)
-    return (float(v[0] / v[2]), float(v[1] / v[2]))
+    """See forge_core.solver.fitting.fit_vp_from_lines."""
+    _ensure_forge_core_on_path()
+    from forge_core.solver.fitting import fit_vp_from_lines
+    return fit_vp_from_lines(lines_px)
 
 
 def _line_residual_px(p0, p1, vp):
-    """Perpendicular pixel distance from VP to the infinite line through p0,p1.
-    Zero = line extension hits VP exactly. Used to score each user-drawn line
-    against the least-squares VP fit in 3-line mode."""
-    import numpy as np
-    x0, y0 = float(p0[0]), float(p0[1])
-    x1, y1 = float(p1[0]), float(p1[1])
-    a = y0 - y1
-    b = x1 - x0
-    c = x0 * y1 - x1 * y0
-    n = np.hypot(a, b) or 1.0
-    return abs(a * vp[0] + b * vp[1] + c) / n
+    """See forge_core.solver.fitting.line_to_vp_residual_px."""
+    _ensure_forge_core_on_path()
+    from forge_core.solver.fitting import line_to_vp_residual_px
+    return line_to_vp_residual_px(p0, p1, vp)
 
 
-def _solve_lines(vp1_lines, vp2_lines, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None,
-                 vp3_lines=None, quad_mode=False):
-    """Solve from explicit line lists (N lines per VP, N ≥ 2). Adapts the 8-point
-    `_solve` by fitting each VP via least squares and forwarding 4 representative
-    points (the endpoints of lines 0 and 1 of each VP) so downstream math is
-    unchanged; VPs used by the math come from the full least-squares fit.
+# The inlined _solve / _solve_lines / _write_trace functions that used to
+# live here moved to forge_flame.adapter.solve_for_flame (which wraps
+# forge_core.solver.solve_2vp). See:
+#   - forge_core/solver/solver.py     — pure-math solve_2vp
+#   - forge_flame/adapter.py          — Flame ZYX Euler + cam_back + trace
+#   - tests/test_hook_parity.py       — verifies adapter ≡ solve_2vp math
 
-    vp3_lines: optional 3rd VP lines used for FromThirdVanishingPoint principal
-        point. Forwarded as a fitted VP3 pixel through `_solve`'s pp_px arg.
-    quad_mode: if True, override vp2_lines using VP1 endpoints as quad corners.
-    """
-    import numpy as np
-    if quad_mode and len(vp1_lines) >= 2:
-        (a, b), (c, d) = vp1_lines[0], vp1_lines[1]
-        vp2_lines = [(a, c), (b, d)]
-    vp1 = _fit_vp(vp1_lines)
-    vp2 = _fit_vp(vp2_lines)
-    if vp1 is None or vp2 is None:
-        return None
-    vp3_px = None
-    if vp3_lines is not None and len(vp3_lines) >= 2:
-        vp3_px = _fit_vp(vp3_lines)
-    # Pack 8 points for downstream: _solve recomputes each VP via 2-line
-    # intersection (line_isect(ip[0..1], ip[2..3])). To force solver VP =
-    # least-squares VP, we pass two synthetic "lines" that BOTH terminate
-    # at the fitted vp — their intersection is then vp by construction.
-    # Anchors are distinct user-line endpoints for numerical stability.
-    #
-    # Why not pass user line 0 as-is: in 3-line mode the LSQ vp is generally
-    # *not* on user line 0 (it has a non-zero residual), so line_isect(line0,
-    # synthetic_through_vp) returns a point biased toward line 0, not vp.
-    # For N=2 this collapses to the exact intersection (vp is on both lines).
-    def _pack(lines, vp):
-        p0 = lines[0][0]
-        q0 = lines[1][0] if len(lines) > 1 else lines[0][1]
-        return [list(p0), [vp[0], vp[1]], list(q0), [vp[0], vp[1]]]
-    pts8 = _pack(vp1_lines, vp1) + _pack(vp2_lines, vp2)
-    return _solve(pts8, w, h, ax1=ax1, ax2=ax2, origin_px=origin_px,
-                  cam_back=cam_back, vp3_px=vp3_px)
-
-
-def _solve(pts_px, w, h, ax1=1, ax2=5, origin_px=None, cam_back=None, vp3_px=None):
-    """Run the full 2VP solve from pixel coordinates.
-
-    pts_px: list of 8 points [(x,y), ...] — VP1 line1 start/end, line2 start/end,
-            then VP2 line1 start/end, line2 start/end. All in pixel coords (top-left origin).
-    origin_px: optional (x, y) pixel of the world-origin control point. If None,
-               defaults to the intersection of VP1 line 0 and VP2 line 0.
-    cam_back: optional distance (world units) from camera to world origin along
-              the view ray. If None, matches Flame's native 1-unit=1-pixel scale
-              by setting cam_back = h / (2·tan(vfov/2)), which places world origin
-              at the distance where image-height pixels exactly fill the frame.
-    Returns dict with position, rotation, focal_mm, hfov_deg or None on failure.
-
-    Writes a complete math trace to /tmp/forge_camera_match_trace.json each call.
-    """
-    _ensure_forge_env()
-    import numpy as np
-    import time
-
-    SENSOR_MM = 36.0
-    _AX = {0:[1,0,0],1:[-1,0,0],2:[0,1,0],3:[0,-1,0],4:[0,0,1],5:[0,0,-1]}
-    _AX_NAMES = ["+X","-X","+Y","-Y","+Z","-Z"]
-    # cam_back default is computed below once we know vfov — defer resolution.
-
-    trace = {
-        "timestamp": time.time(),
-        "inputs": {
-            "image_size": [w, h],
-            "aspect": w / h,
-            "ax1": ax1, "ax1_name": _AX_NAMES[ax1],
-            "ax2": ax2, "ax2_name": _AX_NAMES[ax2],
-            "sensor_mm": SENSOR_MM,
-            "points_px": [list(map(float, p)) for p in pts_px],
-            "origin_px": None if origin_px is None else [float(origin_px[0]), float(origin_px[1])],
-            "cam_back_requested": None if cam_back is None else float(cam_back),
-        },
-        "stages": {},
-        "result": None,
-        "error": None,
-    }
-
-    def px_to_ip(px, py):
-        rx, ry = px / w, py / h
-        a = w / h
-        if a >= 1.0:
-            return np.array([-1.0 + 2.0*rx, (1.0 - 2.0*ry) / a])
-        else:
-            return np.array([(-1.0 + 2.0*rx) * a, 1.0 - 2.0*ry])
-
-    def line_isect(p1, p2, p3, p4):
-        x1,y1 = p1; x2,y2 = p2; x3,y3 = p3; x4,y4 = p4
-        d = (x1-x2)*(y3-y4) - (y1-y2)*(x3-x4)
-        if abs(d) < 1e-12: return None
-        t = ((x1-x3)*(y3-y4) - (y1-y3)*(x3-x4)) / d
-        return np.array([x1+t*(x2-x1), y1+t*(y2-y1)])
-
-    def ortho_proj(pt, a, b):
-        d = b - a; s = np.dot(d, d)
-        if s < 1e-24: return a.copy()
-        return a + (np.dot(pt-a, d)/s) * d
-
-    ip = [px_to_ip(p[0], p[1]) for p in pts_px]
-    trace["stages"]["image_plane_points"] = [p.tolist() for p in ip]
-
-    vp1 = line_isect(ip[0], ip[1], ip[2], ip[3])
-    vp2 = line_isect(ip[4], ip[5], ip[6], ip[7])
-    trace["stages"]["vp1_imageplane"] = None if vp1 is None else vp1.tolist()
-    trace["stages"]["vp2_imageplane"] = None if vp2 is None else vp2.tolist()
-    # VP positions in pixel coords too (more intuitive)
-    def ip_to_px(ip_pt):
-        a = w / h
-        if a >= 1.0:
-            rx = (ip_pt[0] + 1.0) / 2.0
-            ry = (1.0 - ip_pt[1] * a) / 2.0
-        else:
-            rx = (ip_pt[0] / a + 1.0) / 2.0
-            ry = (1.0 - ip_pt[1]) / 2.0
-        return [rx * w, ry * h]
-    trace["stages"]["vp1_px"] = None if vp1 is None else ip_to_px(vp1)
-    trace["stages"]["vp2_px"] = None if vp2 is None else ip_to_px(vp2)
-
-    if vp1 is None or vp2 is None:
-        trace["error"] = "lines parallel — VP intersection failed"
-        _write_trace(trace)
-        return None
-
-    # Principal point: orthocentre of VP1/VP2/VP3 triangle if a 3rd VP was
-    # provided (fSpy's FromThirdVanishingPoint), else image centre.
-    pp = np.array([0.0, 0.0])
-    if vp3_px is not None:
-        vp3 = px_to_ip(vp3_px[0], vp3_px[1])
-        a, b = vp1[0], vp1[1]
-        c, d = vp2[0], vp2[1]
-        e, f = vp3[0], vp3[1]
-        N = b*c + d*e + f*a - c*f - b*e - a*d
-        if abs(N) > 1e-12:
-            pp = np.array([
-                ((d-f)*b*b + (f-b)*d*d + (b-d)*f*f + a*b*(c-e) + c*d*(e-a) + e*f*(a-c)) / N,
-                ((e-c)*a*a + (a-e)*c*c + (c-a)*e*e + a*b*(f-d) + c*d*(b-f) + e*f*(d-b)) / N,
-            ])
-        trace["stages"]["vp3_imageplane"] = vp3.tolist()
-        trace["stages"]["principal_point_imageplane"] = pp.tolist()
-        trace["stages"]["principal_point_px"] = ip_to_px(pp)
-
-    # Focal length
-    puv = ortho_proj(pp, vp1, vp2)
-    fsq = np.linalg.norm(vp2-puv)*np.linalg.norm(vp1-puv) - np.linalg.norm(pp-puv)**2
-    trace["stages"]["pp_orthoproj"] = puv.tolist()
-    trace["stages"]["f_squared"] = float(fsq)
-    if fsq <= 0:
-        trace["error"] = f"focal_sq <= 0 ({fsq}); camera setup geometrically impossible"
-        _write_trace(trace)
-        return None
-    f = float(np.sqrt(fsq))
-    trace["stages"]["f_relative"] = f
-
-    # Rotation
-    u = np.array([vp1[0]-pp[0], vp1[1]-pp[1], -f])
-    v = np.array([vp2[0]-pp[0], vp2[1]-pp[1], -f])
-    u /= np.linalg.norm(u); v /= np.linalg.norm(v)
-    ww = np.cross(u, v); ww /= np.linalg.norm(ww)
-    R = np.column_stack([u, v, ww])
-    trace["stages"]["u_ax1_in_cam"] = u.tolist()
-    trace["stages"]["v_ax2_in_cam"] = v.tolist()
-    trace["stages"]["ww_cross"] = ww.tolist()
-    trace["stages"]["R_columns_uvw"] = R.tolist()
-
-    # Axis assignment
-    r1 = np.array(_AX[ax1], dtype=float)
-    r2 = np.array(_AX[ax2], dtype=float)
-    A = np.vstack([r1, r2, np.cross(r1, r2)])
-    trace["stages"]["r1_world"] = r1.tolist()
-    trace["stages"]["r2_world"] = r2.tolist()
-    trace["stages"]["A_matrix"] = A.tolist()
-
-    view_rot = R @ A
-    cam_rot = np.linalg.inv(view_rot)
-    trace["stages"]["view_rot_world_to_cam"] = view_rot.tolist()
-    trace["stages"]["cam_rot_cam_to_world"] = cam_rot.tolist()
-
-    # Flame's identity camera looks -Z_local (verified empirically via top view:
-    # a fresh camera at (0,0,+Z) with rotation (0,0,0) points toward origin at
-    # Z=0, which is the -Z_world direction). Matches OpenGL/solver convention,
-    # so no local-frame flip is needed here — push cam_rot directly. The Euler
-    # decomposition below still uses Flame's inverted-XYZ composition.
-    cam_rot_flame = cam_rot
-    trace["stages"]["cam_rot_flame_convention"] = cam_rot_flame.tolist()
-
-    # Euler angles — Flame's Action camera uses R = Rz(rz) · Ry(-ry) · Rx(-rx)
-    # internally: ZYX order with X and Y signs inverted. Verified empirically
-    # 2026-04-16 against the test.fspy fixture: pushing the ZYX-decomposed
-    # angles aligns the rendered surface to the wall to single-degree precision,
-    # while the previous XYZ-decomposed angles left a ~13° Z residual that
-    # required an external axis-rotation fix to compensate.
-    #
-    # Substituting α=-rx, β=-ry, γ=rz reduces to the standard ZYX-positive
-    # decomposition R = Rz(γ)·Ry(β)·Rx(α):
-    #   α = atan2(R[2,1], R[2,2])
-    #   β = arcsin(-R[2,0])
-    #   γ = atan2(R[1,0], R[0,0])
-    # Then rx = -α, ry = -β, rz = γ.
-    cb = np.sqrt(cam_rot_flame[0,0]**2 + cam_rot_flame[1,0]**2)
-    gimbal = cb <= 1e-6
-    if not gimbal:
-        rx = -np.arctan2( cam_rot_flame[2,1], cam_rot_flame[2,2])
-        ry = -np.arcsin(-cam_rot_flame[2,0])
-        rz =  np.arctan2( cam_rot_flame[1,0], cam_rot_flame[0,0])
-    else:
-        # ry = ±90° → α and γ are coupled. Set rx = 0, derive rz from upper-left.
-        rx = 0.0
-        ry = -np.arcsin(-cam_rot_flame[2,0])
-        rz =  np.arctan2(-cam_rot_flame[0,1], cam_rot_flame[1,1])
-    eul = np.degrees(np.array([rx, ry, rz]))
-    trace["stages"]["gimbal_lock"] = bool(gimbal)
-    trace["stages"]["flame_euler_deg"] = eul.tolist()
-
-    # Sanity: reconstruct R from Euler using Flame's ZYX-with-X,Y-negated
-    # convention and verify it round-trips to cam_rot_flame.
-    def _rx(a): c,s=np.cos(a),np.sin(a); return np.array([[1,0,0],[0,c,-s],[0,s,c]])
-    def _ry(a): c,s=np.cos(a),np.sin(a); return np.array([[c,0,s],[0,1,0],[-s,0,c]])
-    def _rz(a): c,s=np.cos(a),np.sin(a); return np.array([[c,-s,0],[s,c,0],[0,0,1]])
-    R_recon = _rz(rz) @ _ry(-ry) @ _rx(-rx)
-    trace["stages"]["R_recon_from_euler"] = R_recon.tolist()
-    trace["stages"]["R_recon_matches_cam_rot_flame"] = bool(np.allclose(R_recon, cam_rot_flame, atol=1e-6))
-
-    # Project world axes through the solved camera back to pixel coords — this
-    # is the acid test: does +ax1_world land near the user's VP1 pixel?
-    def project_world_dir(d_world):
-        v_cam = cam_rot.T @ np.asarray(d_world, dtype=float)
-        if v_cam[2] >= 0:
-            return {"cam_dir": v_cam.tolist(), "projects": "BEHIND camera"}
-        # Pinhole: ip = pp + f * (X,Y) / (-Z). The pp offset matters whenever
-        # the principal point isn't at image centre (FromThirdVanishingPoint).
-        ipx = pp[0] + v_cam[0] / -v_cam[2] * f
-        ipy = pp[1] + v_cam[1] / -v_cam[2] * f
-        # Convert back to pixel
-        a = w / h
-        if a >= 1.0:
-            px = (ipx + 1.0) / 2.0 * w
-            py = (1.0 - ipy * a) / 2.0 * h
-        else:
-            px = (ipx / a + 1.0) / 2.0 * w
-            py = (1.0 - ipy) / 2.0 * h
-        return {"cam_dir": v_cam.tolist(), "image_plane": [ipx, ipy], "pixel": [px, py]}
-
-    proj = {
-        "+X": project_world_dir((1, 0, 0)),
-        "-X": project_world_dir((-1, 0, 0)),
-        "+Y": project_world_dir((0, 1, 0)),
-        "-Y": project_world_dir((0, -1, 0)),
-        "+Z": project_world_dir((0, 0, 1)),
-        "-Z": project_world_dir((0, 0, -1)),
-    }
-    trace["stages"]["world_axis_projections"] = proj
-
-    hfov = 2.0 * np.arctan(1.0 / f)
-    aspect = w / h
-    vfov = 2.0 * np.arctan(np.tan(hfov/2.0) / aspect)
-    focal_mm = f * SENSOR_MM / 2.0
-
-    # Default cam_back matches Flame's native scale: 1 unit ≈ 1 image pixel.
-    # A fresh Flame camera sits at distance where image_height pixels exactly
-    # fill the vertical FOV. At that distance, default-sized geometry renders
-    # at the expected scale instead of appearing microscopic (10-unit scene)
-    # or enormous (pixel-unit scene viewed up close).
-    if cam_back is None:
-        cam_back = h / (2.0 * np.tan(vfov / 2.0))
-    trace["inputs"]["cam_back_resolved"] = float(cam_back)
-
-    # Origin control point: default to intersection of first line of each VP pair
-    # (image-plane coords). Fallback to principal point if parallel/missing.
-    if origin_px is None:
-        isect_ip = line_isect(ip[0], ip[1], ip[4], ip[5])
-        if isect_ip is None:
-            origin_ip = np.array([0.0, 0.0])
-        else:
-            origin_ip = isect_ip
-        origin_px_resolved = ip_to_px(origin_ip)
-    else:
-        origin_px_resolved = [float(origin_px[0]), float(origin_px[1])]
-        origin_ip = px_to_ip(origin_px_resolved[0], origin_px_resolved[1])
-
-    # Back-project origin pixel to a camera-space point. Match fSpy's convention:
-    # origin sits at *perpendicular* depth cam_back (z_cam = -cam_back), not
-    # Euclidean distance — fSpy uses origin3D = k·(ox-pp.x, oy-pp.y, -1)·scale
-    # with k = tan(hfov/2) = 1/f, which simplifies to:
-    #     origin_in_cam = (cam_back / f) · (ox-pp.x, oy-pp.y, -f)
-    # → x = (cam_back/f)·(ox-pp.x), y = (cam_back/f)·(oy-pp.y), z = -cam_back.
-    ray_cam = np.array([origin_ip[0] - pp[0], origin_ip[1] - pp[1], -f], dtype=float)
-    origin_in_cam = (cam_back / f) * ray_cam
-    # If cam is at world position P and world origin is at offset O in cam space,
-    # then (0,0,0) = P + cam_rot @ O  →  P = -cam_rot @ O.
-    cam_pos = -cam_rot @ origin_in_cam
-    trace["stages"]["origin_px_resolved"] = list(origin_px_resolved)
-    trace["stages"]["origin_imageplane"] = origin_ip.tolist()
-    trace["stages"]["origin_in_cam"] = origin_in_cam.tolist()
-    trace["stages"]["cam_position_world"] = cam_pos.tolist()
-
-    result = {
-        "position": (float(cam_pos[0]), float(cam_pos[1]), float(cam_pos[2])),
-        "rotation": (float(eul[0]), float(eul[1]), float(eul[2])),
-        "focal_mm": float(focal_mm),
-        "film_back_mm": float(SENSOR_MM),
-        "hfov_deg": float(np.degrees(hfov)),
-        "vfov_deg": float(np.degrees(vfov)),
-        # For viewport projection helpers (plane overlay etc.)
-        "cam_rot": cam_rot.tolist(),
-        "f_relative": f,
-        "ax1": ax1, "ax2": ax2,
-        "origin_px": list(origin_px_resolved),
-        "cam_back_dist": float(cam_back),
-        # Principal point in pixels — only populated when VP3 was supplied
-        # (FromThirdVanishingPoint mode). Otherwise None (PP at image centre).
-        "principal_point_px": ip_to_px(pp) if vp3_px is not None else None,
-    }
-    trace["result"] = result
-    _write_trace(trace)
-    return result
-
-
-# =========================================================================
-# Export helper
-# =========================================================================
-
-_JPEG_PRESET = "/opt/Autodesk/shared/export/presets/file_sequence/JPEG_CameraMatch.xml"
-
-class _NoHooks(object):
-    def preExport(self, *a, **k): pass
-    def postExport(self, *a, **k): pass
-    def preExportSequence(self, *a, **k): pass
-    def postExportSequence(self, *a, **k): pass
-    def preExportAsset(self, *a, **k): pass
-    def postExportAsset(self, *a, **k): pass
-    def exportOverwriteFile(self, *a, **k): return "overwrite"
 
 # Preview colour pipeline. Uses Flame's shipped ACES 2.0 config so the
 # preview goes through a real RRT+ODT — highlights roll off softly instead
@@ -825,14 +453,19 @@ def _open_camera_match(clip):
             return vp1, vp2, vp3
 
         def run_solve(self, ax1, ax2):
-            """Run solver with current point positions."""
+            """Run solver with current point positions. Delegates to
+            forge_flame.adapter.solve_for_flame, which wraps
+            forge_core.solver.solve_2vp with Flame's ZYX-negated Euler
+            decomposition and pixel-unit cam_back default."""
             self.ax1 = ax1
             self.ax2 = ax2
             vp1_lines, vp2_lines, vp3_lines = self._active_lines()
             origin_px = None
             if self.origin_norm is not None:
                 origin_px = self._norm_to_px(self.origin_norm[0], self.origin_norm[1])
-            self.solve_result = _solve_lines(
+            _ensure_forge_core_on_path()
+            from forge_flame.adapter import solve_for_flame
+            self.solve_result = solve_for_flame(
                 vp1_lines, vp2_lines, img_w, img_h, ax1, ax2,
                 origin_px=origin_px, vp3_lines=vp3_lines, quad_mode=self.quad_mode)
             self.update()
