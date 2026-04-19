@@ -1,6 +1,15 @@
-# forge-calibrator — Session Passoff (v6)
+# forge-calibrator — Session Passoff (v6.1)
 
-## Current state — Flame ↔ Blender camera round-trip lands and validates against live Flame; Flame-side batch UI button is next
+## Current state — Flame ↔ Blender round-trip is live in Flame (batch menu wired, end-to-end verified in Flame); next pick is multi-frame keyframing or wider deployment polish
+
+## Session v6.1 recap (same day, follow-on)
+
+- **Batch UI button landed and verified in live Flame.** Right-click an Action in Batch → "Camera Match" submenu now has "Export Camera to Blender" and "Import Camera from Blender" alongside "Open Camera Match". Full Flame → JSON → .blend → (edit in Blender) → JSON → Flame loop is clickable.
+- **Orchestration split into `forge_flame/blender_bridge.py`.** Kept deliberately Flame-free and Qt-free: Blender-binary discovery (env override → platform defaults → PATH), bake/extract script resolution (env override → dev checkout → install path), CLI composition split from `subprocess.run` so argv shape is unit-testable, and `reveal_in_file_manager()` for macOS Finder / Linux xdg-open. Hook imports it for the two new handlers.
+- **Scope decision: Export/Import on Action, Open on clip.** Open Camera Match stays on clip context — its workflow starts from a plate. Export/Import go on Action context — their workflow starts from a solved camera that already lives inside an Action. First ship had all three on clip scope, which put Export/Import in the wrong place; caught and fixed in the same Flame session. New helpers `_scope_batch_action` and `_first_action_in_selection` use type-string match (`_val(item.type) == "Action"`) because `flame.PyActionNode` isn't consistently exposed as a Python class across Flame versions.
+- **Plate metadata from first clip in batch.** Export needs width/height/frame for the JSON, but the Action-context invocation doesn't have them directly. `_scan_first_clip_metadata()` scans `flame.batch.nodes` for the first PyClipNode and uses its `(width, height, start_frame)` as defaults; user confirms/edits via a single `WxH @ frame` dialog. Falls back to 1920x1080 @ 1 if no clip in batch.
+- **`install.sh` now deploys `tools/blender/`.** Added `SOURCE_BLENDER_SCRIPTS` / `BLENDER_SCRIPTS_DEST` constants, source presence check, third `_sync_dir` call. At runtime `blender_bridge` resolves to `/opt/Autodesk/shared/python/tools/blender/` on installed Flame, or `<repo>/tools/blender/` in dev.
+- **Test count 171 → 194.** `tests/test_blender_bridge.py` — 23 tests covering env override precedence for Blender bin and scripts, platform defaults, PATH fallback, error message content, CLI argv composition (including the `--` separator position and the `--create-if-missing` gate). Blender itself isn't required to run the tests.
 
 ## Session v6 recap (2026-04-19)
 
@@ -129,29 +138,26 @@ for o in gc.get_objects():
 
 ## Open items (priority order)
 
-### 1. Flame-side batch UI button (next session's primary task)
-Add "Export Camera to Blender" alongside "Open Camera Match" in the right-click Batch menu on a Clip or Action camera. Workflow: user picks a solved camera; hook calls `forge_flame.camera_io.export_flame_camera_to_json` to write an intermediate JSON; shells out to `blender --background --python tools/blender/bake_camera.py -- ...` to produce a `.blend`; reveals the `.blend` in Finder (macOS) or xdg-open. Inverse "Import Camera from Blender" button does the reverse with `extract_camera.py` + `import_json_to_flame_camera`. Reuse the camera-finding loop from `_apply_camera` in `camera_match_hook.py` (filter Actions, skip Perspective, dropdown if multiple) so users can target a specific camera in a scene that has several.
-
-### 2. Multi-frame keyframe support in camera_io
+### 1. Multi-frame keyframe support in camera_io
 Current `camera_io` v1 is single-frame only — matches what forge-calibrator produces today (static solves). When animated Flame cameras need round-tripping, extend `export_flame_camera_to_json` to walk Flame's PyAttribute keyframe API (untested territory; need live Flame to confirm the call shape — probably `attr.add_keyframe(frame, value)` or similar) and emit a multi-frame JSON. Bake and extract already handle multi-frame JSON correctly, so this is Flame-side only.
 
-### 3. Installer needs to carry tools/blender/
-`install.sh` copies `forge_core/` and `forge_flame/` recursively, so `forge_core/math/` tags along automatically — no change needed there. But `tools/blender/` isn't installed anywhere today. The batch UI button in item #1 will need to shell out to the scripts at a known path; the installer needs to copy them to `/opt/Autodesk/shared/python/tools/blender/` (or similar). Preflight should also check that a Blender binary is resolvable, though where to look is user-dependent (macOS `/Applications/Blender.app/...`, Linux usually on PATH).
+### 2. Blender-only install mode (carried from v6 open item #4)
+The v5 installer landed but still assumes the forge conda env. For users wanting to deploy only the Blender round-trip slice (which needs neither cv2 nor OCIO, just numpy which Flame's bundled Python has anyway), a `--mode=blender-only` install mode that skips the forge env preflight would reduce deployment friction. The real blocker for "Flame-bundled Python only" mode is the cv2 call sites in Camera Match itself; see the v6 chat discussion about auditing those.
 
-### 4. Installer (v5 item — still open in parts)
-The v5 installer landed but still assumes the forge conda env. For users wanting to deploy only the Blender round-trip slice (which needs neither cv2 nor OCIO, just numpy which Flame's bundled Python has anyway), a `--mode=blender-only` install mode that skips the forge env preflight would reduce deployment friction. See the v6 chat discussion about cv2 call sites in Camera Match being the real blocker for "Flame-bundled Python only" mode.
+### 3. Cleanup of dead code (carried from v5)
+`_JPEG_PRESET` constant and `_NoHooks` class still present but unused after the Wiretap migration. `flame/apply_solve.py`, `flame/solve_and_update.py`, `matchbox/` from earlier passoffs are still candidates for removal. Also: `_apply_camera` still inlines the action-camera discovery loop that's now available as `_find_action_cameras()` at module level — fold them together next time that path is touched (noted in the helper's docstring).
 
-### 5. Cleanup of dead code (carried from v5)
-`_JPEG_PRESET` constant and `_NoHooks` class still present but unused after the Wiretap migration. `flame/apply_solve.py`, `flame/solve_and_update.py`, `matchbox/` from earlier passoffs are still candidates for removal.
-
-### 6. UI testing of "Drop axes at line endpoints" (carried from v5)
+### 4. UI testing of "Drop axes at line endpoints" (carried from v5)
 End-to-end Apply path with the checkbox checked hasn't been driven through the UI yet. Math is verified (`_back_project_to_plane` and `endpoint_axes` work in isolation); button-click path needs a smoke test on a real solve.
 
-### 7. Optional: target colour space dropdown (carried from v5)
+### 5. Optional: target colour space dropdown (carried from v5)
 OCIO target is hard-coded to display=`sRGB - Display` + view=`ACES 2.0 - SDR 100 nits (Rec.709)`. Users with HDR monitors or P3 displays would benefit from a Target dropdown. Low priority.
 
-### 8. Stylistic polish (carried from v5)
+### 6. Stylistic polish (carried from v5)
 Source / Frame controls lack QSS styling for `QSpinBox` / `QComboBox` row overrides. Picks up global rules but could be tightened.
+
+### 7. Nice-to-have: auto-detect plate metadata from Action's Back input
+Export currently defaults plate width/height/frame from "first clip in batch" and lets the user confirm. The ideal UX would walk the Action's Back input (the clip wired to it by Camera Match's Apply) and pick up its metadata automatically. Blocked on knowing the Flame API for querying a node's input connections from the Python side — couldn't confirm the call shape without a live session.
 
 ---
 
@@ -174,9 +180,9 @@ Source / Frame controls lack QSS styling for `QSpinBox` / `QComboBox` row overri
 
 ---
 
-## Flame ↔ Blender camera round-trip: as-built (v6)
+## Flame ↔ Blender camera round-trip: as-built (v6.1)
 
-The v5 sketch is implemented. This section documents the actual on-disk state, the on-disk files, their CLI shape, and the validated round-trip numbers. **Prefer this section over any residual sketch prose above** — three specific claims in the sketch turned out to need correction, captured in "Session v6 corrections to v5's Blender sketch" earlier in this document.
+The v5 sketch is implemented AND wired into Flame's batch menu. This section documents the actual on-disk state, the on-disk files, their CLI shape, and the validated round-trip numbers. **Prefer this section over any residual sketch prose above** — three specific claims in the sketch turned out to need correction, captured in "Session v6 corrections to v5's Blender sketch" earlier in this document.
 
 ### What lives where
 
@@ -185,12 +191,16 @@ The v5 sketch is implemented. This section documents the actual on-disk state, t
 | `forge_core/math/rotations.py` | Pure-math helpers: `compute_flame_euler_zyx`, `flame_euler_to_cam_rot`. Numpy only. |
 | `forge_flame/adapter.py` | Re-exports both helpers for back-compat. `solve_for_flame` still lives here. |
 | `forge_flame/camera_io.py` | Flame PyAction camera ↔ v5 JSON. Single-frame v1. Handles film-back override correctly. |
+| `forge_flame/blender_bridge.py` | Flame-free, Qt-free subprocess orchestration: Blender binary + script path resolution, argv composition, `subprocess.run` wrappers, `reveal_in_file_manager`. |
+| `flame/camera_match_hook.py` | Adds `_export_camera_to_blender` + `_import_camera_from_blender` handlers and the `_scope_batch_action` / `_first_action_in_selection` / `_scan_first_clip_metadata` / `_find_action_cameras(only_action=...)` / `_pick_camera` helpers. `get_batch_custom_ui_actions` registers the two new menu items. |
 | `tools/blender/bake_camera.py` | Runs in Blender. JSON → `.blend`. Self-contained (mathutils, not forge_core). |
 | `tools/blender/extract_camera.py` | Runs in Blender. `.blend` → JSON. Self-contained. |
 | `tools/blender/sample_camera.json` | 3-frame fixture for smoke testing. |
 | `tools/blender/roundtrip_selftest.sh` | Shell runner: bake + extract + diff against `sample_camera.json`. |
 | `tests/test_blender_roundtrip.py` | 13 tests (no Blender needed — exercises the math). |
 | `tests/test_camera_io.py` | 29 tests for the FOV ↔ focal ↔ film-back converters. |
+| `tests/test_blender_bridge.py` | 23 tests for path resolution + CLI argv composition. |
+| `install.sh` | Deploys all three siblings (`forge_core/`, `forge_flame/`, `tools/blender/`) under `/opt/Autodesk/shared/python/`. |
 
 ### Pipeline sequence (4 legs)
 
@@ -249,4 +259,4 @@ The rotation drift is the Blender-side float precision floor and is invisible at
 
 ### Where to pick it up next
 
-Flame-side batch UI button — open item #1. The mathematical pipeline is validated; what remains is integration with Flame's right-click Batch menu (see `camera_match_hook.py` for the pattern) and shelling out to the Blender CLI. Installer needs to carry `tools/blender/` at the same time.
+Multi-frame keyframing in `camera_io` — open item #1 now that the batch button is done. Current `camera_io` reads/writes single-frame; the bake/extract scripts already handle multi-frame JSON correctly. The missing piece is walking Flame's PyAttribute keyframe API to emit multiple frame entries on export and insert multiple keyframes on import. Untested territory; will want a live Flame session with an animated camera to confirm the call shape.
