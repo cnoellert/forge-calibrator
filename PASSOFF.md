@@ -1,6 +1,23 @@
-# forge-calibrator — Session Passoff (v5)
+# forge-calibrator — Session Passoff (v6)
 
-## Current state — Camera Match is modular; installer ships; next pick is trafFIK reuse or Blender round-trip
+## Current state — Flame ↔ Blender camera round-trip lands and validates against live Flame; Flame-side batch UI button is next
+
+## Session v6 recap (2026-04-19)
+
+- **Flame ↔ Blender round-trip is functional end-to-end.** Three new Python modules plus a selftest shell script implement the pipeline that was sketched in v5. Validated against a live solved Flame camera (40° vfov, position ~5000 pixels, identity rotation): FOV round-trips to 0 delta, position to 0 delta, rotation drifts ≤1e-5° (Blender's float32 matrix_world — invisible at render scale).
+- **Helpers moved to `forge_core.math.rotations`.** `compute_flame_euler_zyx` and new `flame_euler_to_cam_rot` (forward Euler → 3x3, exact inverse) now live there. Pure numpy, no host bindings — Blender-side and future-host-side code can import without pulling the solver or cv2 or OCIO. `forge_flame.adapter` re-exports both names; every existing import keeps working.
+- **Single-frame `forge_flame.camera_io` bridges Flame's PyAction to the v5 JSON contract.** Reads/writes via `cam.position`, `cam.rotation`, `cam.fov` (not `cam.focal` — the hook's note about Super 16 applies here too). Handles film-back override correctly: when user pins `film_back_mm=36.0` for full-frame parity, focal is recomputed from (fov, new film_back) so the stored trio is self-consistent.
+- **Test count 129 → 171.** `tests/test_blender_roundtrip.py` (13 tests — axis-map sanity, Euler helper inverse property, bake/extract math on three known-answer cameras). `tests/test_camera_io.py` (29 tests — FOV ↔ focal ↔ film-back converter correctness and input validation). Everything runs without Blender; `tools/blender/roundtrip_selftest.sh` exercises the full pipeline when Blender is available.
+
+## Session v6 corrections to v5's Blender sketch
+
+Three things in the v5 sketch turned out wrong or incomplete. Future-you should trust this section over the "Sketch" section below:
+
+- **`--scale` is position-only, not lens/sensor.** v5 said "divides position + focal + sensor in lockstep to preserve FOV." That's wrong: Blender min-clamps `cam.data.lens` and `cam.data.sensor_width` at 1.0mm, so any scale factor larger than the focal value silently clips to 1.0 and the extract reads back `scale` as the lens value. FOV depends only on the lens/sensor *ratio*, which is preserved regardless of absolute values, so there's no reason to scale lens/sensor at all. Bake divides position only; extract multiplies position only.
+- **`sensor_fit='VERTICAL'` required.** Blender's default `sensor_fit='AUTO'` treats `sensor_width` as horizontal for wide-aspect plates. Our JSON contract's `film_back_mm` is the vertical sensor dimension (to match Flame's `cam.fov` being VFOV). Bake pins `sensor_fit='VERTICAL'` and writes to `sensor_height`; extract reads `sensor_height`. Without this, Flame-internal round-trip still works (the same misinterpretation cancels out), but Blender's rendered FOV disagrees with Flame's — visible the first time you look through the camera in Blender.
+- **Flame's Python console caches modules across runs.** Flame's long-lived Python interpreter keeps `sys.modules` warm across script runs. Updating `forge_flame/camera_io.py` on disk does not reload a session that already imported it. Any camera_io test script needs a `sys.modules` purge + re-import at the top, or it'll debug old bytecode. Cost us a confused round-trip result this session when the updated export hadn't actually loaded.
+
+The sketch's axis-map (`Rx(+90°)`), rotation composition (`R = Rz(rz) · Ry(-ry) · Rx(-rx)`), and data contract schema all held up correctly.
 
 ## Session v5 recap (2026-04-17 → 2026-04-18)
 
@@ -11,6 +28,10 @@
 
 ## Import map (for trafFIK reuse)
 
+    # Pure math — numpy only, no host bindings. Safe to import from any host.
+    from forge_core.math.rotations import (
+        compute_flame_euler_zyx, flame_euler_to_cam_rot,
+    )
     from forge_core.solver.solver import solve_2vp
     from forge_core.solver.fitting import fit_vp_from_lines, line_to_vp_residual_px
     from forge_core.colour.ocio import OcioPipeline, resolve_flame_aces2_config
@@ -21,6 +42,16 @@
     # Flame-only — needs Wiretap SDK, Flame-bundled Python:
     from forge_flame.wiretap import get_clip_colour_space, extract_frame_bytes
     from forge_flame.adapter import solve_for_flame, compute_flame_euler_zyx
+    from forge_flame.camera_io import (
+        export_flame_camera_to_json, import_json_to_flame_camera,
+        vfov_deg_from_focal, focal_from_vfov_deg, film_back_from_fov_focal,
+    )
+
+    # Blender-side scripts (invoked via blender --background --python):
+    #   tools/blender/bake_camera.py    — Flame JSON -> .blend
+    #   tools/blender/extract_camera.py — .blend  -> Flame JSON
+    # Blender ships its own Python with numpy + mathutils; these scripts
+    # are self-contained and don't import forge_core / forge_flame.
 
 ---
 
@@ -98,30 +129,29 @@ for o in gc.get_objects():
 
 ## Open items (priority order)
 
-### 1. Installer (next session's primary task)
-The tool currently requires manual `cp` to `/opt/Autodesk/shared/python/camera_match/` and assumes a working `forge` conda env at `~/miniconda3/envs/forge/` with numpy / opencv-python / PyOpenColorIO. Need an installer that:
-- Copies the hook to the right location.
-- Verifies (or installs) the forge conda env with required deps.
-- Confirms the wiretap CLI exists at `/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame`.
-- Confirms an OCIO config exists at the expected ACES 2.0 path.
-- Drops a stub `__init__.py` in the install dir to prevent the namespace-package drift documented in memory.
+### 1. Flame-side batch UI button (next session's primary task)
+Add "Export Camera to Blender" alongside "Open Camera Match" in the right-click Batch menu on a Clip or Action camera. Workflow: user picks a solved camera; hook calls `forge_flame.camera_io.export_flame_camera_to_json` to write an intermediate JSON; shells out to `blender --background --python tools/blender/bake_camera.py -- ...` to produce a `.blend`; reveals the `.blend` in Finder (macOS) or xdg-open. Inverse "Import Camera from Blender" button does the reverse with `extract_camera.py` + `import_json_to_flame_camera`. Reuse the camera-finding loop from `_apply_camera` in `camera_match_hook.py` (filter Actions, skip Perspective, dropdown if multiple) so users can target a specific camera in a scene that has several.
 
-### 2. Cleanup of dead code
-`_JPEG_PRESET` constant and `_NoHooks` class are still present but unused after the Wiretap migration. Safe to delete:
-```python
-_JPEG_PRESET = "/opt/Autodesk/shared/export/presets/file_sequence/JPEG_CameraMatch.xml"
-class _NoHooks(object): ...
-```
-Also `flame/apply_solve.py`, `flame/solve_and_update.py`, `matchbox/` from earlier passoffs are still candidates for removal.
+### 2. Multi-frame keyframe support in camera_io
+Current `camera_io` v1 is single-frame only — matches what forge-calibrator produces today (static solves). When animated Flame cameras need round-tripping, extend `export_flame_camera_to_json` to walk Flame's PyAttribute keyframe API (untested territory; need live Flame to confirm the call shape — probably `attr.add_keyframe(frame, value)` or similar) and emit a multi-frame JSON. Bake and extract already handle multi-frame JSON correctly, so this is Flame-side only.
 
-### 3. UI testing of "Drop axes at line endpoints"
-The end-to-end Apply path with the checkbox checked hasn't been driven through the UI yet. Math is verified (`_back_project_to_plane` and `endpoint_axes` work in isolation), and Action axis creation is verified, but the button click path needs a smoke test on a real solve.
+### 3. Installer needs to carry tools/blender/
+`install.sh` copies `forge_core/` and `forge_flame/` recursively, so `forge_core/math/` tags along automatically — no change needed there. But `tools/blender/` isn't installed anywhere today. The batch UI button in item #1 will need to shell out to the scripts at a known path; the installer needs to copy them to `/opt/Autodesk/shared/python/tools/blender/` (or similar). Preflight should also check that a Blender binary is resolvable, though where to look is user-dependent (macOS `/Applications/Blender.app/...`, Linux usually on PATH).
 
-### 4. Optional: target colour space dropdown
-Currently the OCIO target is hard-coded to display=`sRGB - Display` + view=`ACES 2.0 - SDR 100 nits (Rec.709)`. For users with HDR monitors or P3 displays, a Target dropdown would be useful. Low priority.
+### 4. Installer (v5 item — still open in parts)
+The v5 installer landed but still assumes the forge conda env. For users wanting to deploy only the Blender round-trip slice (which needs neither cv2 nor OCIO, just numpy which Flame's bundled Python has anyway), a `--mode=blender-only` install mode that skips the forge env preflight would reduce deployment friction. See the v6 chat discussion about cv2 call sites in Camera Match being the real blocker for "Flame-bundled Python only" mode.
 
-### 5. Stylistic polish
-The Source / Frame controls don't have QSS styling for `QSpinBox` and `QComboBox` overrides specific to those rows — they pick up the global rules but could be tightened.
+### 5. Cleanup of dead code (carried from v5)
+`_JPEG_PRESET` constant and `_NoHooks` class still present but unused after the Wiretap migration. `flame/apply_solve.py`, `flame/solve_and_update.py`, `matchbox/` from earlier passoffs are still candidates for removal.
+
+### 6. UI testing of "Drop axes at line endpoints" (carried from v5)
+End-to-end Apply path with the checkbox checked hasn't been driven through the UI yet. Math is verified (`_back_project_to_plane` and `endpoint_axes` work in isolation); button-click path needs a smoke test on a real solve.
+
+### 7. Optional: target colour space dropdown (carried from v5)
+OCIO target is hard-coded to display=`sRGB - Display` + view=`ACES 2.0 - SDR 100 nits (Rec.709)`. Users with HDR monitors or P3 displays would benefit from a Target dropdown. Low priority.
+
+### 8. Stylistic polish (carried from v5)
+Source / Frame controls lack QSS styling for `QSpinBox` / `QComboBox` row overrides. Picks up global rules but could be tightened.
 
 ---
 
@@ -144,84 +174,79 @@ The Source / Frame controls don't have QSS styling for `QSpinBox` and `QComboBox
 
 ---
 
-## Sketch: Flame ↔ Blender camera round-trip (~200 LOC, no new deps)
+## Flame ↔ Blender camera round-trip: as-built (v6)
 
-**Why easy:** both cameras share OpenGL's `-Z_local` forward convention. Only real difference is world-up: Flame is **Y-up**, Blender is **Z-up**. Transport is filesystem + Blender CLI (`blender --background --python script.py -- args…`) — no bridge, no daemon, mirrors the pattern we already use for `wiretap_rw_frame`.
+The v5 sketch is implemented. This section documents the actual on-disk state, the on-disk files, their CLI shape, and the validated round-trip numbers. **Prefer this section over any residual sketch prose above** — three specific claims in the sketch turned out to need correction, captured in "Session v6 corrections to v5's Blender sketch" earlier in this document.
 
-### Axis map (Flame → Blender)
+### What lives where
 
-| Flame world | Blender world |
+| File | Role |
 |---|---|
-| `+X` (right) | `+X` (right) |
-| `+Y` (up) | `+Z` (up) |
-| `+Z` (toward camera) | `-Y` (behind camera) |
+| `forge_core/math/rotations.py` | Pure-math helpers: `compute_flame_euler_zyx`, `flame_euler_to_cam_rot`. Numpy only. |
+| `forge_flame/adapter.py` | Re-exports both helpers for back-compat. `solve_for_flame` still lives here. |
+| `forge_flame/camera_io.py` | Flame PyAction camera ↔ v5 JSON. Single-frame v1. Handles film-back override correctly. |
+| `tools/blender/bake_camera.py` | Runs in Blender. JSON → `.blend`. Self-contained (mathutils, not forge_core). |
+| `tools/blender/extract_camera.py` | Runs in Blender. `.blend` → JSON. Self-contained. |
+| `tools/blender/sample_camera.json` | 3-frame fixture for smoke testing. |
+| `tools/blender/roundtrip_selftest.sh` | Shell runner: bake + extract + diff against `sample_camera.json`. |
+| `tests/test_blender_roundtrip.py` | 13 tests (no Blender needed — exercises the math). |
+| `tests/test_camera_io.py` | 29 tests for the FOV ↔ focal ↔ film-back converters. |
 
-That's `Rx(+90°)` as a 4x4. Baked once, left-multiplied into the world matrix. Reverse trip is `Rx(-90°)`.
+### Pipeline sequence (4 legs)
 
-### Data contract — single JSON per camera
+```
+Flame solved camera
+  ─► forge_flame.camera_io.export_flame_camera_to_json       (leg 1)
+  ─► /tmp/flame_cam.json
+  ─► blender --background --python tools/blender/bake_camera.py -- \
+        --in cam.json --out out.blend --scale 1000 --create-if-missing   (leg 2)
+  ─► /tmp/forge_rt.blend
+  ─► [optional: edit camera in Blender]
+  ─► blender --background out.blend --python tools/blender/extract_camera.py -- \
+        --out cam.json                                        (leg 3)
+  ─► /tmp/forge_rt.json
+  ─► forge_flame.camera_io.import_json_to_flame_camera        (leg 4)
+  ─► Flame camera (round-trip target)
+```
+
+### Conventions (final, tested)
+
+- **World up:** Flame Y-up → Blender Z-up via `Rx(+90°)` left-multiplied into the 4x4 world matrix. Pure left-multiplication is valid because both cameras share OpenGL's `-Z_local` forward convention (no camera-local correction needed).
+- **Rotation decomposition:** `R = Rz(rz) · Ry(-ry) · Rx(-rx)`. Verified in `forge_core/math/rotations.py` and tested in `test_blender_roundtrip.py` + `test_hook_parity.py`.
+- **Film back:** JSON's `film_back_mm` is the **vertical** sensor dimension (matches Flame's `cam.fov` being VFOV). Bake writes to `cam.data.sensor_height` with `sensor_fit='VERTICAL'`. Extract reads `sensor_height`.
+- **Scale:** `--scale` divides POSITION only. Lens and sensor stay in native mm (Blender min-clamps them at 1.0mm and FOV depends only on their ratio). `forge_bake_scale` stamped on `cam.data` for lossless extract.
+- **Rotation keyframing:** quaternion. Bake sets `rotation_mode='QUATERNION'` and keyframes `rotation_quaternion` to be gimbal-safe across animated frames.
+
+### Data contract (v6, unchanged from v5 sketch)
 
 ```json
 {
-  "width": 5184, "height": 3456,
+  "width": 5184,
+  "height": 3456,
   "film_back_mm": 36.0,
   "frames": [
     {"frame": 1001,
      "position": [x, y, z],
-     "rotation_flame_euler": [rx, ry, rz],
-     "focal_mm": 42.03}
+     "rotation_flame_euler": [rx_deg, ry_deg, rz_deg],
+     "focal_mm": 42.0}
   ]
 }
 ```
 
-Raw Flame values, no axis swap at export — Blender side does it. Keeps JSON readable as a debug artifact.
+Raw Flame values, no axis swap at export — Blender side does the swap. Multiple frames supported on bake/extract; camera_io v1 is single-frame only.
 
-### Four pieces to write
+### Validated numbers (2026-04-19, live Flame test)
 
-1. **`forge_flame/camera_io.py`** (new) — `export_action_camera_to_json(cam_node, frame_range, out_path)` walks keyframes on `cam_node.position`/`rotation`/`fov`, dumps JSON. `import_json_to_action_camera(in_path, cam_node)` does the reverse.
-2. **`tools/blender/bake_camera.py`** — runs inside Blender. Reads JSON, rebuilds 4x4 per frame using `Rz(rz) · Ry(-ry) · Rx(-rx)` (Flame's convention — we have `compute_flame_euler_zyx` for the inverse direction; forward is just these three Matrix.Rotation calls), left-multiplies `Rx(+90°)` once, sets `cam.matrix_world`, inserts keyframes. Saves `.blend`.
-3. **`tools/blender/extract_camera.py`** — inverse. For each frame in `.blend`, read `cam.matrix_world`, left-multiply `Rx(-90°)`, decompose via `forge_flame.adapter.compute_flame_euler_zyx`, dump JSON.
-4. **Flame-side Batch action** — new "Export Camera to Blender" alongside "Open Camera Match". Shells out to `blender --background --python .../bake_camera.py -- cam.json out.blend`.
+Starting state: Flame camera at `(0, 0, 4747.64)`, rotation `(0, 0, 0)`, vfov=40°, film_back_mm=36.0 override.
 
-### Key Blender Python snippet (bake_camera.py core loop)
+| Metric | Delta after full 4-leg round-trip |
+|---|---|
+| Position | 0.00e+00 (exact) |
+| Rotation | ≤1.20e-05° (Blender float32 matrix_world) |
+| FOV | 0.00e+00 (exact — pure float64 through camera_io) |
 
-```python
-import bpy, json, math, sys
-from mathutils import Matrix
-
-R_Y2Z = Matrix.Rotation(math.radians(90), 4, 'X')
-data = json.load(open(sys.argv[sys.argv.index("--") + 1]))
-cam = bpy.data.objects["Camera"]
-
-for kf in data["frames"]:
-    rx, ry, rz = [math.radians(a) for a in kf["rotation_flame_euler"]]
-    R = (Matrix.Rotation(rz, 4, 'Z')
-         @ Matrix.Rotation(-ry, 4, 'Y')
-         @ Matrix.Rotation(-rx, 4, 'X'))
-    M_flame = Matrix.Translation(kf["position"]) @ R
-    cam.matrix_world = R_Y2Z @ M_flame
-    cam.keyframe_insert("location", frame=kf["frame"])
-    cam.keyframe_insert("rotation_euler", frame=kf["frame"])
-    cam.data.lens = kf["focal_mm"]
-    cam.data.keyframe_insert("lens", frame=kf["frame"])
-
-cam.data.sensor_width = data["film_back_mm"]
-bpy.ops.wm.save_as_mainfile(filepath=sys.argv[sys.argv.index("--") + 2])
-```
-
-### Gotchas worth knowing before writing code
-
-1. **Gimbal lock at `ry ≈ ±90°`** — only hits the extract path (matrix → Euler). `compute_flame_euler_zyx` already handles it with the `cb` guard.
-2. **Scene scale** — Flame uses 1 unit ≈ 1 pixel. Push pixel-units through verbatim for fidelity; if Blender viewport feels unusable, add a `--scale` flag to the bake script that divides `position` + `focal_mm` + `sensor_width` in lockstep so FOV stays correct.
-3. **Blender camera discovery** — default scene has one camera named "Camera"; real scenes don't. Accept a `--camera-name` CLI flag.
-4. **Frame range** — set `bpy.context.scene.frame_start/end` from JSON bounds or Blender silently clips.
-5. **Blender binary location** — like `wiretap_rw_frame`, hardcode a sane default (`/Applications/Blender.app/Contents/MacOS/Blender` on mac, `blender` on PATH on linux) with env override.
-6. **Round-trip fidelity test** — the easiest regression: Flame camera → JSON → Blender → JSON → Flame. Assert the two JSONs match to some tolerance. Catches sign errors and axis-map bugs immediately.
-7. **Animation fidelity** — FBX vs direct JSON: FBX has its own camera conventions and would re-bake everything. Going direct JSON → Blender (skip FBX) keeps us in full control of the math.
-
-### Scope estimate
-
-~60 lines Flame side (export + import), ~50 lines bake script, ~40 lines extract script, ~30 lines installer updates (sync `tools/blender/` somewhere Blender can find from CLI, probably `/opt/Autodesk/shared/python/tools/blender/`). Call it 200 lines total. No new Python deps — Blender ships its own Python, Flame has ours.
+The rotation drift is the Blender-side float precision floor and is invisible at any reasonable render scale.
 
 ### Where to pick it up next
 
-Start with the round-trip fidelity test first (hardest to retrofit later) using a single-frame hand-written JSON. Then the bake script, then the Flame exporter. The extract script and batch action come last — symmetry from the earlier pieces.
+Flame-side batch UI button — open item #1. The mathematical pipeline is validated; what remains is integration with Flame's right-click Batch menu (see `camera_match_hook.py` for the pattern) and shelling out to the Blender CLI. Installer needs to carry `tools/blender/` at the same time.
