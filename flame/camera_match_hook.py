@@ -1795,14 +1795,20 @@ def _export_camera_to_blender(selection):
 
     Flow: right-click the Action holding your solved camera
     -> pick the target camera (dialog if Action has multiple non-Perspective)
-    -> confirm/edit plate metadata (WxH @ frame, pre-filled from first clip
-       in batch if available, else 1920x1080 @ 1)
+    -> confirm/edit plate resolution (WxH; pre-filled from first clip in batch)
     -> pick output .blend path
-    -> write intermediate JSON (camera_io pins film_back_mm=36.0 for
-       full-frame parity with Blender conventions; focal is recomputed to
-       stay self-consistent with the pinned film back)
+    -> bake the camera to ASCII FBX via fbx_io.export_action_cameras_to_fbx
+       (Flame's own baker walks the batch range flame.batch.start_frame +
+       duration for animated cameras; static cameras get a 2-key endpoint
+       FBX as an optimization)
+    -> convert FBX to v5 JSON via fbx_ascii.fbx_to_v5_json (pins
+       film_back_mm=36.0 for full-frame Blender parity)
     -> shell out to Blender via blender_bridge.run_bake
     -> reveal the .blend in the OS file manager.
+
+    Frame range is auto-detected from the current batch — no dialog field.
+    The FBX intermediate is kept alongside the .blend + .json for
+    debuggability.
 
     Scope is `_scope_batch_action`, so this menu item appears on Action
     right-clicks. Open Camera Match remains on clip context since its
@@ -1811,12 +1817,12 @@ def _export_camera_to_blender(selection):
     _ensure_forge_core_on_path()
 
     import flame
+    import json as _json
     import os
     import subprocess
     from PySide6 import QtWidgets
 
-    from forge_flame.camera_io import export_flame_camera_to_json
-    from forge_flame import blender_bridge
+    from forge_flame import blender_bridge, fbx_ascii, fbx_io
 
     action_node = _first_action_in_selection(selection)
     if action_node is None:
@@ -1840,26 +1846,28 @@ def _export_camera_to_blender(selection):
         return
     action, cam, label = picked
 
-    # Plate metadata — ask in one line, pre-fill from first batch clip.
-    default_w, default_h, default_frame = _scan_first_clip_metadata()
-    meta_text, ok = QtWidgets.QInputDialog.getText(
+    # Plate resolution — pre-fill from the first clip in batch. The FBX
+    # carries sensor/FOV/animation natively, but plate pixel dims aren't
+    # a stock FBX property, so we still stamp them into the v5 JSON that
+    # bake_camera.py consumes. Frame number was removed from this dialog:
+    # the FBX baker walks flame.batch.start_frame + duration automatically.
+    default_w, default_h, _default_frame = _scan_first_clip_metadata()
+    res_text, ok = QtWidgets.QInputDialog.getText(
         None, "Export Camera to Blender",
-        "Plate resolution and frame (WxH @ frame):",
+        "Plate resolution (WxH):",
         QtWidgets.QLineEdit.Normal,
-        f"{default_w}x{default_h} @ {default_frame}")
+        f"{default_w}x{default_h}")
     if not ok:
         return
     try:
-        wxh_part, frame_part = meta_text.split("@")
-        w_str, h_str = wxh_part.lower().strip().split("x")
+        w_str, h_str = res_text.lower().strip().split("x")
         width = int(w_str.strip())
         height = int(h_str.strip())
-        frame = int(frame_part.strip())
     except (ValueError, AttributeError):
         flame.messages.show_in_dialog(
             title="Export Camera to Blender",
-            message=f"Couldn't parse {meta_text!r}. "
-                    f"Expected format: 'WxH @ frame' (e.g. 5184x3456 @ 1001).",
+            message=f"Couldn't parse {res_text!r}. "
+                    f"Expected 'WxH' (e.g. 5184x3456).",
             type="error", buttons=["OK"])
         return
 
@@ -1873,21 +1881,43 @@ def _export_camera_to_blender(selection):
     if not blend_path.endswith(".blend"):
         blend_path += ".blend"
 
-    # JSON written alongside the .blend for debuggability.
+    # Intermediate artifacts alongside the .blend for debuggability.
+    fbx_path = blend_path[:-len(".blend")] + ".fbx"
     json_path = blend_path[:-len(".blend")] + ".json"
+
+    # Bake Flame cam -> ASCII FBX. fbx_io handles the Perspective
+    # exclusion and the selection dance (saves + restores user's prior
+    # selection so we don't leak selection state back to Flame's UI).
     try:
-        export_flame_camera_to_json(
-            cam, json_path,
-            frame=frame, width=width, height=height,
-            film_back_mm=36.0,
+        fbx_io.export_action_cameras_to_fbx(
+            action, fbx_path,
+            cameras=[cam],
+            bake_animation=True,
         )
     except Exception as e:
         flame.messages.show_in_dialog(
             title="Export Camera to Blender",
-            message=f"Failed to write camera JSON:\n{e}",
+            message=f"Failed to write FBX:\n{e}",
             type="error", buttons=["OK"])
         return
 
+    # FBX -> v5 JSON for bake_camera.py. Pin film_back_mm=36.0 for
+    # full-frame Blender parity (matches the prior single-frame path).
+    try:
+        fbx_ascii.fbx_to_v5_json(
+            fbx_path, json_path,
+            width=width, height=height,
+            film_back_mm=36.0,
+            camera_name=_val(cam.name),
+        )
+    except Exception as e:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"Failed to convert FBX to JSON:\n{e}",
+            type="error", buttons=["OK"])
+        return
+
+    # Blender bake — bake_camera.py is already multi-frame capable.
     try:
         blender_bridge.run_bake(
             json_path, blend_path,
@@ -1906,37 +1936,57 @@ def _export_camera_to_blender(selection):
             type="error", buttons=["OK"])
         return
 
+    # Read frame count from JSON for the outcome dialog.
+    try:
+        with open(json_path) as f:
+            n_frames = len(_json.load(f).get("frames") or [])
+    except Exception:
+        n_frames = 0
+    frame_label = f"{n_frames}-frame" + ("" if n_frames == 1 else "s")
+
     blender_bridge.reveal_in_file_manager(blend_path)
     flame.messages.show_in_dialog(
         title="Export Camera to Blender",
-        message=f"Exported '{label}'\n"
-                f"  plate:  {width}x{height} @ frame {frame}\n"
+        message=f"Exported '{label}' ({frame_label})\n"
+                f"  plate:  {width}x{height}\n"
                 f"  blend:  {blend_path}\n"
+                f"  fbx:    {fbx_path}\n"
                 f"  json:   {json_path}",
         type="info", buttons=["OK"])
 
 
 def _import_camera_from_blender(selection):
-    """Import a camera FROM a Blender .blend back into a Flame Action camera.
+    """Import a camera FROM a Blender .blend back into a Flame Action.
 
     Flow: right-click the target Action in Batch
     -> pick input .blend
-    -> shell out to Blender via blender_bridge.run_extract to produce JSON
-    -> pick which camera in the selected Action receives the values
-       (dialog only if Action has multiple non-Perspective cameras)
-    -> camera_io.import_json_to_flame_camera applies position/rotation/fov.
+    -> pick target camera name (informs the name on the imported cam;
+       dialog only shown if multiple non-Perspective cameras present)
+    -> shell out to Blender via blender_bridge.run_extract for JSON
+    -> convert the v5 JSON to ASCII FBX via fbx_ascii.v5_json_to_fbx
+    -> Flame-side FBX ingest via fbx_io.import_fbx_to_action
 
-    Same Action-scope gating as the export handler — user right-clicks the
-    Action they want the imported values to land in."""
+    The FBX route is mandatory for animated cameras — Flame's PyAttribute
+    API has no keyframe write path (see memory/flame_keyframe_api.md).
+    Static .blend files round-trip identically through the same flow;
+    Flame's import_fbx just sees a single-keyframe curve. The Perspective
+    exclusion lives in fbx_io, so the built-in viewport camera is safely
+    filtered out regardless of what the .blend contains.
+
+    Unlike the pre-v6.2 JSON-overwrite path, this creates a NEW camera
+    rather than mutating the picked target. Flame auto-appends a numeric
+    suffix on name collision (e.g. a .blend imported against an existing
+    'Default' produces 'Default1'). The original camera is preserved so
+    the user can compare and remove it manually."""
     _ensure_forge_env()
     _ensure_forge_core_on_path()
 
     import flame
+    import json as _json
     import subprocess
     from PySide6 import QtWidgets
 
-    from forge_flame.camera_io import import_json_to_flame_camera
-    from forge_flame import blender_bridge
+    from forge_flame import blender_bridge, fbx_ascii, fbx_io
 
     action_node = _first_action_in_selection(selection)
     if action_node is None:
@@ -1964,7 +2014,8 @@ def _import_camera_from_blender(selection):
     picked = _pick_camera(cameras, "Import Camera from Blender")
     if picked is None:
         return
-    action, cam, label = picked
+    action, cam, _label = picked
+    target_name = _val(cam.name)
 
     json_path = blend_path[:-len(".blend")] + "_extract.json" \
         if blend_path.endswith(".blend") else blend_path + "_extract.json"
@@ -1984,22 +2035,55 @@ def _import_camera_from_blender(selection):
             type="error", buttons=["OK"])
         return
 
+    # Convert v5 JSON -> ASCII FBX. Name the emitted camera after the
+    # picked target; Flame will auto-append a suffix on collision.
+    fbx_path = json_path[:-len(".json")] + ".fbx"
     try:
-        result = import_json_to_flame_camera(json_path, cam)
+        fbx_ascii.v5_json_to_fbx(
+            json_path, fbx_path,
+            camera_name=target_name,
+        )
     except Exception as e:
         flame.messages.show_in_dialog(
             title="Import Camera from Blender",
-            message=f"Failed to apply camera values:\n{e}",
+            message=f"Failed to convert Blender JSON to FBX:\n{e}",
             type="error", buttons=["OK"])
         return
 
+    try:
+        new_nodes = fbx_io.import_fbx_to_action(action, fbx_path)
+    except Exception as e:
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message=f"Failed to import FBX into Action:\n{e}",
+            type="error", buttons=["OK"])
+        return
+
+    # Count frames for the outcome report.
+    try:
+        with open(json_path) as f:
+            n_frames = len(_json.load(f).get("frames") or [])
+    except Exception:
+        n_frames = 0
+
+    # PyCoNode instances have position / rotation / fov PyAttributes;
+    # helper nodes (null targets) don't.
+    imported_cam_names = [
+        _val(n.name) for n in new_nodes
+        if hasattr(n, "position") and hasattr(n, "fov")
+    ]
+    imported_list = ", ".join(imported_cam_names) or "(none)"
+    plural = "s" if len(imported_cam_names) != 1 else ""
+
     flame.messages.show_in_dialog(
         title="Import Camera from Blender",
-        message=f"Applied to '{label}'\n"
-                f"  frame:    {result['frame']}\n"
-                f"  fov:      {result['fov_deg']:.2f}°\n"
-                f"  focal:    {result['focal_mm']:.2f}mm "
-                f"(on {result['film_back_mm']:.2f}mm sensor)",
+        message=(
+            f"Imported {n_frames}-frame camera{plural} into "
+            f"'{_val(action_node.name)}':\n"
+            f"  {imported_list}\n"
+            f"\n"
+            f"Target '{target_name}' preserved; remove manually if desired."
+        ),
         type="info", buttons=["OK"])
 
 

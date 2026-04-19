@@ -1,0 +1,1167 @@
+"""
+Flame ASCII FBX reader + writer — narrowly scoped to camera and
+animation-curve data, not a general-purpose FBX library.
+
+Why this module exists: Flame's ``PyActionNode.export_fbx`` only emits
+ASCII FBX 7.7.0 (no binary option in the Python API), and Blender 4.5's
+FBX importer explicitly rejects ASCII. The official FBX Python SDK wheel
+Autodesk ships is cp310, which doesn't match Flame's 3.11 Python. So
+for animated camera round-trip we need our own narrow ASCII FBX bridge:
+
+    reader:  Flame ASCII FBX  -> v5 JSON contract (camera + keyframes)
+    writer:  v5 JSON contract -> ASCII FBX acceptable to Flame's import_fbx
+
+Tested against the exact shape Flame's ``export_fbx`` emits — not
+attempting to handle arbitrary FBX files from other DCCs. If Blender is
+asked to produce FBX that lands back in Flame, we go Blender->JSON
+(via ``tools/blender/extract_camera.py``)->this writer->FBX so we
+control the emitted shape end-to-end.
+
+Scope boundaries, on purpose:
+  - Cameras only. Meshes, lights, materials, skeletons: ignored on read,
+    not emitted on write.
+  - Animation curves for the three channels Flame populates during
+    ``bake_animation=True``: ``Lcl Translation`` (T), ``Lcl Rotation``
+    (R), and ``FieldOfView``.
+  - Single camera per FBX on write. Callers who want multi-camera can
+    export each separately.
+
+The reader is a general-purpose FBX-ASCII tokenizer + recursive-descent
+parser (~200 LOC). The writer is template-shaped emission: it doesn't
+try to reproduce FBX's Definitions templates from first principles, it
+emits the exact subset Flame's own export writes (verified via
+``/tmp/forge_fbx_baked.fbx`` from the v6.2 probing session).
+"""
+
+from __future__ import annotations
+
+import json
+import math
+import os
+import re
+from dataclasses import dataclass, field
+from typing import Any, Iterable, Optional, Tuple
+
+
+# =============================================================================
+# FBX time constants
+# =============================================================================
+
+# FBX internal time resolution — ticks per second. This is fixed across
+# FBX versions since at least 6.0 and is documented in Autodesk's FBX
+# SDK reference. Every ``KeyTime`` integer in an FBX AnimCurve is in
+# these units, regardless of the project frame rate.
+FBX_KTIME_PER_SECOND = 46186158000
+
+# Frame-rate string -> numeric fps. Matches the strings Flame accepts
+# for the ``frame_rate`` kwarg of ``export_fbx``. Fall back to 24.0 for
+# unknown strings; the writer will log but not raise.
+_FPS_FROM_FRAME_RATE = {
+    "23.976 fps": 24000.0 / 1001.0,  # exact NTSC 23.976
+    "24 fps": 24.0,
+    "25 fps": 25.0,
+    "29.97 fps": 30000.0 / 1001.0,
+    "30 fps": 30.0,
+    "48 fps": 48.0,
+    "50 fps": 50.0,
+    "59.94 fps": 60000.0 / 1001.0,
+    "60 fps": 60.0,
+}
+
+
+def ktime_per_frame(frame_rate: str) -> float:
+    """Return FBX-ticks per frame at the given frame-rate label."""
+    fps = _FPS_FROM_FRAME_RATE.get(frame_rate, 24.0)
+    return FBX_KTIME_PER_SECOND / fps
+
+
+def frame_from_ktime(ktime: int, frame_rate: str) -> int:
+    """Convert an FBX ``KeyTime`` integer to a nearest-integer frame
+    number. Invariant: ``frame_from_ktime(ktime_from_frame(f, fr), fr) == f``
+    for all frame rates we ship."""
+    return int(round(ktime / ktime_per_frame(frame_rate)))
+
+
+def ktime_from_frame(frame: int, frame_rate: str) -> int:
+    """Convert a frame number to an FBX ``KeyTime`` integer."""
+    return int(round(frame * ktime_per_frame(frame_rate)))
+
+
+# =============================================================================
+# Tokenizer
+# =============================================================================
+
+# Lexical tokens emitted by the tokenizer.
+_T_IDENT   = "IDENT"    # bare name: Model, Properties70, Y, Version, ...
+_T_STRING  = "STRING"   # "..." double-quoted
+_T_NUMBER  = "NUMBER"   # int or float, with optional sign / exponent
+_T_COLON   = "COLON"    # :
+_T_COMMA   = "COMMA"    # ,
+_T_LBRACE  = "LBRACE"   # {
+_T_RBRACE  = "RBRACE"   # }
+_T_STAR    = "STAR"     # * (array-length prefix, followed by NUMBER)
+
+
+# Regex for one token at a time. Order matters — we test most specific first.
+# FBX identifiers can contain digits AND double-colons (e.g. "Lcl Translation"
+# in some contexts, but those always appear quoted as strings; identifiers
+# themselves are plain alphanumeric-plus-underscore).
+_TOK_RE = re.compile(
+    r"""
+    \s+                     # whitespace — skipped
+  | ;[^\n]*                 # comments from ; to end of line — skipped
+  | " (?: [^"\\] | \\. )* " # string
+  | -? \d+ \. \d* (?: [eE][+-]?\d+ )?  # float with digits before dot
+  | -? \. \d+ (?: [eE][+-]?\d+ )?      # float starting with .
+  | -? \d+ (?: [eE][+-]?\d+ )?         # int or float with exponent
+  | [A-Za-z_][A-Za-z0-9_]*  # identifier
+  | :
+  | ,
+  | \{
+  | \}
+  | \*
+    """,
+    re.VERBOSE,
+)
+
+
+def _tokenize(text: str) -> list[tuple[str, Any]]:
+    """Split FBX ASCII text into a list of ``(kind, value)`` tokens.
+
+    Whitespace and comments are discarded. String values are unescaped.
+    Numbers are parsed as ``int`` when they have no decimal point and no
+    exponent, else ``float``. Identifiers remain strings."""
+    tokens: list[tuple[str, Any]] = []
+    pos = 0
+    length = len(text)
+
+    while pos < length:
+        m = _TOK_RE.match(text, pos)
+        if m is None:
+            raise ValueError(
+                f"FBX tokenize: unexpected character {text[pos]!r} at "
+                f"position {pos} (near: {text[max(0, pos-20):pos+20]!r})")
+        s = m.group(0)
+        pos = m.end()
+
+        # Skip whitespace and comments.
+        if s[0] in " \t\r\n" or s.startswith(";"):
+            continue
+
+        c0 = s[0]
+        if c0 == '"':
+            tokens.append((_T_STRING, _unescape_string(s)))
+        elif c0 == ":":
+            tokens.append((_T_COLON, s))
+        elif c0 == ",":
+            tokens.append((_T_COMMA, s))
+        elif c0 == "{":
+            tokens.append((_T_LBRACE, s))
+        elif c0 == "}":
+            tokens.append((_T_RBRACE, s))
+        elif c0 == "*":
+            tokens.append((_T_STAR, s))
+        elif c0 == "-" or c0.isdigit() or c0 == ".":
+            tokens.append((_T_NUMBER, _parse_number(s)))
+        else:
+            # Bare identifier (letter or underscore start).
+            tokens.append((_T_IDENT, s))
+
+    return tokens
+
+
+def _unescape_string(s: str) -> str:
+    """Strip surrounding quotes and expand backslash escapes."""
+    inner = s[1:-1]
+    # FBX ASCII strings rarely use escapes beyond \" and \\ but handle
+    # those defensively. Python's codecs do the rest.
+    return inner.encode("utf-8").decode("unicode_escape")
+
+
+def _parse_number(s: str) -> Any:
+    """Parse a numeric token into ``int`` (no `.` or exponent) else ``float``."""
+    if "." in s or "e" in s or "E" in s:
+        return float(s)
+    return int(s)
+
+
+# =============================================================================
+# Parser — recursive descent into a tree of FBXNode
+# =============================================================================
+
+
+@dataclass
+class FBXNode:
+    """One node in an FBX ASCII tree.
+
+    ``name``    — the identifier before the ``:``, e.g. ``Model``.
+    ``values``  — the comma-separated values between ``:`` and the
+                  block (or end of line), e.g. ``[5496786432,
+                  "Model::Default", "Camera"]`` for ``Model:
+                  5496786432, "Model::Default", "Camera" { ... }``.
+    ``array_len`` — set if the values are of the form ``*N { a: v... }``.
+                  The actual array values live in ``values`` (flattened
+                  from the ``a:`` child).
+    ``children`` — nested FBXNodes if a ``{ ... }`` block followed.
+    """
+
+    name: str
+    values: list[Any] = field(default_factory=list)
+    array_len: Optional[int] = None
+    children: list["FBXNode"] = field(default_factory=list)
+
+    # -------------------------------------------------------------------------
+    # Tree-query convenience — these keep extraction code compact.
+    # -------------------------------------------------------------------------
+
+    def find(self, name: str) -> Optional["FBXNode"]:
+        """Return the first child with the given name, or ``None``."""
+        for c in self.children:
+            if c.name == name:
+                return c
+        return None
+
+    def find_all(self, name: str) -> list["FBXNode"]:
+        """Return all children with the given name."""
+        return [c for c in self.children if c.name == name]
+
+
+def _parse(tokens: list[tuple[str, Any]]) -> list[FBXNode]:
+    """Parse a token list into a list of top-level FBXNodes."""
+    idx = 0
+
+    def peek(offset: int = 0) -> Optional[tuple[str, Any]]:
+        i = idx + offset
+        return tokens[i] if i < len(tokens) else None
+
+    def consume(kind: str) -> Any:
+        nonlocal idx
+        tok = peek()
+        if tok is None or tok[0] != kind:
+            raise ValueError(
+                f"FBX parse: expected {kind}, got {tok!r} at token {idx}")
+        idx += 1
+        return tok[1]
+
+    def parse_values() -> tuple[list[Any], Optional[int]]:
+        """Parse a comma-separated value list after a COLON. Handles the
+        ``*N`` array-length form specially."""
+        values: list[Any] = []
+        array_len: Optional[int] = None
+        tok = peek()
+        if tok is None:
+            return values, array_len
+
+        # Array-length form: *N { a: v1, v2, ... }
+        if tok[0] == _T_STAR:
+            nonlocal idx
+            idx += 1
+            n_tok = peek()
+            if n_tok is None or n_tok[0] != _T_NUMBER:
+                raise ValueError(
+                    f"FBX parse: expected array length after *, got {n_tok!r}")
+            array_len = int(n_tok[1])
+            idx += 1
+            # The array values are the `a:` child of the following
+            # block, but we flatten them up into this node's values.
+            return values, array_len
+
+        # Normal comma-separated value list. Stops at newline-equivalent
+        # boundaries: a following IDENT that is the next entry's name,
+        # a LBRACE, or a RBRACE. We detect "new entry" by looking for
+        # IDENT-COLON ahead.
+        while True:
+            tok = peek()
+            if tok is None:
+                break
+            if tok[0] == _T_LBRACE or tok[0] == _T_RBRACE:
+                break
+            if tok[0] == _T_IDENT:
+                # Is this the start of a new entry? If followed by COLON
+                # it is — yield control back to the block parser.
+                next_tok = peek(1)
+                if next_tok is not None and next_tok[0] == _T_COLON:
+                    break
+                # Bare identifier as a value (e.g. `Shading: Y`).
+                values.append(tok[1])
+                idx += 1
+            elif tok[0] in (_T_NUMBER, _T_STRING):
+                values.append(tok[1])
+                idx += 1
+            elif tok[0] == _T_COMMA:
+                idx += 1
+            else:
+                break
+        return values, array_len
+
+    def parse_node() -> FBXNode:
+        name = consume(_T_IDENT)
+        consume(_T_COLON)
+        values, array_len = parse_values()
+
+        children: list[FBXNode] = []
+        if peek() is not None and peek()[0] == _T_LBRACE:
+            idx_save = idx  # noqa: F841 — kept for debugger
+            consume(_T_LBRACE)
+            while peek() is not None and peek()[0] != _T_RBRACE:
+                children.append(parse_node())
+            consume(_T_RBRACE)
+
+        # If this was an array node (*N { a: ... }), flatten the `a:`
+        # child into the node's own values for easier downstream use.
+        if array_len is not None:
+            a_child = None
+            for c in children:
+                if c.name == "a":
+                    a_child = c
+                    break
+            if a_child is not None:
+                values = list(a_child.values)
+                children = [c for c in children if c.name != "a"]
+
+        return FBXNode(name=name, values=values, array_len=array_len,
+                       children=children)
+
+    nodes: list[FBXNode] = []
+    while idx < len(tokens):
+        nodes.append(parse_node())
+    return nodes
+
+
+def parse_fbx_ascii(text: str) -> list[FBXNode]:
+    """Tokenize and parse an FBX ASCII document into a top-level
+    FBXNode list. Public entry point for test code."""
+    return _parse(_tokenize(text))
+
+
+# =============================================================================
+# Extraction — FBX tree -> v5 JSON contract
+# =============================================================================
+
+
+def _as_int(v: Any) -> int:
+    return int(v)
+
+
+def _as_float(v: Any) -> float:
+    return float(v)
+
+
+def _get_property70(node: FBXNode, key: str) -> Optional[list[Any]]:
+    """Pull a ``P: "key", type, subtype, flags, value...`` line out of a
+    node's ``Properties70`` child, return the trailing value list or
+    ``None`` if missing."""
+    props = node.find("Properties70")
+    if props is None:
+        return None
+    for child in props.children:
+        if child.name != "P":
+            continue
+        if not child.values or child.values[0] != key:
+            continue
+        # values[0..3] are (key, type, subtype, flags). Rest is the value.
+        return list(child.values[4:])
+    return None
+
+
+def _iter_objects(root: list[FBXNode], kind: str) -> Iterable[FBXNode]:
+    """Walk the top-level ``Objects { ... }`` block and yield children
+    whose name matches ``kind`` (e.g. ``Model``, ``NodeAttribute``,
+    ``AnimationCurve``, ``AnimationCurveNode``)."""
+    for top in root:
+        if top.name != "Objects":
+            continue
+        for obj in top.children:
+            if obj.name == kind:
+                yield obj
+
+
+def _parse_connections(root: list[FBXNode]) -> list[tuple[str, int, int, Optional[str]]]:
+    """Extract the ``Connections { C: "OO"/"OP", src, dst [, channel] }``
+    edges into a flat list. Source and destination are FBX object IDs
+    (64-bit integers). ``channel`` is the property name for ``OP`` edges
+    (e.g. ``"Lcl Translation"``, ``"d|X"``)."""
+    edges: list[tuple[str, int, int, Optional[str]]] = []
+    for top in root:
+        if top.name != "Connections":
+            continue
+        for c in top.children:
+            if c.name != "C":
+                continue
+            v = c.values
+            if len(v) < 3:
+                continue
+            kind = v[0]
+            src = _as_int(v[1])
+            dst = _as_int(v[2])
+            channel = v[3] if len(v) >= 4 else None
+            edges.append((kind, src, dst, channel))
+    return edges
+
+
+def _object_id(obj: FBXNode) -> int:
+    """Return the numeric ID of an FBX object node (the first value on
+    ``Model: 5496786432, "Model::Default", "Camera" { ... }``)."""
+    if not obj.values:
+        raise ValueError(f"FBX extract: {obj.name!r} has no object ID")
+    return _as_int(obj.values[0])
+
+
+def _object_name(obj: FBXNode) -> str:
+    """Return the object's name, parsed out of ``"ClassName::InstanceName"``
+    (the 2nd value on the object header). Empty if missing."""
+    if len(obj.values) < 2:
+        return ""
+    raw = obj.values[1]
+    if isinstance(raw, str) and "::" in raw:
+        return raw.split("::", 1)[1]
+    return raw if isinstance(raw, str) else ""
+
+
+@dataclass
+class _CameraExtract:
+    """Intermediate bag of parsed camera data before JSON emission."""
+
+    name: str
+    model_id: int
+    node_attr_id: int
+    field_of_view: float        # from NodeAttribute Properties70
+    film_width_inches: float    # from NodeAttribute Properties70 (FilmHeight? see note)
+    film_height_inches: float
+    static_position: Tuple[float, float, float]   # from Model Lcl Translation
+    static_rotation: Tuple[float, float, float]   # from Model Lcl Rotation
+    # Animation, if any:
+    t_curve_ids: dict[str, int] = field(default_factory=dict)  # {"X": curve_id, ...}
+    r_curve_ids: dict[str, int] = field(default_factory=dict)
+    fov_curve_id: Optional[int] = None
+
+
+def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
+    """Find all camera Models in the tree and pair each with its
+    NodeAttribute + animation curves via the Connections graph."""
+    # Pass 1: Models with TypeFlags "Camera" (or `, "Camera"` in the header).
+    # Pass 2: NodeAttributes of type Camera.
+    # Pass 3: AnimationCurveNode objects and their Properties70/d|... links.
+    # Pass 4: walk Connections to hook them all up.
+
+    camera_models: dict[int, FBXNode] = {}
+    for m in _iter_objects(root, "Model"):
+        # Header shape: Model: ID, "Model::Name", "Camera"
+        if len(m.values) >= 3 and m.values[2] == "Camera":
+            camera_models[_object_id(m)] = m
+
+    camera_node_attrs: dict[int, FBXNode] = {}
+    for na in _iter_objects(root, "NodeAttribute"):
+        if len(na.values) >= 3 and na.values[2] == "Camera":
+            camera_node_attrs[_object_id(na)] = na
+
+    anim_nodes: dict[int, FBXNode] = {
+        _object_id(n): n for n in _iter_objects(root, "AnimationCurveNode")
+    }
+    anim_curves: dict[int, FBXNode] = {
+        _object_id(c): c for c in _iter_objects(root, "AnimationCurve")
+    }
+
+    edges = _parse_connections(root)
+
+    # Map NodeAttribute -> Model.
+    model_to_node_attr: dict[int, int] = {}
+    for kind, src, dst, _chan in edges:
+        if kind != "OO":
+            continue
+        if src in camera_node_attrs and dst in camera_models:
+            model_to_node_attr[dst] = src
+
+    # Map AnimCurveNode -> (model_or_nodeattr, channel_name).
+    anim_links: dict[int, tuple[int, str]] = {}
+    for kind, src, dst, chan in edges:
+        if kind != "OP" or chan is None:
+            continue
+        if src in anim_nodes:
+            anim_links[src] = (dst, chan)
+
+    # Map AnimCurve -> (anim_node, sub_channel_name).
+    curve_links: dict[int, tuple[int, str]] = {}
+    for kind, src, dst, chan in edges:
+        if kind != "OP" or chan is None:
+            continue
+        if src in anim_curves and dst in anim_nodes:
+            curve_links[src] = (dst, chan)
+
+    results: list[_CameraExtract] = []
+    for model_id, model in camera_models.items():
+        name = _object_name(model)
+
+        na_id = model_to_node_attr.get(model_id)
+        na = camera_node_attrs.get(na_id) if na_id is not None else None
+
+        # Field of view: NodeAttribute.Properties70 FieldOfView, default 40.
+        fov = 40.0
+        if na is not None:
+            p = _get_property70(na, "FieldOfView")
+            if p:
+                fov = _as_float(p[0])
+
+        # Film dimensions: FilmWidth/FilmHeight on NodeAttribute in inches.
+        film_w = 0.944
+        film_h = 0.629
+        if na is not None:
+            p = _get_property70(na, "FilmWidth")
+            if p:
+                film_w = _as_float(p[0])
+            p = _get_property70(na, "FilmHeight")
+            if p:
+                film_h = _as_float(p[0])
+
+        # Static Lcl Translation / Lcl Rotation, if present on the Model.
+        pos = (0.0, 0.0, 0.0)
+        p = _get_property70(model, "Lcl Translation")
+        if p and len(p) >= 3:
+            pos = (_as_float(p[0]), _as_float(p[1]), _as_float(p[2]))
+
+        rot = (0.0, 0.0, 0.0)
+        p = _get_property70(model, "Lcl Rotation")
+        if p and len(p) >= 3:
+            rot = (_as_float(p[0]), _as_float(p[1]), _as_float(p[2]))
+
+        cam = _CameraExtract(
+            name=name,
+            model_id=model_id,
+            node_attr_id=na_id or 0,
+            field_of_view=fov,
+            film_width_inches=film_w,
+            film_height_inches=film_h,
+            static_position=pos,
+            static_rotation=rot,
+        )
+
+        # Find the animation-curve-nodes attached to this Model (T, R) and
+        # to its NodeAttribute (FieldOfView).
+        for anim_id, (target, chan) in anim_links.items():
+            if target == model_id and chan == "Lcl Translation":
+                cam._anim_node_t = anim_id
+            elif target == model_id and chan == "Lcl Rotation":
+                cam._anim_node_r = anim_id
+            elif target == na_id and chan == "FieldOfView":
+                cam._anim_node_fov = anim_id
+
+        # Walk curves attached to those anim-nodes and bucket by sub-channel.
+        for curve_id, (parent_anim, sub_chan) in curve_links.items():
+            if getattr(cam, "_anim_node_t", None) == parent_anim:
+                cam.t_curve_ids[_axis_from_sub_channel(sub_chan)] = curve_id
+            elif getattr(cam, "_anim_node_r", None) == parent_anim:
+                cam.r_curve_ids[_axis_from_sub_channel(sub_chan)] = curve_id
+            elif getattr(cam, "_anim_node_fov", None) == parent_anim:
+                cam.fov_curve_id = curve_id
+
+        results.append(cam)
+
+    return results
+
+
+def _axis_from_sub_channel(chan: str) -> str:
+    """Map FBX sub-channel names (``d|X``, ``d|Y``, ``d|Z``,
+    ``d|FieldOfView``) to our short axis labels."""
+    if chan.startswith("d|"):
+        return chan[2:]
+    return chan
+
+
+@dataclass
+class _CurveSamples:
+    times: list[int]         # FBX KTime integers
+    values: list[float]
+
+    @classmethod
+    def empty(cls) -> "_CurveSamples":
+        return cls(times=[], values=[])
+
+
+def _read_curve(curve_id: Optional[int], root: list[FBXNode]) -> _CurveSamples:
+    """Given an AnimationCurve object ID, pull the flattened KeyTime +
+    KeyValueFloat arrays (both arrays share length). Default to empty
+    if the curve isn't found."""
+    if curve_id is None:
+        return _CurveSamples.empty()
+    for c in _iter_objects(root, "AnimationCurve"):
+        if _object_id(c) != curve_id:
+            continue
+        kt = c.find("KeyTime")
+        kv = c.find("KeyValueFloat")
+        times = [int(x) for x in (kt.values if kt else [])]
+        vals = [float(x) for x in (kv.values if kv else [])]
+        return _CurveSamples(times=times, values=vals)
+    return _CurveSamples.empty()
+
+
+def _sample_or_static(samples: _CurveSamples, static: float) -> list[tuple[int, float]]:
+    """Prefer curve samples; if empty, emit a single (ktime=0, static)
+    pair so the caller still sees something consistent."""
+    if not samples.times:
+        return [(0, static)]
+    return list(zip(samples.times, samples.values))
+
+
+def _inches_to_mm(inches: float) -> float:
+    """FBX's FilmHeight is in inches by convention — convert to mm for
+    the v5 JSON contract (which uses mm)."""
+    return inches * 25.4
+
+
+def _merge_curves(
+    cam: _CameraExtract,
+    root: list[FBXNode],
+    frame_rate: str,
+) -> list[dict[str, Any]]:
+    """Resolve T, R, FoV curves for a camera and interleave them into a
+    per-frame list. We take the union of unique KeyTime stamps across
+    the seven curves (T/R have 3 axes each, FoV has 1) and look up or
+    hold each channel's last value at every stamp.
+
+    If the camera has no keyframes at all (static export) we emit a
+    single entry at frame 0 using the static Lcl Translation/Rotation.
+    """
+    tx = _read_curve(cam.t_curve_ids.get("X"), root)
+    ty = _read_curve(cam.t_curve_ids.get("Y"), root)
+    tz = _read_curve(cam.t_curve_ids.get("Z"), root)
+    rx = _read_curve(cam.r_curve_ids.get("X"), root)
+    ry = _read_curve(cam.r_curve_ids.get("Y"), root)
+    rz = _read_curve(cam.r_curve_ids.get("Z"), root)
+    fov = _read_curve(cam.fov_curve_id, root)
+
+    # Static fallback: none of the curves had any keys.
+    any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
+    if not any_keyed:
+        frame = 0
+        sp = cam.static_position
+        sr = cam.static_rotation
+        film_back_mm = _inches_to_mm(cam.film_height_inches)
+        focal_mm = _focal_from_fov_filmback(cam.field_of_view, film_back_mm)
+        return [{
+            "frame": frame,
+            "position": [sp[0], sp[1], sp[2]],
+            "rotation_flame_euler": [sr[0], sr[1], sr[2]],
+            "focal_mm": focal_mm,
+        }]
+
+    # Collect unique KeyTimes across all seven curves.
+    all_times: set[int] = set()
+    for c in (tx, ty, tz, rx, ry, rz, fov):
+        all_times.update(c.times)
+    sorted_times = sorted(all_times)
+
+    film_back_mm = _inches_to_mm(cam.film_height_inches)
+
+    out: list[dict[str, Any]] = []
+    for ktime in sorted_times:
+        frame = frame_from_ktime(ktime, frame_rate)
+        px = _sample_at(tx, ktime, cam.static_position[0])
+        py = _sample_at(ty, ktime, cam.static_position[1])
+        pz = _sample_at(tz, ktime, cam.static_position[2])
+        rx_deg = _sample_at(rx, ktime, cam.static_rotation[0])
+        ry_deg = _sample_at(ry, ktime, cam.static_rotation[1])
+        rz_deg = _sample_at(rz, ktime, cam.static_rotation[2])
+        fov_deg = _sample_at(fov, ktime, cam.field_of_view)
+        focal_mm = _focal_from_fov_filmback(fov_deg, film_back_mm)
+
+        out.append({
+            "frame": frame,
+            "position": [px, py, pz],
+            "rotation_flame_euler": [rx_deg, ry_deg, rz_deg],
+            "focal_mm": focal_mm,
+        })
+    return out
+
+
+def _sample_at(curve: _CurveSamples, ktime: int, default: float) -> float:
+    """Look up a curve's value at an exact KTime. If the curve has no
+    sample at that time, return the most-recent-prior value, or the
+    default if there's nothing earlier."""
+    if not curve.times:
+        return float(default)
+    # Exact match wins.
+    if ktime in curve.times:
+        idx = curve.times.index(ktime)
+        return float(curve.values[idx])
+    # Otherwise: last sample at or before ktime, else default.
+    prior = default
+    for t, v in zip(curve.times, curve.values):
+        if t <= ktime:
+            prior = v
+        else:
+            break
+    return float(prior)
+
+
+def _focal_from_fov_filmback(vfov_deg: float, film_back_mm: float) -> float:
+    """Inverse of vfov = 2·atan(h_sensor / (2·f)). Shared with
+    forge_flame.camera_io.focal_from_vfov_deg, duplicated here so this
+    module has no cross-module imports."""
+    if not (0.0 < vfov_deg < 180.0) or film_back_mm <= 0:
+        return 0.0
+    return film_back_mm / (2.0 * math.tan(math.radians(vfov_deg) / 2.0))
+
+
+# =============================================================================
+# Public entry points
+# =============================================================================
+
+
+def fbx_to_v5_json(
+    fbx_path: str,
+    out_json_path: str,
+    *,
+    width: int = 0,
+    height: int = 0,
+    film_back_mm: Optional[float] = None,
+    frame_rate: str = "23.976 fps",
+    camera_name: Optional[str] = None,
+) -> dict:
+    """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
+
+    Args:
+        fbx_path: source FBX path.
+        out_json_path: destination JSON path. Parent dir is created.
+        width, height: plate resolution. Not present in FBX cam metadata
+            (FBX only has AspectWidth/Height hints), so the caller must
+            supply them — typically derived from the same Flame clip the
+            camera was solved for.
+        film_back_mm: optional override for the v5 ``film_back_mm``
+            field. If ``None``, we derive it from the FBX FilmHeight
+            (inches -> mm). Callers who pinned film_back=36.0 in Camera
+            Match should pass that same value here so JSON and the
+            original solve stay consistent.
+        frame_rate: FBX KTime conversion basis. Should match the frame
+            rate Flame used when emitting the FBX; callers who use
+            ``fbx_io.export_action_cameras_to_fbx`` with the default get
+            ``"23.976 fps"``.
+        camera_name: optional filter — if given, only emit the camera
+            whose ``Model::<name>`` matches. If the FBX has a single
+            camera the filter is a noop.
+
+    Returns the parsed v5 JSON dict (also written to disk).
+    """
+    with open(fbx_path, "r", encoding="utf-8") as f:
+        text = f.read()
+    tree = parse_fbx_ascii(text)
+
+    cameras = _extract_cameras(tree)
+    if camera_name:
+        cameras = [c for c in cameras if c.name == camera_name]
+    if not cameras:
+        raise ValueError(f"{fbx_path}: no cameras found"
+                         + (f" named {camera_name!r}" if camera_name else ""))
+    if len(cameras) > 1:
+        names = [c.name for c in cameras]
+        raise ValueError(
+            f"{fbx_path}: multiple cameras found ({names}); "
+            f"pass camera_name= to select one")
+    cam = cameras[0]
+
+    frames = _merge_curves(cam, tree, frame_rate)
+
+    if film_back_mm is None:
+        film_back_mm = _inches_to_mm(cam.film_height_inches)
+
+    payload = {
+        "width": int(width),
+        "height": int(height),
+        "film_back_mm": float(film_back_mm),
+        "frames": frames,
+    }
+
+    out_abs = os.path.abspath(out_json_path)
+    os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
+    with open(out_abs, "w") as f:
+        json.dump(payload, f, indent=2)
+        f.write("\n")
+    return payload
+
+
+# =============================================================================
+# Writer — FBXNode tree -> ASCII FBX text
+# =============================================================================
+
+
+def _format_value(v: Any) -> str:
+    """Serialize a single FBX value literal matching Flame's output shape.
+
+    - Strings get double-quoted (and escaped).
+    - Bools become 1 / 0.
+    - Ints stay as-is.
+    - Floats use repr() so full double precision survives round-trip.
+    - Identifiers passed in as strings starting with a letter AND having
+      no spaces, quotes, or punctuation are treated as bare identifiers
+      (e.g. ``Y`` for ``Shading: Y``). Callers signal this by passing
+      a tuple ``("IDENT", "Y")``.
+    """
+    if isinstance(v, tuple) and len(v) == 2 and v[0] == "IDENT":
+        return v[1]
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, float):
+        # repr() preserves double precision without trailing zeros.
+        return repr(v)
+    return str(v)
+
+
+def _emit_node(node: FBXNode, lines: list[str], indent: int) -> None:
+    """Recursive emitter for a single FBXNode."""
+    ind = "\t" * indent
+
+    # Special case: array form ``*N { a: v1,v2,... }``. Flame emits the
+    # array header on the same line as the block open and the trailing
+    # closing brace is on its own line with a trailing space (observed
+    # in real files, though the trailing space isn't semantically
+    # meaningful — we keep the structure but don't bother reproducing
+    # that cosmetic detail).
+    if node.array_len is not None:
+        payload = ",".join(_format_value(v) for v in node.values)
+        lines.append(f"{ind}{node.name}: *{node.array_len} {{")
+        lines.append(f"{ind}\ta: {payload}")
+        lines.append(f"{ind}}}")
+        return
+
+    # Value list (comma-separated, no brackets).
+    values_str = ",".join(_format_value(v) for v in node.values)
+
+    if node.children:
+        if values_str:
+            lines.append(f"{ind}{node.name}: {values_str} {{")
+        else:
+            # Match Flame's two-space padding on empty-value blocks.
+            lines.append(f"{ind}{node.name}:  {{")
+        for child in node.children:
+            _emit_node(child, lines, indent + 1)
+        lines.append(f"{ind}}}")
+    else:
+        if values_str:
+            lines.append(f"{ind}{node.name}: {values_str}")
+        else:
+            lines.append(f"{ind}{node.name}:")
+
+
+def emit_fbx_ascii(nodes: list[FBXNode]) -> str:
+    """Serialize an FBXNode tree (as returned by ``parse_fbx_ascii``)
+    back to ASCII FBX text.
+
+    The output is not byte-identical to Flame's own emit — whitespace
+    and comment lines are dropped, and floats use Python's ``repr()``
+    rather than Flame's specific formatting — but is structurally
+    equivalent and round-trips cleanly through ``parse_fbx_ascii``.
+    Flame's own ``import_fbx`` accepts it (verified on the 2026-04-19
+    live round-trip).
+    """
+    lines: list[str] = ["; FBX 7.7.0 project file",
+                        "; ----------------------------------------------------",
+                        ""]
+    for n in nodes:
+        _emit_node(n, lines, indent=0)
+    return "\n".join(lines) + "\n"
+
+
+# =============================================================================
+# Template-driven JSON -> FBX writer
+# =============================================================================
+
+# Template FBX shipped alongside this module. Captured from a live Flame
+# 2026.2.1 session during the v6.2 probing work — represents Flame's
+# exact output shape for a single-camera Action, which is the shape we
+# need Flame's ``import_fbx`` to accept. We load and mutate it rather
+# than building from first principles, so we inherit all of Flame's
+# required metadata (Definitions templates, scene info, GlobalSettings
+# axis convention, Takes section) without having to rediscover what's
+# mandatory.
+_TEMPLATE_FBX = os.path.join(os.path.dirname(__file__),
+                              "templates", "camera_baked.fbx")
+
+
+def _load_template_tree() -> list[FBXNode]:
+    with open(_TEMPLATE_FBX, "r", encoding="utf-8") as f:
+        return parse_fbx_ascii(f.read())
+
+
+def _set_property70(node: FBXNode, key: str, type1: str, type2: str,
+                    flags: str, values: list[Any]) -> None:
+    """Update an existing ``P: "key", ...`` line in a node's
+    ``Properties70`` child, or append one if not present. Callers pass
+    the trailing value list (without the leading 4 metadata strings)."""
+    props = node.find("Properties70")
+    if props is None:
+        props = FBXNode(name="Properties70")
+        node.children.append(props)
+    for child in props.children:
+        if child.name == "P" and child.values and child.values[0] == key:
+            child.values = [key, type1, type2, flags] + list(values)
+            return
+    props.children.append(FBXNode(
+        name="P", values=[key, type1, type2, flags] + list(values)))
+
+
+def _replace_or_append_child(node: FBXNode, name: str, new_child: FBXNode) -> None:
+    """Replace the first child with this name, else append."""
+    for i, c in enumerate(node.children):
+        if c.name == name:
+            node.children[i] = new_child
+            return
+    node.children.append(new_child)
+
+
+def _anim_curve_node_with_data(curve_id: int, default_value: float,
+                               times: list[int], values: list[float]) -> FBXNode:
+    """Build an AnimationCurve FBXNode with the given keyframe arrays,
+    matching the structure Flame emits (KeyVer 4009, Cubic|TangeantAuto
+    magic flags, etc.)."""
+    n = len(times)
+    if n != len(values):
+        raise ValueError(f"curve times/values length mismatch: {n} vs {len(values)}")
+
+    return FBXNode(
+        name="AnimationCurve",
+        values=[curve_id, "AnimCurve::", ""],
+        children=[
+            FBXNode(name="Default", values=[float(default_value)]),
+            FBXNode(name="KeyVer", values=[4009]),
+            FBXNode(name="KeyTime", values=[int(t) for t in times],
+                    array_len=n),
+            FBXNode(name="KeyValueFloat", values=[float(v) for v in values],
+                    array_len=n),
+            # Magic interpolation flags. 50340104 is the composite flag
+            # for Cubic|TangeantAuto|GenericTimeIndependent|
+            # WeightedRight|WeightedNextLeft, matching Flame's default
+            # curve emission.
+            FBXNode(name="KeyAttrFlags", values=[50340104], array_len=1),
+            # Tangent data — zero auto-tangents.
+            FBXNode(name="KeyAttrDataFloat", values=[0, 0, 218434821, 0],
+                    array_len=4),
+            # RefCount = number of keys that share this single flag
+            # record (i.e., all of them).
+            FBXNode(name="KeyAttrRefCount", values=[n], array_len=1),
+        ],
+    )
+
+
+def _mutate_template_with_payload(
+    tree: list[FBXNode],
+    payload: dict,
+    camera_name: str,
+    frame_rate: str,
+    pixel_to_units: float,
+) -> None:
+    """Rewrite the template tree's single camera + its animation curves
+    to reflect the values in ``payload`` (our v5 JSON contract).
+
+    - Renames ``Model::Default`` / ``NodeAttribute::Default`` to
+      ``camera_name`` if different.
+    - Updates Properties70 values for Lcl Translation/Rotation, FilmWidth,
+      FilmHeight, FieldOfView.
+    - Replaces the seven AnimationCurve nodes wholesale (preserving
+      their object IDs and Connections) with keyframe arrays derived
+      from ``payload['frames']``.
+    """
+    # Find the Objects block.
+    objects = next((n for n in tree if n.name == "Objects"), None)
+    if objects is None:
+        raise ValueError("template FBX missing Objects block")
+
+    # Locate the single Model::Camera + NodeAttribute::Camera.
+    model = None
+    node_attr = None
+    for m in objects.find_all("Model"):
+        if len(m.values) >= 3 and m.values[2] == "Camera":
+            model = m
+            break
+    for na in objects.find_all("NodeAttribute"):
+        if len(na.values) >= 3 and na.values[2] == "Camera":
+            node_attr = na
+            break
+    if model is None or node_attr is None:
+        raise ValueError("template FBX missing a Camera Model + NodeAttribute")
+
+    # Rename both to the caller's camera_name.
+    model.values[1] = f"Model::{camera_name}"
+    node_attr.values[1] = f"NodeAttribute::{camera_name}"
+
+    # Map AnimCurveNode roles (T/R/FieldOfView) via Connections.
+    model_id = _object_id(model)
+    na_id = _object_id(node_attr)
+    edges = _parse_connections(tree)
+    anim_node_ids = {_object_id(n): n for n in objects.find_all("AnimationCurveNode")}
+
+    role_to_anim_id: dict[str, int] = {}
+    for kind, src, dst, chan in edges:
+        if kind != "OP" or src not in anim_node_ids:
+            continue
+        if dst == model_id and chan == "Lcl Translation":
+            role_to_anim_id["T"] = src
+        elif dst == model_id and chan == "Lcl Rotation":
+            role_to_anim_id["R"] = src
+        elif dst == na_id and chan == "FieldOfView":
+            role_to_anim_id["FoV"] = src
+
+    # For each role, find the AnimCurve object IDs (one per sub-channel).
+    # Order on axes (X, Y, Z) mirrors the template.
+    anim_curve_ids_by_role: dict[str, dict[str, int]] = {"T": {}, "R": {}, "FoV": {}}
+    for kind, src, dst, chan in edges:
+        if kind != "OP" or chan is None:
+            continue
+        for role, aid in role_to_anim_id.items():
+            if dst == aid:
+                sub = chan[2:] if chan.startswith("d|") else chan
+                anim_curve_ids_by_role[role][sub] = src
+
+    # Frames -> arrays of time/values per curve.
+    frames = payload.get("frames") or []
+    if not frames:
+        raise ValueError("payload has no frames")
+
+    film_back_mm = float(payload.get("film_back_mm", 36.0))
+    # Flame's ``import_fbx`` default unit_to_pixels=10 expects FBX
+    # Lcl Translation in units of 0.1*pixels (same as Flame's own
+    # ``export_fbx`` default). Our writer mirrors that so the round-trip
+    # through ``fbx_io.import_fbx_to_action`` lands at Flame-pixel scale.
+    pos_scale = pixel_to_units
+
+    times = [ktime_from_frame(int(kf["frame"]), frame_rate) for kf in frames]
+
+    tx_vals = [float(kf["position"][0]) * pos_scale for kf in frames]
+    ty_vals = [float(kf["position"][1]) * pos_scale for kf in frames]
+    tz_vals = [float(kf["position"][2]) * pos_scale for kf in frames]
+
+    rx_vals = [float(kf["rotation_flame_euler"][0]) for kf in frames]
+    ry_vals = [float(kf["rotation_flame_euler"][1]) for kf in frames]
+    rz_vals = [float(kf["rotation_flame_euler"][2]) for kf in frames]
+
+    fov_vals: list[float] = []
+    for kf in frames:
+        focal = float(kf["focal_mm"])
+        if focal <= 0 or film_back_mm <= 0:
+            fov_vals.append(40.0)
+        else:
+            fov_vals.append(
+                math.degrees(2.0 * math.atan(film_back_mm / (2.0 * focal))))
+
+    # Update Model's Properties70 for Lcl Translation + Lcl Rotation.
+    # First frame's values become the static defaults; the AnimCurves
+    # carry the per-frame variation. Flag "A+" marks them as animated.
+    _set_property70(model, "Lcl Translation",
+                    "Lcl Translation", "", "A+",
+                    [tx_vals[0], ty_vals[0], tz_vals[0]])
+    _set_property70(model, "Lcl Rotation",
+                    "Lcl Rotation", "", "A+",
+                    [rx_vals[0], ry_vals[0], rz_vals[0]])
+
+    # Update NodeAttribute Properties70 for FilmWidth, FilmHeight,
+    # FieldOfView. FilmHeight in inches is film_back_mm / 25.4. We pick
+    # a reasonable FilmWidth using the payload's pixel aspect ratio.
+    film_h_inch = film_back_mm / 25.4
+    width = int(payload.get("width") or 0)
+    height = int(payload.get("height") or 0)
+    if width > 0 and height > 0:
+        film_w_inch = film_h_inch * (width / height)
+        aspect = width / height
+    else:
+        film_w_inch = film_h_inch * 1.5  # matches Flame's default 3:2 Super 16
+        aspect = 1.5
+    _set_property70(node_attr, "FilmWidth", "double", "Number", "", [film_w_inch])
+    _set_property70(node_attr, "FilmHeight", "double", "Number", "", [film_h_inch])
+    _set_property70(node_attr, "FilmAspectRatio", "double", "Number", "", [aspect])
+    _set_property70(node_attr, "FieldOfView", "FieldOfView", "", "A+", [fov_vals[0]])
+
+    # Replace every AnimationCurve in the tree whose ID matches a role
+    # channel with a fresh curve derived from the frames.
+    replacements: dict[int, FBXNode] = {}
+    for role, ids in anim_curve_ids_by_role.items():
+        if role == "T":
+            for axis, vals in (("X", tx_vals), ("Y", ty_vals), ("Z", tz_vals)):
+                cid = ids.get(axis)
+                if cid is None:
+                    continue
+                replacements[cid] = _anim_curve_node_with_data(
+                    cid, vals[0], times, vals)
+        elif role == "R":
+            for axis, vals in (("X", rx_vals), ("Y", ry_vals), ("Z", rz_vals)):
+                cid = ids.get(axis)
+                if cid is None:
+                    continue
+                replacements[cid] = _anim_curve_node_with_data(
+                    cid, vals[0], times, vals)
+        elif role == "FoV":
+            # FoV sub-channel is "FieldOfView" (from "d|FieldOfView").
+            cid = ids.get("FieldOfView")
+            if cid is not None:
+                replacements[cid] = _anim_curve_node_with_data(
+                    cid, fov_vals[0], times, fov_vals)
+
+    for i, child in enumerate(objects.children):
+        if child.name == "AnimationCurve" and child.values:
+            cid = _as_int(child.values[0])
+            if cid in replacements:
+                objects.children[i] = replacements[cid]
+
+    # Also update the AnimCurveNode's Properties70 default values
+    # (``d|X``, ``d|Y``, ``d|Z`` for T and R; ``d|FieldOfView`` for FoV).
+    # Flame uses these as the value when no curve is connected; keeping
+    # them aligned with frame 0 avoids cosmetic surprises in the UI.
+    t_node = anim_node_ids.get(role_to_anim_id.get("T", -1))
+    if t_node is not None:
+        _set_property70(t_node, "d|X", "Number", "", "A", [tx_vals[0]])
+        _set_property70(t_node, "d|Y", "Number", "", "A", [ty_vals[0]])
+        _set_property70(t_node, "d|Z", "Number", "", "A", [tz_vals[0]])
+    r_node = anim_node_ids.get(role_to_anim_id.get("R", -1))
+    if r_node is not None:
+        _set_property70(r_node, "d|X", "Number", "", "A", [rx_vals[0]])
+        _set_property70(r_node, "d|Y", "Number", "", "A", [ry_vals[0]])
+        _set_property70(r_node, "d|Z", "Number", "", "A", [rz_vals[0]])
+    fov_node = anim_node_ids.get(role_to_anim_id.get("FoV", -1))
+    if fov_node is not None:
+        _set_property70(fov_node, "d|FieldOfView", "FieldOfView", "", "A",
+                        [fov_vals[0]])
+
+
+def v5_json_to_fbx(
+    json_path: str,
+    out_fbx_path: str,
+    *,
+    camera_name: str = "Camera",
+    frame_rate: str = "23.976 fps",
+    pixel_to_units: float = 0.1,
+) -> str:
+    """Convert a v5 JSON contract file to ASCII FBX that Flame's
+    ``import_fbx`` accepts.
+
+    Args:
+        json_path: source v5 JSON (from ``tools/blender/extract_camera.py``
+            or from another producer matching the contract).
+        out_fbx_path: destination FBX path. Parent dir is created.
+        camera_name: name to give the emitted camera. Flame's import
+            will collide on duplicates and auto-rename to ``<name>1``,
+            ``<name>2``, etc.
+        frame_rate: FBX KTime conversion basis. Match what the downstream
+            ``fbx_io.import_fbx_to_action`` call expects Flame's batch
+            to be using.
+        pixel_to_units: position divisor to write into FBX Lcl Translation.
+            Default 0.1 matches Flame's own ``export_fbx`` default —
+            pairs cleanly with our ``fbx_io.import_fbx_to_action``'s
+            default ``unit_to_pixels=10.0`` so Flame-pixel coords round-trip.
+
+    Returns the absolute path of the written FBX.
+    """
+    with open(json_path, "r") as f:
+        payload = json.load(f)
+
+    tree = _load_template_tree()
+    _mutate_template_with_payload(tree, payload, camera_name,
+                                  frame_rate, pixel_to_units)
+
+    text = emit_fbx_ascii(tree)
+
+    out_abs = os.path.abspath(out_fbx_path)
+    os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
+    with open(out_abs, "w") as f:
+        f.write(text)
+    return out_abs
