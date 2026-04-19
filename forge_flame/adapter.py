@@ -67,36 +67,16 @@ TRACE_PATH = "/tmp/forge_camera_match_trace.json"
 
 # =============================================================================
 # Flame rotation convention: R = Rz(rz) · Ry(-ry) · Rx(-rx)
+#
+# Implementations moved to forge_core.math.rotations so non-Flame consumers
+# (e.g. the Blender bake script) can use them without pulling in the full
+# adapter module. Re-exported here so existing imports keep working.
 # =============================================================================
 
-
-def compute_flame_euler_zyx(cam_rot: np.ndarray) -> Tuple[float, float, float]:
-    """Decompose a 3x3 cam-to-world rotation into Flame's Euler convention.
-
-    Flame's Action camera internally composes R as ``Rz(rz) · Ry(-ry) ·
-    Rx(-rx)``: ZYX order with X and Y signs negated. Substituting
-    α=-rx, β=-ry, γ=rz reduces to the standard ZYX-positive decomposition
-    and the extraction collapses to three atan2/arcsin lines.
-
-    Verified 2026-04-16 against the test.fspy fixture: these angles
-    align the rendered surface to the wall to single-degree precision,
-    where the previously-used XYZ convention left a ~13° Z residual.
-
-    Returns (rx_deg, ry_deg, rz_deg), the exact triple to set on
-    ``PyAction.cam_node.rotation``. Handles gimbal lock (ry = ±90°) by
-    pinning rx=0 and deriving rz from the upper-left 2x2 block."""
-    cb = np.sqrt(cam_rot[0, 0] ** 2 + cam_rot[1, 0] ** 2)
-    gimbal = cb <= 1e-6
-    if not gimbal:
-        rx = -np.arctan2(cam_rot[2, 1], cam_rot[2, 2])
-        ry = -np.arcsin(-cam_rot[2, 0])
-        rz = np.arctan2(cam_rot[1, 0], cam_rot[0, 0])
-    else:
-        rx = 0.0
-        ry = -np.arcsin(-cam_rot[2, 0])
-        rz = np.arctan2(-cam_rot[0, 1], cam_rot[1, 1])
-    deg = np.degrees(np.array([rx, ry, rz]))
-    return (float(deg[0]), float(deg[1]), float(deg[2]))
+from forge_core.math.rotations import (  # noqa: E402, F401
+    compute_flame_euler_zyx,
+    flame_euler_to_cam_rot,
+)
 
 
 def default_cam_back(height: int, vfov_rad: float) -> float:
