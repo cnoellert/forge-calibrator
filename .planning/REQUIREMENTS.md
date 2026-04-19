@@ -68,33 +68,33 @@ Explicit exclusions. Keeping them here prevents scope creep and invites explicit
 
 ## Traceability
 
-Empty at requirements-definition time. Populated during roadmap creation (Step 8).
+Populated during roadmap creation (2026-04-19).
 
 | Requirement | Phase | Status |
 |-------------|-------|--------|
-| EXP-01 | TBD | Pending |
-| EXP-02 | TBD | Pending |
-| EXP-03 | TBD | Pending |
-| EXP-04 | TBD | Pending |
-| EXP-05 | TBD | Pending |
-| IMP-01 | TBD | Pending |
-| IMP-02 | TBD | Pending |
-| IMP-03 | TBD | Pending |
-| IMP-04 | TBD | Pending |
-| IMP-05 | TBD | Pending |
-| IMP-06 | TBD | Pending |
-| BRG-01 | TBD | Pending |
-| BRG-02 | TBD | Pending |
-| BRG-03 | TBD | Pending |
-| BRG-04 | TBD | Pending |
-| DOC-01 | TBD | Pending |
-| DOC-02 | TBD | Pending |
+| EXP-01 | Phase 1 | Pending |
+| EXP-02 | Phase 1 | Pending |
+| EXP-03 | Phase 1 | Pending |
+| EXP-04 | Phase 1 | Pending |
+| EXP-05 | Phase 1 | Pending |
+| IMP-01 | Phase 2 | Pending |
+| IMP-02 | Phase 2 | Pending |
+| IMP-03 | Phase 2 | Pending |
+| IMP-04 | Phase 2 | Pending |
+| IMP-05 | Phase 2 | Pending |
+| IMP-06 | Phase 2 | Pending |
+| BRG-01 | Phase 3 | Pending |
+| BRG-02 | Phase 3 | Pending |
+| BRG-03 | Phase 3 | Pending |
+| BRG-04 | Phase 3 | Pending |
+| DOC-01 | Phase 4 | Pending |
+| DOC-02 | Phase 4 | Pending |
 
 **Coverage:**
 - v1 requirements: 17 total
-- Mapped to phases: 0 (roadmap pending)
-- Unmapped: 17 ⚠️ (will resolve when roadmap lands)
+- Mapped to phases: 17
+- Unmapped: 0 ✓
 
 ---
 *Requirements defined: 2026-04-19*
-*Last updated: 2026-04-19 after initial definition*
+*Last updated: 2026-04-19 after roadmap creation — traceability populated*
