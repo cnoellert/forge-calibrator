@@ -1682,6 +1682,327 @@ def _launch_camera_match(selection):
 
     _open_camera_match(clip_node)
 
+def _val(x):
+    """Unwrap a Flame PyAttribute to its Python value, or str() anything else.
+
+    Shared helper for the handlers below. _apply_camera has an inline copy
+    of the same logic — next time that path is touched, fold it into this
+    module-level helper."""
+    return x.get_value() if hasattr(x, "get_value") else str(x)
+
+
+def _find_action_cameras(only_action=None):
+    """Return [(action_node, camera_node, label), ...] for solvable cameras.
+
+    If `only_action` is given, restrict to cameras inside that Action node.
+    Otherwise scan every Action in the current batch.
+
+    Skips Flame's built-in Perspective viewport cameras — overwriting those
+    changes the 3D tumble view, not the rendered scene.
+
+    Duplicates the discovery loop inlined in _apply_camera (line ~1465);
+    scheduled for consolidation next time that path is touched."""
+    import flame
+
+    if only_action is not None:
+        actions = [only_action]
+    else:
+        actions = [n for n in flame.batch.nodes if _val(n.type) == "Action"]
+
+    cameras = []
+    for action in actions:
+        action_name = _val(action.name)
+        for inode in action.nodes:
+            if "Camera" not in _val(inode.type):
+                continue
+            cam_name = _val(inode.name)
+            if cam_name == "Perspective":
+                continue
+            cameras.append((action, inode, f"{action_name} > {cam_name}"))
+    return cameras
+
+
+def _scope_batch_action(selection):
+    """True when any selected item is an Action node in Batch.
+
+    Uses type-string match rather than isinstance because flame.PyActionNode
+    isn't consistently exposed as a Python class across Flame versions. The
+    type attribute is a PyAttribute wrapping the string 'Action' — same
+    pattern the _apply_camera path uses."""
+    for item in selection:
+        try:
+            t = item.type
+            type_val = t.get_value() if hasattr(t, "get_value") else str(t)
+            if type_val == "Action":
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _first_action_in_selection(selection):
+    """Return the first Action node in `selection`, or None."""
+    for item in selection:
+        try:
+            t = item.type
+            type_val = t.get_value() if hasattr(t, "get_value") else str(t)
+            if type_val == "Action":
+                return item
+        except Exception:
+            continue
+    return None
+
+
+def _scan_first_clip_metadata():
+    """Best-effort plate metadata defaults for export.
+
+    When the user right-clicks an Action (not a clip), we don't have
+    direct access to the source plate. Try to find any clip in the current
+    batch and use its (width, height, start_frame). Fall back to 1920x1080
+    @ frame 1 if no clip is present.
+
+    Returns a 3-tuple of ints. Never raises."""
+    try:
+        import flame
+        for node in flame.batch.nodes:
+            if isinstance(node, flame.PyClipNode):
+                try:
+                    pc = node.clip
+                    return (int(pc.width), int(pc.height), int(pc.start_frame))
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    return (1920, 1080, 1)
+
+
+def _pick_camera(cameras, dialog_title):
+    """Prompt user to pick one camera from the list; returns (action, cam,
+    label) or None if cancelled. No dialog shown if only one camera exists."""
+    if len(cameras) == 1:
+        return cameras[0]
+    from PySide6 import QtWidgets
+    choices = [c[2] for c in cameras]
+    choice, ok = QtWidgets.QInputDialog.getItem(
+        None, dialog_title, "Target camera:", choices, 0, False)
+    if not ok:
+        return None
+    return cameras[choices.index(choice)]
+
+
+def _export_camera_to_blender(selection):
+    """Export a Flame Action camera to a Blender .blend via the forge bridge.
+
+    Flow: right-click the Action holding your solved camera
+    -> pick the target camera (dialog if Action has multiple non-Perspective)
+    -> confirm/edit plate metadata (WxH @ frame, pre-filled from first clip
+       in batch if available, else 1920x1080 @ 1)
+    -> pick output .blend path
+    -> write intermediate JSON (camera_io pins film_back_mm=36.0 for
+       full-frame parity with Blender conventions; focal is recomputed to
+       stay self-consistent with the pinned film back)
+    -> shell out to Blender via blender_bridge.run_bake
+    -> reveal the .blend in the OS file manager.
+
+    Scope is `_scope_batch_action`, so this menu item appears on Action
+    right-clicks. Open Camera Match remains on clip context since its
+    workflow starts from a plate."""
+    _ensure_forge_env()
+    _ensure_forge_core_on_path()
+
+    import flame
+    import os
+    import subprocess
+    from PySide6 import QtWidgets
+
+    from forge_flame.camera_io import export_flame_camera_to_json
+    from forge_flame import blender_bridge
+
+    action_node = _first_action_in_selection(selection)
+    if action_node is None:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message="Right-click an Action node in Batch (the Action that "
+                    "holds your solved camera).",
+            type="error", buttons=["OK"])
+        return
+
+    cameras = _find_action_cameras(only_action=action_node)
+    if not cameras:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"No non-Perspective camera in "
+                    f"'{_val(action_node.name)}'.",
+            type="error", buttons=["OK"])
+        return
+    picked = _pick_camera(cameras, "Export Camera to Blender")
+    if picked is None:
+        return
+    action, cam, label = picked
+
+    # Plate metadata — ask in one line, pre-fill from first batch clip.
+    default_w, default_h, default_frame = _scan_first_clip_metadata()
+    meta_text, ok = QtWidgets.QInputDialog.getText(
+        None, "Export Camera to Blender",
+        "Plate resolution and frame (WxH @ frame):",
+        QtWidgets.QLineEdit.Normal,
+        f"{default_w}x{default_h} @ {default_frame}")
+    if not ok:
+        return
+    try:
+        wxh_part, frame_part = meta_text.split("@")
+        w_str, h_str = wxh_part.lower().strip().split("x")
+        width = int(w_str.strip())
+        height = int(h_str.strip())
+        frame = int(frame_part.strip())
+    except (ValueError, AttributeError):
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"Couldn't parse {meta_text!r}. "
+                    f"Expected format: 'WxH @ frame' (e.g. 5184x3456 @ 1001).",
+            type="error", buttons=["OK"])
+        return
+
+    # Output path — default name combines Action + camera.
+    default_name = f"{_val(action_node.name)}_{_val(cam.name)}.blend"
+    default_path = os.path.join("/tmp", default_name)
+    blend_path, _filter = QtWidgets.QFileDialog.getSaveFileName(
+        None, "Save Blender File", default_path, "Blender File (*.blend)")
+    if not blend_path:
+        return
+    if not blend_path.endswith(".blend"):
+        blend_path += ".blend"
+
+    # JSON written alongside the .blend for debuggability.
+    json_path = blend_path[:-len(".blend")] + ".json"
+    try:
+        export_flame_camera_to_json(
+            cam, json_path,
+            frame=frame, width=width, height=height,
+            film_back_mm=36.0,
+        )
+    except Exception as e:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"Failed to write camera JSON:\n{e}",
+            type="error", buttons=["OK"])
+        return
+
+    try:
+        blender_bridge.run_bake(
+            json_path, blend_path,
+            camera_name="Camera", scale=1000.0, create_if_missing=True,
+        )
+    except FileNotFoundError as e:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=str(e), type="error", buttons=["OK"])
+        return
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or e.stdout or "unknown error").strip()
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"Blender bake failed (exit {e.returncode}):\n\n{err}",
+            type="error", buttons=["OK"])
+        return
+
+    blender_bridge.reveal_in_file_manager(blend_path)
+    flame.messages.show_in_dialog(
+        title="Export Camera to Blender",
+        message=f"Exported '{label}'\n"
+                f"  plate:  {width}x{height} @ frame {frame}\n"
+                f"  blend:  {blend_path}\n"
+                f"  json:   {json_path}",
+        type="info", buttons=["OK"])
+
+
+def _import_camera_from_blender(selection):
+    """Import a camera FROM a Blender .blend back into a Flame Action camera.
+
+    Flow: right-click the target Action in Batch
+    -> pick input .blend
+    -> shell out to Blender via blender_bridge.run_extract to produce JSON
+    -> pick which camera in the selected Action receives the values
+       (dialog only if Action has multiple non-Perspective cameras)
+    -> camera_io.import_json_to_flame_camera applies position/rotation/fov.
+
+    Same Action-scope gating as the export handler — user right-clicks the
+    Action they want the imported values to land in."""
+    _ensure_forge_env()
+    _ensure_forge_core_on_path()
+
+    import flame
+    import subprocess
+    from PySide6 import QtWidgets
+
+    from forge_flame.camera_io import import_json_to_flame_camera
+    from forge_flame import blender_bridge
+
+    action_node = _first_action_in_selection(selection)
+    if action_node is None:
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message="Right-click an Action node in Batch (the target for the "
+                    "imported camera values).",
+            type="error", buttons=["OK"])
+        return
+
+    cameras = _find_action_cameras(only_action=action_node)
+    if not cameras:
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message=f"No non-Perspective camera in "
+                    f"'{_val(action_node.name)}'.",
+            type="error", buttons=["OK"])
+        return
+
+    blend_path, _filter = QtWidgets.QFileDialog.getOpenFileName(
+        None, "Open Blender File", "/tmp", "Blender File (*.blend)")
+    if not blend_path:
+        return
+
+    picked = _pick_camera(cameras, "Import Camera from Blender")
+    if picked is None:
+        return
+    action, cam, label = picked
+
+    json_path = blend_path[:-len(".blend")] + "_extract.json" \
+        if blend_path.endswith(".blend") else blend_path + "_extract.json"
+    try:
+        blender_bridge.run_extract(
+            blend_path, json_path, camera_name="Camera")
+    except FileNotFoundError as e:
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message=str(e), type="error", buttons=["OK"])
+        return
+    except subprocess.CalledProcessError as e:
+        err = (e.stderr or e.stdout or "unknown error").strip()
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message=f"Blender extract failed (exit {e.returncode}):\n\n{err}",
+            type="error", buttons=["OK"])
+        return
+
+    try:
+        result = import_json_to_flame_camera(json_path, cam)
+    except Exception as e:
+        flame.messages.show_in_dialog(
+            title="Import Camera from Blender",
+            message=f"Failed to apply camera values:\n{e}",
+            type="error", buttons=["OK"])
+        return
+
+    flame.messages.show_in_dialog(
+        title="Import Camera from Blender",
+        message=f"Applied to '{label}'\n"
+                f"  frame:    {result['frame']}\n"
+                f"  fov:      {result['fov_deg']:.2f}°\n"
+                f"  focal:    {result['focal_mm']:.2f}mm "
+                f"(on {result['film_back_mm']:.2f}mm sensor)",
+        type="info", buttons=["OK"])
+
+
 def get_batch_custom_ui_actions():
     return [
         {
@@ -1691,6 +2012,16 @@ def get_batch_custom_ui_actions():
                     "name": "Open Camera Match",
                     "isVisible": _scope_batch_clip,
                     "execute": _launch_camera_match,
+                },
+                {
+                    "name": "Export Camera to Blender",
+                    "isVisible": _scope_batch_action,
+                    "execute": _export_camera_to_blender,
+                },
+                {
+                    "name": "Import Camera from Blender",
+                    "isVisible": _scope_batch_action,
+                    "execute": _import_camera_from_blender,
                 },
             ],
         }
