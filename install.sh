@@ -25,6 +25,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_HOOK="$REPO_ROOT/flame/camera_match_hook.py"
 SOURCE_FORGE_CORE="$REPO_ROOT/forge_core"
 SOURCE_FORGE_FLAME="$REPO_ROOT/forge_flame"
+SOURCE_BLENDER_SCRIPTS="$REPO_ROOT/tools/blender"
 
 INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # forge_core (host-agnostic) and forge_flame (Flame-specific adapters like the
@@ -33,6 +34,10 @@ INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # importable alongside camera_match at runtime.
 FORGE_CORE_DEST="/opt/Autodesk/shared/python/forge_core"
 FORGE_FLAME_DEST="/opt/Autodesk/shared/python/forge_flame"
+# tools/blender/ ships as a sibling too — forge_flame.blender_bridge resolves
+# scripts to this path at runtime (see _script_candidates there) so the Flame
+# batch hook can shell out to bake_camera.py / extract_camera.py.
+BLENDER_SCRIPTS_DEST="/opt/Autodesk/shared/python/tools/blender"
 FORGE_ENV="${FORGE_ENV:-$HOME/miniconda3/envs/forge}"
 WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
@@ -96,6 +101,11 @@ if [[ ! -d "$SOURCE_FORGE_FLAME" ]]; then
   exit 1
 fi
 ok "forge_flame present ($(find "$SOURCE_FORGE_FLAME" -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ') .py files)"
+if [[ ! -d "$SOURCE_BLENDER_SCRIPTS" ]]; then
+  err "missing source tools/blender: $SOURCE_BLENDER_SCRIPTS"
+  exit 1
+fi
+ok "tools/blender present ($(find "$SOURCE_BLENDER_SCRIPTS" -maxdepth 1 -type f | wc -l | tr -d ' ') files)"
 
 # ---- precheck: forge conda env ------------------------------------------------
 step "Forge conda env"
@@ -208,8 +218,9 @@ _sync_dir() {
     ok "copied $label: $src → $dst"
   fi
 }
-_sync_dir "$SOURCE_FORGE_CORE"  "$FORGE_CORE_DEST"  "forge_core"
-_sync_dir "$SOURCE_FORGE_FLAME" "$FORGE_FLAME_DEST" "forge_flame"
+_sync_dir "$SOURCE_FORGE_CORE"       "$FORGE_CORE_DEST"       "forge_core"
+_sync_dir "$SOURCE_FORGE_FLAME"      "$FORGE_FLAME_DEST"      "forge_flame"
+_sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
 
 # nuke pycache so Flame doesn't serve stale bytecode
 if [[ -d "$TARGET_PYCACHE" ]]; then
