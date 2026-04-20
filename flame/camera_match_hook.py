@@ -1754,14 +1754,17 @@ def _first_action_in_selection(selection):
 
 
 def _scan_first_clip_metadata():
-    """Best-effort plate metadata defaults for export.
+    """Best-effort plate metadata from the first clip in the current batch.
 
-    When the user right-clicks an Action (not a clip), we don't have
-    direct access to the source plate. Try to find any clip in the current
-    batch and use its (width, height, start_frame). Fall back to 1920x1080
-    @ frame 1 if no clip is present.
+    Returns a 3-tuple `(width, height, start_frame)` of ints if any clip
+    is readable, or `None` if no clip exists in the batch or every clip
+    failed to read.
 
-    Returns a 3-tuple of ints. Never raises."""
+    Returning `None` (rather than a hard-coded 1920x1080 sentinel) is
+    deliberate: per Phase 1 D-08, callers must fall through to an error
+    dialog when plate resolution cannot be determined — silent defaults
+    are forbidden because geometric fidelity is the tool's core value.
+    Never raises."""
     try:
         import flame
         for node in flame.batch.nodes:
@@ -1773,7 +1776,7 @@ def _scan_first_clip_metadata():
                     continue
     except Exception:
         pass
-    return (1920, 1080, 1)
+    return None
 
 
 def _pick_camera(cameras, dialog_title):
