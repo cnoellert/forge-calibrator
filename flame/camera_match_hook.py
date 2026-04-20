@@ -1982,39 +1982,57 @@ def _launch_blender_on_blend(blend_path: str, *, focus_steal: bool):
 
 
 def _export_camera_to_blender(selection):
-    """Export a Flame Action camera to a Blender .blend via the forge bridge.
+    """Export a Flame Action camera to a Blender .blend (zero-dialog happy path).
 
     Flow: right-click the Action holding your solved camera
-    -> pick the target camera (dialog if Action has multiple non-Perspective)
-    -> confirm/edit plate resolution (WxH; pre-filled from first clip in batch)
-    -> pick output .blend path
-    -> bake the camera to ASCII FBX via fbx_io.export_action_cameras_to_fbx
-       (Flame's own baker walks the batch range flame.batch.start_frame +
-       duration for animated cameras; static cameras get a 2-key endpoint
-       FBX as an optimization)
-    -> convert FBX to v5 JSON via fbx_ascii.fbx_to_v5_json (pins
-       film_back_mm=36.0 for full-frame Blender parity)
-    -> shell out to Blender via blender_bridge.run_bake
-    -> reveal the .blend in the OS file manager.
+    -> auto-pick the target camera (dialog ONLY if Action has 2+ cameras)
+    -> infer plate resolution via the three-tier fallback
+       (_infer_plate_resolution: action.resolution -> batch w/h -> first clip)
+    -> bake to a tempfile.mkdtemp(prefix='forge_bake_') dir:
+         * ASCII FBX via fbx_io.export_action_cameras_to_fbx
+         * v5 JSON via fbx_ascii.fbx_to_v5_json, stamped with
+           `forge_bake_action_name` + `forge_bake_camera_name` custom
+           properties (D-11) so the Blender-side return trip can look
+           up the correct Flame Action
+    -> Blender headless bake via blender_bridge.run_bake, producing
+       `~/forge-bakes/{action}_{cam}.blend` (filesystem-safe names via
+       _sanitize_name_component; raw names stamped into the .blend
+       custom properties)
+    -> on success, remove the temp dir; on failure, preserve it and
+       include its path in the error dialog (D-14)
+    -> spawn Blender on the .blend via _launch_blender_on_blend,
+       honoring _read_launch_focus_steal() on macOS (EXP-05, D-02)
+    -> on launch failure, fall back to reveal_in_file_manager + warning
+       dialog (D-03). On success, a single informational dialog
+       summarizes the bake and confirms Blender has been launched.
 
-    Frame range is auto-detected from the current batch — no dialog field.
-    The FBX intermediate is kept alongside the .blend + .json for
-    debuggability.
+    Zero-dialog rule applies to the HAPPY PATH (single non-Perspective
+    camera, all three resolution tiers or one of them succeeds, bake
+    + convert + launch all work). Error paths still surface dialogs
+    per D-15 — "zero dialogs" is a happy-path goal, not a silencing
+    rule.
 
     Scope is `_scope_batch_action`, so this menu item appears on Action
-    right-clicks. Open Camera Match remains on clip context since its
-    workflow starts from a plate."""
+    right-clicks.
+    """
     _ensure_forge_env()
     _ensure_forge_core_on_path()
 
     import flame
     import json as _json
     import os
-    import subprocess
-    from PySide6 import QtWidgets
+    import shutil
+    import subprocess  # imported for CalledProcessError catch below
+    import tempfile
 
     from forge_flame import blender_bridge, fbx_ascii, fbx_io
 
+    # NOTE: The lazy QtWidgets import (for QInputDialog / QFileDialog) that
+    # existed in the prior handler body has been removed — both dialogs are
+    # gone from the new happy path. File-level PySide6 imports at the top
+    # of camera_match_hook.py are UNCHANGED; other handlers still use them.
+
+    # --- Selection / action / camera pick (unchanged from prior handler) ---
     action_node = _first_action_in_selection(selection)
     if action_node is None:
         flame.messages.show_in_dialog(
@@ -2032,117 +2050,154 @@ def _export_camera_to_blender(selection):
                     f"'{_val(action_node.name)}'.",
             type="error", buttons=["OK"])
         return
+
     picked = _pick_camera(cameras, "Export Camera to Blender")
     if picked is None:
-        return
+        return  # user cancelled the 2+-camera picker; no dialog needed
     action, cam, label = picked
 
-    # Plate resolution — pre-fill from the first clip in batch. The FBX
-    # carries sensor/FOV/animation natively, but plate pixel dims aren't
-    # a stock FBX property, so we still stamp them into the v5 JSON that
-    # bake_camera.py consumes. Frame number was removed from this dialog:
-    # the FBX baker walks flame.batch.start_frame + duration automatically.
-    default_w, default_h, _default_frame = _scan_first_clip_metadata()
-    res_text, ok = QtWidgets.QInputDialog.getText(
-        None, "Export Camera to Blender",
-        "Plate resolution (WxH):",
-        QtWidgets.QLineEdit.Normal,
-        f"{default_w}x{default_h}")
-    if not ok:
-        return
+    # --- Plate resolution — three-tier fallback (D-07, D-08) ---
     try:
-        w_str, h_str = res_text.lower().strip().split("x")
-        width = int(w_str.strip())
-        height = int(h_str.strip())
-    except (ValueError, AttributeError):
+        width, height = _infer_plate_resolution(action_node)
+    except PlateResolutionUnavailable as e:
         flame.messages.show_in_dialog(
             title="Export Camera to Blender",
-            message=f"Couldn't parse {res_text!r}. "
-                    f"Expected 'WxH' (e.g. 5184x3456).",
+            message=f"Could not infer plate resolution.\n\n{e}",
             type="error", buttons=["OK"])
         return
 
-    # Output path — default name combines Action + camera.
-    default_name = f"{_val(action_node.name)}_{_val(cam.name)}.blend"
-    default_path = os.path.join("/tmp", default_name)
-    blend_path, _filter = QtWidgets.QFileDialog.getSaveFileName(
-        None, "Save Blender File", default_path, "Blender File (*.blend)")
-    if not blend_path:
-        return
-    if not blend_path.endswith(".blend"):
-        blend_path += ".blend"
+    # --- Filesystem-safe name components (Task 2) ---
+    # Raw names (unsanitized) are stamped into the .blend's custom
+    # properties below per D-11; sanitized names are ONLY for the path.
+    raw_action_name = _val(action_node.name)
+    raw_cam_name = _val(cam.name)
+    safe_action = _sanitize_name_component(raw_action_name)
+    safe_cam = _sanitize_name_component(raw_cam_name)
 
-    # Intermediate artifacts alongside the .blend for debuggability.
-    fbx_path = blend_path[:-len(".blend")] + ".fbx"
-    json_path = blend_path[:-len(".blend")] + ".json"
+    # --- Output dir (D-04, D-05 — overwrite on collision) ---
+    out_dir = os.path.expanduser("~/forge-bakes")
+    os.makedirs(out_dir, exist_ok=True)
+    blend_path = os.path.join(out_dir, f"{safe_action}_{safe_cam}.blend")
 
-    # Bake Flame cam -> ASCII FBX. fbx_io handles the Perspective
-    # exclusion and the selection dance (saves + restores user's prior
-    # selection so we don't leak selection state back to Flame's UI).
+    # --- Temp dir for intermediates (D-14 — preserve on failure) ---
+    temp_dir = tempfile.mkdtemp(prefix="forge_bake_")
+    fbx_path = os.path.join(temp_dir, "baked.fbx")
+    json_path = os.path.join(temp_dir, "baked.json")
+
+    n_frames = 0  # populated BEFORE success=True so the finally-block cleanup doesn't race the read
+    success = False
     try:
-        fbx_io.export_action_cameras_to_fbx(
-            action, fbx_path,
-            cameras=[cam],
-            bake_animation=True,
-        )
-    except Exception as e:
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message=f"Failed to write FBX:\n{e}",
-            type="error", buttons=["OK"])
-        return
+        # --- FBX bake (unchanged; Perspective filter inside fbx_io) ---
+        try:
+            fbx_io.export_action_cameras_to_fbx(
+                action, fbx_path,
+                cameras=[cam],
+                bake_animation=True,
+            )
+        except Exception as e:
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"Failed to write FBX:\n{e}\n\n"
+                        f"Intermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
 
-    # FBX -> v5 JSON for bake_camera.py. Pin film_back_mm=36.0 for
-    # full-frame Blender parity (matches the prior single-frame path).
-    try:
-        fbx_ascii.fbx_to_v5_json(
-            fbx_path, json_path,
-            width=width, height=height,
-            film_back_mm=36.0,
-            camera_name=_val(cam.name),
-        )
-    except Exception as e:
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message=f"Failed to convert FBX to JSON:\n{e}",
-            type="error", buttons=["OK"])
-        return
+        # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
+        # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
+        # names per D-11. Phase 2's "Send to Flame" looks these up against
+        # Flame's Action list, so they MUST match the live Flame names
+        # exactly (sanitization is only for filesystem paths above).
+        try:
+            fbx_ascii.fbx_to_v5_json(
+                fbx_path, json_path,
+                width=width, height=height,
+                film_back_mm=36.0,
+                camera_name=raw_cam_name,
+                custom_properties={
+                    "forge_bake_action_name": raw_action_name,
+                    "forge_bake_camera_name": raw_cam_name,
+                },
+            )
+        except Exception as e:
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"Failed to convert FBX to JSON:\n{e}\n\n"
+                        f"Intermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
 
-    # Blender bake — bake_camera.py is already multi-frame capable.
-    try:
-        blender_bridge.run_bake(
-            json_path, blend_path,
-            camera_name="Camera", scale=1000.0, create_if_missing=True,
-        )
-    except FileNotFoundError as e:
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message=str(e), type="error", buttons=["OK"])
-        return
-    except subprocess.CalledProcessError as e:
-        err = (e.stderr or e.stdout or "unknown error").strip()
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message=f"Blender bake failed (exit {e.returncode}):\n\n{err}",
-            type="error", buttons=["OK"])
-        return
+        # --- Blender headless bake (unchanged) ---
+        try:
+            blender_bridge.run_bake(
+                json_path, blend_path,
+                camera_name="Camera", scale=1000.0, create_if_missing=True,
+            )
+        except FileNotFoundError as e:
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"{e}\n\nIntermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
+        except subprocess.CalledProcessError as e:
+            err = (e.stderr or e.stdout or "unknown error").strip()
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"Blender bake failed (exit {e.returncode}):\n\n{err}\n\n"
+                        f"Intermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
 
-    # Read frame count from JSON for the outcome dialog.
-    try:
-        with open(json_path) as f:
-            n_frames = len(_json.load(f).get("frames") or [])
-    except Exception:
-        n_frames = 0
+        # --- Frame count read (MUST happen BEFORE success = True) ---
+        # temp_dir is still alive here; the finally-block below only
+        # removes it when `success` is already True. Reading json_path
+        # AFTER `success = True` would race the cleanup and always
+        # produce n_frames == 0 on the happy path. Do NOT move this.
+        try:
+            with open(json_path) as f:
+                n_frames = len(_json.load(f).get("frames") or [])
+        except Exception:
+            # Non-fatal — frame count is cosmetic for the info dialog.
+            n_frames = 0
+
+        success = True
+    finally:
+        # D-14: clean temp dir ONLY on success. On failure, leave it so
+        # the user (or support) can inspect the intermediate .fbx/.json.
+        if success:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
     frame_label = f"{n_frames}-frame" + ("" if n_frames == 1 else "s")
 
-    blender_bridge.reveal_in_file_manager(blend_path)
+    # --- Blender launch spawn (EXP-05, D-02, D-03) ---
+    focus_steal = _read_launch_focus_steal()
+    try:
+        _launch_blender_on_blend(blend_path, focus_steal=focus_steal)
+        launch_status = "Blender opened."
+    except Exception as e:
+        # D-03 fallback: reveal in file manager so the user at least
+        # sees where the .blend landed, and surface a warning dialog.
+        try:
+            blender_bridge.reveal_in_file_manager(blend_path)
+        except Exception:
+            pass  # reveal is cosmetic; do not shadow the launch error
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"Exported to {blend_path}\n\n"
+                    f"Couldn't auto-launch Blender: {e}\n"
+                    f"File manager opened to the output folder.",
+            type="warning", buttons=["OK"])
+        return
+
+    # --- Informational success dialog (happy-path INFO, not a gate) ---
+    # This fires AFTER Blender has been launched. Per <specifics> in
+    # CONTEXT.md the user-visible surface is the .blend + Blender
+    # window; this dialog exists only to summarize what happened.
     flame.messages.show_in_dialog(
         title="Export Camera to Blender",
         message=f"Exported '{label}' ({frame_label})\n"
                 f"  plate:  {width}x{height}\n"
                 f"  blend:  {blend_path}\n"
-                f"  fbx:    {fbx_path}\n"
-                f"  json:   {json_path}",
+                f"  {launch_status}",
         type="info", buttons=["OK"])
 
 
