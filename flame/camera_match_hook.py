@@ -1921,6 +1921,66 @@ def _infer_plate_resolution(action_node) -> tuple:
     )
 
 
+def _launch_blender_on_blend(blend_path: str, *, focus_steal: bool):
+    """Spawn Blender as a detached subprocess opening `blend_path`.
+
+    Per D-02, the platform branches are:
+      - macOS: `open -a Blender <path>` when focus_steal is True;
+        `open -a -g Blender <path>` when False (default). The `-g` flag
+        (see `man open`) means "do not bring the application to the
+        foreground", satisfying EXP-05's no-focus-steal default.
+      - Linux: `subprocess.Popen([blender_bin, path], start_new_session=True)`
+        regardless of focus_steal (Linux focus behavior is WM-dependent
+        and documented as best-effort). `start_new_session=True` calls
+        `setsid` in the child so closing Flame does not signal Blender.
+
+    All subprocess calls use argv lists only (no shell expansion) — passing
+    the path via shell would enable metacharacter injection via blend_path
+    (which, although Task 2's sanitization prevents hostile names in the
+    filename, could still contain user HOME path components we don't control).
+
+    Returns the `subprocess.Popen` handle so the caller can inspect
+    `.pid` or surface it in diagnostic logging. Never consumes the
+    child's stdout/stderr — Blender runs detached.
+
+    Raises NotImplementedError on unsupported platforms (forge-calibrator
+    is macOS + Linux only per PROJECT.md). The caller is expected to
+    catch exceptions from this helper and surface via show_in_dialog
+    per D-03 (fall back to reveal_in_file_manager on failure).
+
+    Args:
+        blend_path: absolute path to the .blend to open.
+        focus_steal: honored only on macOS. On Linux it is accepted
+            for signature symmetry but has no effect.
+
+    Returns:
+        subprocess.Popen handle.
+    """
+    import subprocess
+    import sys
+
+    from forge_flame import blender_bridge
+
+    if sys.platform == "darwin":
+        args = ["open", "-a", "Blender"]
+        if not focus_steal:
+            args.append("-g")  # -g == background, no focus steal
+        args.append(blend_path)
+        return subprocess.Popen(args)
+    elif sys.platform == "linux":
+        # focus_steal is best-effort-ignored on Linux (WM-dependent).
+        blender_bin = blender_bridge.resolve_blender_bin()
+        return subprocess.Popen(
+            [blender_bin, blend_path],
+            start_new_session=True,
+        )
+    else:
+        raise NotImplementedError(
+            f"Blender launch not supported on platform {sys.platform!r}. "
+            "forge-calibrator targets macOS and Linux only (see PROJECT.md)."
+        )
+
+
 def _export_camera_to_blender(selection):
     """Export a Flame Action camera to a Blender .blend via the forge bridge.
 
