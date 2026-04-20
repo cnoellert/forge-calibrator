@@ -1850,6 +1850,77 @@ def _sanitize_name_component(name: str) -> str:
     return safe if safe.strip("_") else "unnamed"
 
 
+class PlateResolutionUnavailable(RuntimeError):
+    """Raised when plate resolution cannot be inferred from any of the
+    three tiers (action.resolution, batch width/height, first clip in
+    batch). Per D-08, callers must surface this as an error dialog —
+    silent defaults to 1920x1080 are forbidden because geometric
+    fidelity is the core value.
+    """
+
+
+def _infer_plate_resolution(action_node) -> tuple:
+    """Infer plate (width, height) via the three-tier fallback chain.
+
+    Tier order (per D-07; D-08 forbids any silent default):
+      1. action_node.resolution   -- primary; shape confirmed by Plan 01's
+         live-Flame probe (see .planning/phases/01-export-polish/01-PROBE.md
+         TIER1_DISPOSITION line for the exact access pattern).
+      2. flame.batch.width/height -- batch-level fallback; same pattern
+         used at flame/apply_solve.py:269.
+      3. _scan_first_clip_metadata() -- scan any clip in the current batch;
+         returns None (after Plan 04 Task 1) when no readable clip exists.
+
+    On total failure, raises PlateResolutionUnavailable. The caller
+    (_export_camera_to_blender) catches this and surfaces an error dialog.
+
+    Args:
+        action_node: the Flame PyActionNode selected by the user.
+
+    Returns:
+        A `(width, height)` tuple of ints. Always valid (>0) on success.
+    """
+    import flame
+
+    # Tier 1 — action.resolution (shape per 01-PROBE.md TIER1_DISPOSITION:
+    # use-attr-width-height). action.resolution.get_value() returns a
+    # PyResolution object with .width and .height attributes.
+    try:
+        if hasattr(action_node, "resolution") and hasattr(action_node.resolution, "get_value"):
+            r = action_node.resolution.get_value()
+            width, height = int(r.width), int(r.height)
+            if width > 0 and height > 0:
+                return (width, height)
+    except Exception:
+        pass  # fall through to Tier 2
+
+    # Tier 2 — flame.batch.width/height (analog: flame/apply_solve.py:269).
+    try:
+        b = flame.batch
+        width = int(b.width.get_value())
+        height = int(b.height.get_value())
+        if width > 0 and height > 0:
+            return (width, height)
+    except Exception:
+        pass  # fall through to Tier 3
+
+    # Tier 3 — first clip in batch. _scan_first_clip_metadata returns
+    # None on miss (Task 1 of this plan refactored the sentinel away).
+    scan = _scan_first_clip_metadata()
+    if scan is not None:
+        width, height, _start = scan
+        if width > 0 and height > 0:
+            return (int(width), int(height))
+
+    # Every tier failed. Per D-08: no silent default; raise for the caller
+    # to surface as an error dialog.
+    raise PlateResolutionUnavailable(
+        "Could not infer plate resolution from the Action, the batch, "
+        "or any clip in the current batch. Open a clip in this batch "
+        "or set a resolution on the Action before exporting."
+    )
+
+
 def _export_camera_to_blender(selection):
     """Export a Flame Action camera to a Blender .blend via the forge bridge.
 
