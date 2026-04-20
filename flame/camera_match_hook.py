@@ -13,8 +13,9 @@ Requires: forge conda env (numpy, cv2)
 """
 
 from __future__ import print_function
-import sys
 import os
+import re
+import sys
 
 
 def _ensure_forge_env():
@@ -1816,6 +1817,37 @@ def _read_launch_focus_steal() -> bool:
             return bool(json.load(f).get("blender_launch_focus_steal", False))
     except Exception:
         return False
+
+
+_SANITIZE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
+
+
+def _sanitize_name_component(name: str) -> str:
+    """Make a Flame node name safe to embed in a filesystem path.
+
+    The export handler builds `~/forge-bakes/{action}_{cam}.blend` from
+    Flame Action and camera names. Flame permits characters in node names
+    that are hostile to paths: `/`, `\\`, spaces, shell metacharacters
+    (`$`, `` ` ``, `;`, `&`, `|`, `>`, `<`, `*`, `?`, quotes), and
+    control bytes. Embedding those raw into a path risks path traversal
+    (`..`-chains), shell confusion if the path is ever logged into a
+    shell-expanded context, and plain OS-level write failures.
+
+    This helper is ONLY for the filesystem path component. The original,
+    unsanitized name is still stamped into the v5 JSON's
+    `custom_properties` (per D-11) so the Blender-side "Send to Flame"
+    return trip can look up the correct Flame Action.
+
+    Rules:
+      - Whitelist `[A-Za-z0-9._-]`; replace all other runes with `_`.
+      - Truncate to 64 chars (keeps combined filename < 255-char FS limit).
+      - If the result is empty, return `"unnamed"` so the caller never
+        builds a degenerate `_{cam}.blend` or `{action}_.blend` path.
+
+    Never raises; `None` and non-str inputs coerce via `str()`.
+    """
+    safe = _SANITIZE_NAME_RE.sub("_", str(name))[:64]
+    return safe if safe.strip("_") else "unnamed"
 
 
 def _export_camera_to_blender(selection):
