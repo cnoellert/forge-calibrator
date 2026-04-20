@@ -1790,6 +1790,31 @@ def _pick_camera(cameras, dialog_title):
     return cameras[choices.index(choice)]
 
 
+def _read_launch_focus_steal() -> bool:
+    """Read blender_launch_focus_steal from .planning/config.json.
+
+    Returns False if the file is missing, unreadable, or the key is absent.
+    Defaults to False per EXP-05 (Blender launches in background by default).
+    Tolerant of any I/O or JSON failure — launch preference is non-critical.
+
+    Read per-invocation (not cached) — the check is cheap and avoids
+    module-state staleness across Flame's menu-handler lifecycle.
+
+    On installed deployments (/opt/Autodesk/shared/python/camera_match/)
+    there is no .planning/ sibling; the try/except returns False, which
+    is the documented default per D-02.
+    """
+    import json
+    this_dir = os.path.dirname(os.path.abspath(__file__))
+    repo_root = os.path.dirname(this_dir)
+    config_path = os.path.join(repo_root, ".planning", "config.json")
+    try:
+        with open(config_path) as f:
+            return bool(json.load(f).get("blender_launch_focus_steal", False))
+    except Exception:
+        return False
+
+
 def _export_camera_to_blender(selection):
     """Export a Flame Action camera to a Blender .blend via the forge bridge.
 
