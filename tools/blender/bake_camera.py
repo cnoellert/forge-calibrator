@@ -60,6 +60,7 @@ import json
 import math
 import os
 import sys
+from typing import Optional
 
 import bpy
 from mathutils import Matrix
@@ -141,13 +142,35 @@ def _get_or_create_camera(name: str, create_if_missing: bool) -> bpy.types.Objec
     return obj
 
 
-def _stamp_metadata(cam_data: bpy.types.Camera, scale: float, source_path: str) -> None:
+def _stamp_metadata(
+    cam_data: bpy.types.Camera,
+    scale: float,
+    source_path: str,
+    custom_properties: Optional[dict] = None,
+) -> None:
     """Write round-trip metadata onto the camera's data-block so extract
-    can undo the scale and provenance-check the source."""
+    can undo the scale and provenance-check the source.
+
+    Args:
+        cam_data: the bpy Camera data-block (cam.data, NOT the object).
+            Custom properties are stored on the ID-block so they survive
+            .blend save/load and are readable by extract_camera.py.
+        scale: the position divisor used during bake; extract multiplies
+            this back up for a lossless round-trip.
+        source_path: the input JSON path; stamped as provenance.
+        custom_properties: optional caller-supplied dict of extra
+            metadata (e.g. Flame Action name + camera name for the
+            Blender-side "Send to Flame" addon to read). Values must
+            be bpy-property-compatible (str / int / float per the v5
+            JSON contract). Applied as-is to cam_data[key] = value.
+    """
     cam_data["forge_bake_version"] = 1
     cam_data["forge_bake_source"] = "flame"
     cam_data["forge_bake_scale"] = scale
     cam_data["forge_bake_input_path"] = os.path.abspath(source_path)
+    if custom_properties:
+        for key, value in custom_properties.items():
+            cam_data[key] = value
 
 
 # =============================================================================
@@ -199,7 +222,7 @@ def _bake(args: argparse.Namespace) -> None:
     scene.render.resolution_x = int(data["width"])
     scene.render.resolution_y = int(data["height"])
 
-    _stamp_metadata(cam.data, scale, args.in_path)
+    _stamp_metadata(cam.data, scale, args.in_path, data.get("custom_properties"))
 
     # Ensure the output directory exists before bpy chokes on it.
     out_abs = os.path.abspath(args.out_path)
