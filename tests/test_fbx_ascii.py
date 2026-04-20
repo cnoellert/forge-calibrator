@@ -691,3 +691,109 @@ class TestWriter:
         for required in ("FBXHeaderExtension", "GlobalSettings", "Objects",
                          "Connections", "Takes"):
             assert required + ":" in text, f"missing {required} block"
+
+
+# =============================================================================
+# Group 5: fbx_to_v5_json — custom_properties passthrough (Plan 01-02)
+# =============================================================================
+
+
+class TestFbxToV5JsonCustomProperties:
+    """Tests for the optional ``custom_properties`` kwarg added to
+    ``fbx_to_v5_json`` in Plan 01-02 (EXP-04 schema extension).
+
+    Uses ``forge_fbx_baked.fbx`` — a live Flame 2026.2.1 export with
+    ``bake_animation=True`` (two-keyframe endpoints on each curve).
+
+    Tests cover:
+    - Test A: custom_properties dict lands in both the returned dict and
+      the on-disk JSON.
+    - Test B: omitting the kwarg produces no ``custom_properties`` key
+      (backward-compatible with pre-v6.3 callers).
+    - Test C: passing ``custom_properties={}`` also omits the key (empty
+      dicts are indistinguishable from "nothing to stamp").
+    - Test D: caller mutating the input dict after the call does NOT
+      affect the on-disk JSON (shallow-copy defense).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_a_custom_properties_in_return_and_disk(self, tmp_path):
+        """Test A: custom_properties appear in both returned dict and JSON."""
+        props = {
+            "forge_bake_action_name": "Action_01",
+            "forge_bake_camera_name": "Cam_01",
+        }
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            custom_properties=props,
+        )
+        # Check returned dict.
+        assert "custom_properties" in result
+        assert result["custom_properties"] == {
+            "forge_bake_action_name": "Action_01",
+            "forge_bake_camera_name": "Cam_01",
+        }
+        # Check on-disk JSON (full serialization path).
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert "custom_properties" in on_disk
+        assert on_disk["custom_properties"] == {
+            "forge_bake_action_name": "Action_01",
+            "forge_bake_camera_name": "Cam_01",
+        }
+
+    def test_b_no_kwarg_no_key(self, tmp_path):
+        """Test B: omitting custom_properties produces no key in JSON."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+        )
+        assert "custom_properties" not in result
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert "custom_properties" not in on_disk
+
+    def test_c_empty_dict_no_key(self, tmp_path):
+        """Test C: custom_properties={} also omits the key (empty == absent)."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            custom_properties={},
+        )
+        assert "custom_properties" not in result
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert "custom_properties" not in on_disk
+
+    def test_d_shallow_copy_defense(self, tmp_path):
+        """Test D: mutating the input dict after call does not affect on-disk JSON."""
+        props = {"forge_bake_action_name": "Action_01"}
+        json_path = tmp_path / "out.json"
+        fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            custom_properties=props,
+        )
+        # Mutate after the call.
+        props["forge_bake_action_name"] = "MUTATED"
+        props["extra_key"] = "should_not_appear"
+        # On-disk JSON must still have the original values.
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert on_disk["custom_properties"]["forge_bake_action_name"] == "Action_01"
+        assert "extra_key" not in on_disk["custom_properties"]

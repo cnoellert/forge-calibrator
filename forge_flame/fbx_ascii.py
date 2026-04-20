@@ -716,6 +716,7 @@ def fbx_to_v5_json(
     film_back_mm: Optional[float] = None,
     frame_rate: str = "23.976 fps",
     camera_name: Optional[str] = None,
+    custom_properties: Optional[dict] = None,
 ) -> dict:
     """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
 
@@ -738,6 +739,14 @@ def fbx_to_v5_json(
         camera_name: optional filter — if given, only emit the camera
             whose ``Model::<name>`` matches. If the FBX has a single
             camera the filter is a noop.
+        custom_properties: optional dict of caller-supplied metadata to
+            stamp into the v5 JSON payload under a top-level
+            ``custom_properties`` key. Values must be JSON-serialisable
+            (str / int / float per the v5 contract; see
+            ``tools/blender/bake_camera.py::_stamp_metadata``, which
+            consumes this field). When ``None`` or empty, no
+            ``custom_properties`` key is emitted (backward-compatible
+            with pre-v6.3 consumers).
 
     Returns the parsed v5 JSON dict (also written to disk).
     """
@@ -769,6 +778,8 @@ def fbx_to_v5_json(
         "film_back_mm": float(film_back_mm),
         "frames": frames,
     }
+    if custom_properties:
+        payload["custom_properties"] = dict(custom_properties)
 
     out_abs = os.path.abspath(out_json_path)
     os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
