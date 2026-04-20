@@ -4,8 +4,8 @@ milestone: v6.3
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-04-20T00:46:41.728Z"
-last_activity: 2026-04-20 -- Phase 1 planning complete
+last_updated: "2026-04-20T05:12:18.944Z"
+last_activity: 2026-04-20 -- Phase 01 execution started
 progress:
   total_phases: 4
   completed_phases: 0
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 1 — Export Polish
+**Current focus:** Phase 01 — export-polish
 
 ## Current Position
 
-Phase: 1 of 4 (Export Polish)
-Plan: 0 of ? in current phase
-Status: Ready to execute
-Last activity: 2026-04-20 -- Phase 1 planning complete
+Phase: 01 (export-polish) — EXECUTING
+Plan: 1 of 4
+Status: Executing Phase 01
+Last activity: 2026-04-20 -- Phase 01 execution started
 
 Progress: [░░░░░░░░░░] 0%
 
