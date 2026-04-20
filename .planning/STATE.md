@@ -1,3 +1,19 @@
+---
+gsd_state_version: 1.0
+milestone: v6.3
+milestone_name: milestone
+status: planning
+stopped_at: Phase 1 context gathered
+last_updated: "2026-04-20T00:03:31.273Z"
+last_activity: 2026-04-19 — Roadmap created; milestone v6.3 ("Seamless Blender↔Flame Bridge") initialised at brownfield v6.2 baseline
+progress:
+  total_phases: 4
+  completed_phases: 0
+  total_plans: 0
+  completed_plans: 0
+  percent: 0
+---
+
 # Project State
 
 ## Project Reference
@@ -19,6 +35,7 @@ Progress: [░░░░░░░░░░] 0%
 ## Performance Metrics
 
 **Velocity:**
+
 - Total plans completed: 0
 - Average duration: —
 - Total execution time: —
@@ -30,6 +47,7 @@ Progress: [░░░░░░░░░░] 0%
 | - | - | - | - |
 
 **Recent Trend:**
+
 - Last 5 plans: —
 - Trend: —
 
@@ -66,6 +84,6 @@ None yet.
 
 ## Session Continuity
 
-Last session: 2026-04-19
-Stopped at: Roadmap creation complete; no plans written yet
-Resume file: None
+Last session: 2026-04-20T00:03:31.270Z
+Stopped at: Phase 1 context gathered
+Resume file: .planning/phases/01-export-polish/01-CONTEXT.md
