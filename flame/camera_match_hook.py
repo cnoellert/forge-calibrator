@@ -1841,13 +1841,29 @@ def _sanitize_name_component(name: str) -> str:
     Rules:
       - Whitelist `[A-Za-z0-9._-]`; replace all other runes with `_`.
       - Truncate to 64 chars (keeps combined filename < 255-char FS limit).
-      - If the result is empty, return `"unnamed"` so the caller never
-        builds a degenerate `_{cam}.blend` or `{action}_.blend` path.
+      - Strip leading dots so names like ``".hidden"`` do not produce
+        Unix dotfiles the user's file browser silently hides, and names
+        like ``"."`` / ``".."`` / ``"..."`` cannot slip in as
+        traversal-looking path components inside the final
+        ``{action}_{cam}.blend``.
+      - Require at least one alphanumeric character in the result. All-
+        punctuation inputs (e.g. ``"---"``, ``"___"``, ``"."``) fall
+        back to ``"unnamed"`` so the caller never builds a degenerate
+        ``_{cam}.blend`` / ``{action}_.blend`` or a file whose name is
+        only separators.
 
     Never raises; `None` and non-str inputs coerce via `str()`.
     """
     safe = _SANITIZE_NAME_RE.sub("_", str(name))[:64]
-    return safe if safe.strip("_") else "unnamed"
+    # Strip leading dots first so ``.hidden`` / ``.`` / ``..`` never
+    # produce Unix dotfiles or traversal-looking components. The
+    # alnum-required predicate below then catches all-punctuation
+    # inputs (``---``, ``___``, ``...``) the old ``strip("_")`` fallback
+    # missed.
+    safe = safe.lstrip(".")
+    if not any(c.isalnum() for c in safe):
+        return "unnamed"
+    return safe
 
 
 class PlateResolutionUnavailable(RuntimeError):
