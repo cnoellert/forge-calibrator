@@ -63,6 +63,26 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. A user reading the documentation (README section or `docs/seamless-bridge.md`) can install the Blender addon, understand how the forge-bridge autostart works, and follow at least three troubleshooting recipes (bridge not running, addon missing metadata, import failure)
 **Plans**: TBD
 
+## Backlog
+
+### Phase 999.1: Improve multi-camera picker UX (BACKLOG)
+
+**Goal:** Replace the bare `QInputDialog.getItem` text dropdown in `_pick_camera` (`flame/camera_match_hook.py:1783-1794`) with a richer picker suited to a professional VFX tool. Current implementation works but is minimal.
+
+**Polish opportunities:**
+1. Thumbnail previews of each camera's current-frame render (Wiretap single-frame read into a small QPixmap grid)
+2. Mark the currently-active-in-viewport camera with an indicator so the user knows their default
+3. Deterministic sort order — alphabetical? creation order? most-recently-solved first?
+4. Better disambiguation when two cameras share a name across different Actions
+5. Remember last-picked camera per Action
+
+**Scope note:** v2 polish. The current minimal picker is acceptable for initial users and Phase 02's round-trip semantics don't depend on the UX — only on the camera actually selected.
+
+**Requirements:** TBD
+
+**Plans:**
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
 ## Progress
 
 **Execution Order:**
