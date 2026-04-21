@@ -2124,6 +2124,22 @@ def _export_camera_to_blender(selection):
         except Exception:
             frame_offset = 0  # silent fallback; do not surface to user
 
+        # --- Frame end — drop the single trailing keyframe that
+        # bake_animation=True bakes past the user's batch range. Flame
+        # emits (end - start + 1) KTimes; after the +start_frame offset
+        # above, that's one frame past end (UAT from 260420-uzv: user
+        # reported an errant 1101 keyframe on a 1001..1100 batch).
+        # Same defensive shape as start_frame above. Fallback is None
+        # (NOT 0) — None means "don't clip", preserving pre-fix
+        # behavior on any error; 0 would incorrectly drop every frame
+        # since the offset-adjusted frames are all >= start_frame. ---
+        frame_end = None
+        try:
+            ef = flame.batch.end_frame.get_value()
+            frame_end = int(float(ef))
+        except Exception:
+            frame_end = None  # silent fallback; None = no clip
+
         # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
         # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
         # names per D-11. Phase 2's "Send to Flame" looks these up against
@@ -2136,6 +2152,7 @@ def _export_camera_to_blender(selection):
                 film_back_mm=36.0,
                 camera_name=raw_cam_name,
                 frame_offset=frame_offset,
+                frame_end=frame_end,
                 custom_properties={
                     "forge_bake_action_name": raw_action_name,
                     "forge_bake_camera_name": raw_cam_name,

@@ -916,3 +916,196 @@ class TestFbxToV5JsonFrameOffset:
             frame_offset=-50,
         )
         assert result_neg["frames"][0]["frame"] == baseline_first - 50
+
+
+# =============================================================================
+# Group 7: fbx_to_v5_json — frame_end clips trailing bake_animation key
+# =============================================================================
+
+
+class TestFbxToV5JsonFrameEnd:
+    """Tests for the optional ``frame_end`` kwarg added to
+    ``fbx_to_v5_json`` (and inner ``_merge_curves``) in quick task
+    260421-bhg.
+
+    Background: UAT on the 260420-uzv deploy (which restored real plate
+    frame numbers in the FBX -> v5 JSON path via ``frame_offset``)
+    surfaced a second issue at the TAIL of the range. Flame's
+    ``action.export_fbx(bake_animation=True)`` bakes ``end - start + 1``
+    KTimes (0..100 for a 1001..1100 inclusive batch), and after the
+    +1001 offset that becomes 1001..1101 — one frame beyond the user's
+    batch end. User's verbatim report: *"I seem to still have an errant
+    keyframe at 1101"*.
+
+    The fix is a TAIL clip: thread ``frame_end`` (INCLUSIVE upper bound,
+    applied AFTER ``frame_offset``) through the same wiring 260420-uzv
+    added for ``frame_offset``. Default is ``None`` (no clipping,
+    preserves pre-fix behavior).
+
+    Uses ``forge_fbx_baked.fbx`` — the live Flame 2026.2.1 export with
+    ``bake_animation=True`` (exercises the keyed branch of
+    ``_merge_curves``).
+
+    Tests cover:
+    - Test A: exact UAT scenario — offset + end clip drops one trailing
+      frame and preserves the inclusive boundary frame.
+    - Test B: ``frame_end=None`` (default) is a no-op vs omitting the
+      kwarg entirely (regression guard — preserves the 260420-uzv
+      post-state).
+    - Test C: ``frame_end`` below the minimum offset-adjusted frame
+      yields an empty list (edge case — no crash, no None).
+    - Test D: ``frame_end`` exactly equal to the minimum offset-adjusted
+      frame yields exactly one frame (locks in the INCLUSIVE semantic —
+      boundary frame is KEPT, not dropped).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_a_offset_plus_end_clip_drops_trailing_frame(self, tmp_path):
+        """Test A — the exact UAT scenario:
+
+        1. Read the no-offset, no-clip baseline to discover the
+           fixture's natural last frame at runtime (so this test stays
+           correct if the fixture is regenerated with a different key
+           density).
+        2. Call again with ``frame_offset=1001`` and
+           ``frame_end=1001 + baseline_last - 1`` — i.e., clip one
+           frame shy of the offset-shifted natural end.
+        3. Assert the max emitted frame equals the boundary (proves
+           the INCLUSIVE upper bound — the boundary frame is KEPT).
+        4. Assert the result is exactly one shorter than the no-clip
+           baseline (proves exactly one trailing frame was dropped —
+           the UAT symptom of the errant 1101 keyframe).
+        5. Assert every emitted frame satisfies ``<= boundary``.
+        """
+        # Step 1: no-offset, no-clip baseline to discover fixture's range.
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_frames = result_baseline["frames"]
+        assert len(baseline_frames) >= 2, (
+            "fixture must have at least two keyed frames for this test "
+            "to meaningfully drop a trailing one"
+        )
+        baseline_last = baseline_frames[-1]["frame"]
+        baseline_count = len(baseline_frames)
+
+        # Step 2: offset + clip one-shy of the shifted end.
+        boundary = 1001 + baseline_last - 1
+        json_clipped = tmp_path / "clipped.json"
+        result_clipped = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_clipped),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+            frame_end=boundary,
+        )
+        clipped_frames = result_clipped["frames"]
+        clipped_frame_nums = [e["frame"] for e in clipped_frames]
+
+        # Step 3: inclusive upper bound — boundary frame is kept.
+        assert max(clipped_frame_nums) == boundary, (
+            f"max emitted frame should be the INCLUSIVE boundary "
+            f"{boundary}; got {max(clipped_frame_nums)}"
+        )
+
+        # Step 4: exactly one trailing frame dropped.
+        assert len(clipped_frames) == baseline_count - 1, (
+            f"expected exactly one trailing frame dropped "
+            f"(baseline={baseline_count} -> clipped={baseline_count - 1}); "
+            f"got {len(clipped_frames)}"
+        )
+
+        # Step 5: no frame exceeds the boundary.
+        for entry in clipped_frames:
+            assert entry["frame"] <= boundary, (
+                f"frame {entry['frame']} exceeds boundary {boundary}"
+            )
+
+    def test_b_none_default_is_no_op(self, tmp_path):
+        """Test B — ``frame_end=None`` (default) is identical to omitting
+        the kwarg, and both preserve pre-260421-bhg behavior (regression
+        guard on the 260420-uzv post-state)."""
+        json_no_kwarg = tmp_path / "no_kwarg.json"
+        result_no_kwarg = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_no_kwarg),
+            **self._COMMON_KWARGS,
+        )
+        json_explicit_none = tmp_path / "explicit_none.json"
+        result_explicit_none = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_explicit_none),
+            **self._COMMON_KWARGS,
+            frame_end=None,
+        )
+        frames_no_kwarg = [e["frame"] for e in result_no_kwarg["frames"]]
+        frames_explicit_none = [
+            e["frame"] for e in result_explicit_none["frames"]
+        ]
+        assert frames_no_kwarg == frames_explicit_none, (
+            "frame_end=None must be a pure no-op; got "
+            f"no_kwarg={frames_no_kwarg} vs explicit_none={frames_explicit_none}"
+        )
+
+    def test_c_frame_end_below_min_yields_empty(self, tmp_path):
+        """Test C — ``frame_offset=1001, frame_end=0``: every offset-
+        adjusted frame is >= 1001 and 1001 > 0, so ALL frames are
+        dropped. Result must be an empty list — NOT a crash, NOT None.
+        Locks in "empty result is legitimate" so a future "helpful"
+        guard doesn't raise on it."""
+        json_path = tmp_path / "empty.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+            frame_end=0,
+        )
+        assert result["frames"] == [], (
+            f"expected empty frames list when frame_end below min; "
+            f"got {result['frames']!r}"
+        )
+
+    def test_d_inclusive_boundary_keeps_first_frame(self, tmp_path):
+        """Test D — inclusive boundary: compute the baseline's first
+        frame, call with ``frame_offset=1001`` and
+        ``frame_end=1001 + baseline_first``, and assert exactly the
+        first frame survives. Locks in the INCLUSIVE semantic — if
+        someone "helpfully" changes ``>`` to ``>=`` in the drop
+        condition, this test goes red."""
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_first = result_baseline["frames"][0]["frame"]
+        boundary = 1001 + baseline_first
+
+        json_clipped = tmp_path / "clipped.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_clipped),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+            frame_end=boundary,
+        )
+        frames = result["frames"]
+        assert len(frames) == 1, (
+            f"expected exactly one frame at the inclusive boundary; "
+            f"got {len(frames)} frames: {[e['frame'] for e in frames]}"
+        )
+        assert frames[0]["frame"] == boundary, (
+            f"surviving frame should be the boundary {boundary}; "
+            f"got {frames[0]['frame']}"
+        )

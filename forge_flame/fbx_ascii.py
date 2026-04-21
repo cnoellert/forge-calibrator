@@ -614,6 +614,7 @@ def _merge_curves(
     frame_rate: str,
     *,
     frame_offset: int = 0,
+    frame_end: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Resolve T, R, FoV curves for a camera and interleave them into a
     per-frame list. We take the union of unique KeyTime stamps across
@@ -628,6 +629,16 @@ def _merge_curves(
     is how the Flame batch's ``start_frame`` survives the FBX
     round-trip — ``action.export_fbx(bake_animation=True)`` zero-bases
     the KTime stream, so the offset must be reapplied on read.
+
+    If ``frame_end`` is not None, any frame whose POST-OFFSET value
+    exceeds it is dropped (INCLUSIVE upper bound — ``frame == frame_end``
+    is kept; only ``frame > frame_end`` is dropped). This is how the
+    Flame batch's ``end_frame`` trims the single trailing keyframe that
+    ``action.export_fbx(bake_animation=True)`` bakes past the user's
+    range — Flame emits ``(end - start + 1)`` KTimes which, after the
+    +``start_frame`` offset, lands one frame past end. Clip applies
+    after the offset so the comparison is against the user-facing plate
+    frame number.
     """
     tx = _read_curve(cam.t_curve_ids.get("X"), root)
     ty = _read_curve(cam.t_curve_ids.get("Y"), root)
@@ -641,6 +652,13 @@ def _merge_curves(
     any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
     if not any_keyed:
         frame = frame_offset
+        # Clip AFTER the offset so the comparison is against the
+        # user-facing plate frame number. Symmetric with the keyed
+        # path below; in practice the static case rarely trips this
+        # (a static camera in a Flame batch with start_frame > end_frame
+        # is degenerate), but apply for defensive correctness.
+        if frame_end is not None and frame > frame_end:
+            return []
         sp = cam.static_position
         sr = cam.static_rotation
         film_back_mm = _inches_to_mm(cam.film_height_inches)
@@ -663,6 +681,12 @@ def _merge_curves(
     out: list[dict[str, Any]] = []
     for ktime in sorted_times:
         frame = frame_from_ktime(ktime, frame_rate) + frame_offset
+        # Clip AFTER the offset is added, because frame_end is a
+        # user-facing plate frame number (from flame.batch.end_frame),
+        # not a raw FBX KTime index. STRICT `>` preserves the inclusive
+        # upper bound — ``frame == frame_end`` is kept.
+        if frame_end is not None and frame > frame_end:
+            continue
         px = _sample_at(tx, ktime, cam.static_position[0])
         py = _sample_at(ty, ktime, cam.static_position[1])
         pz = _sample_at(tz, ktime, cam.static_position[2])
@@ -726,6 +750,7 @@ def fbx_to_v5_json(
     camera_name: Optional[str] = None,
     custom_properties: Optional[dict] = None,
     frame_offset: int = 0,
+    frame_end: Optional[int] = None,
 ) -> dict:
     """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
 
@@ -764,6 +789,15 @@ def fbx_to_v5_json(
             KTime stream regardless of the batch's start_frame, so this
             offset is the Flame-side mechanism for restoring real plate
             frame numbers in the v5 JSON output.
+        frame_end: optional INCLUSIVE upper bound on emitted ``frame``
+            values. Applied AFTER ``frame_offset``. Any frame whose
+            post-offset value exceeds ``frame_end`` is dropped. Default
+            ``None`` (no clipping — preserves pre-260421-bhg behavior).
+            Set to the Flame batch's ``end_frame`` to trim the single
+            trailing keyframe that ``action.export_fbx(bake_animation=True)``
+            bakes past the user's range: Flame emits ``(end - start + 1)``
+            KTimes, which after the +``start_frame`` offset lands one
+            frame past end.
 
     Returns the parsed v5 JSON dict (also written to disk).
     """
@@ -784,7 +818,11 @@ def fbx_to_v5_json(
             f"pass camera_name= to select one")
     cam = cameras[0]
 
-    frames = _merge_curves(cam, tree, frame_rate, frame_offset=frame_offset)
+    frames = _merge_curves(
+        cam, tree, frame_rate,
+        frame_offset=frame_offset,
+        frame_end=frame_end,
+    )
 
     if film_back_mm is None:
         film_back_mm = _inches_to_mm(cam.film_height_inches)
