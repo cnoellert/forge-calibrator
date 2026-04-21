@@ -4,8 +4,8 @@ milestone: v6.3
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-04-20T05:12:18.944Z"
-last_activity: 2026-04-20 -- Phase 01 execution started
+last_updated: "2026-04-21T05:25:00.000Z"
+last_activity: 2026-04-21 -- Completed quick task 260420-uzv: Preserve Flame batch start frame in FBX bake (frame_offset)
 progress:
   total_phases: 4
   completed_phases: 0
@@ -73,6 +73,12 @@ None yet.
 - `flame/camera_match_hook.py` is a 2100-LOC monolith; menu handler changes require a full Flame restart to take effect (not a blocker for shipping but slows iteration)
 - forge-bridge is a separate repo; this milestone integrates it as a production dependency without owning its internals — coordinate on the auto-start interface contract before Phase 3 execution
 - Phase 1 must resolve how `resolution` is read from the Action node (PyAttribute shape for Action.resolution not confirmed in existing tests — probe needed)
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260420-uzv | Preserve Flame batch start frame in FBX bake (frame_offset) | 2026-04-21 | 9c7f109 | [260420-uzv-preserve-flame-batch-start-frame-in-fbx-](./quick/260420-uzv-preserve-flame-batch-start-frame-in-fbx-/) |
 
 ## Deferred Items
 
