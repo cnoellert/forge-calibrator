@@ -142,6 +142,14 @@ def _get_or_create_camera(name: str, create_if_missing: bool) -> bpy.types.Objec
     return obj
 
 
+_RESERVED_STAMP_KEYS = frozenset({
+    "forge_bake_version",
+    "forge_bake_source",
+    "forge_bake_scale",
+    "forge_bake_input_path",
+})
+
+
 def _stamp_metadata(
     cam_data: bpy.types.Camera,
     scale: float,
@@ -163,14 +171,35 @@ def _stamp_metadata(
             Blender-side "Send to Flame" addon to read). Values must
             be bpy-property-compatible (str / int / float per the v5
             JSON contract). Applied as-is to cam_data[key] = value.
+
+            Reserved keys in ``_RESERVED_STAMP_KEYS`` (the round-trip
+            stamps this function writes) cannot be overridden here:
+            any attempt to set them via ``custom_properties`` is
+            skipped with a stderr warning so a buggy or tampered JSON
+            cannot clobber ``forge_bake_scale`` (which would produce
+            a silently-miscalibrated camera on extract) or
+            ``forge_bake_source`` (used for provenance gating by the
+            Blender-side "Send to Flame" addon).
     """
+    # Apply caller properties first, then overwrite with reserved stamps so
+    # the round-trip scale/provenance invariants cannot be clobbered even
+    # if the caller forgets the reserved-key guard. The explicit reject
+    # below is the loud layer; the write-last below it is the silent
+    # belt-and-braces layer.
+    if custom_properties:
+        for key, value in custom_properties.items():
+            if key in _RESERVED_STAMP_KEYS:
+                print(
+                    f"bake_camera: ignoring reserved custom_properties "
+                    f"key {key!r} (would clobber round-trip stamp)",
+                    file=sys.stderr,
+                )
+                continue
+            cam_data[key] = value
     cam_data["forge_bake_version"] = 1
     cam_data["forge_bake_source"] = "flame"
     cam_data["forge_bake_scale"] = scale
     cam_data["forge_bake_input_path"] = os.path.abspath(source_path)
-    if custom_properties:
-        for key, value in custom_properties.items():
-            cam_data[key] = value
 
 
 # =============================================================================
