@@ -40,7 +40,12 @@ Decimal phases appear between their surrounding integers in numeric order.
   2. Clicking "Send to Flame" with a camera that lacks forge metadata shows an error popup naming the missing property rather than crashing or silently failing
   3. Clicking "Send to Flame" on a properly stamped camera extracts per-frame T / R / focal / film-back and delivers the camera to the target Flame Action without the user touching Flame's UI
   4. The result (new camera name on success, or error traceback on failure) appears in a Blender info popup immediately after the button press
-**Plans**: TBD
+**Plans:** 4 plans
+Plans:
+- [ ] 02-01-PLAN.md — Pre-work probes (D-18 frame_rate shape + FOLDED-01 multi-camera picker sweep)
+- [ ] 02-02-PLAN.md — v5_json_str_to_fbx sibling + shared flame_math.py extraction + extract_camera.py refactor
+- [ ] 02-03-PLAN.md — Addon scaffolding: preflight.py + transport.py + __init__.py (bl_info, Panel, Operator)
+- [ ] 02-04-PLAN.md — Build installable zip + live E2E validation (happy path + Tier 1/2/3 failure paths)
 **UI hint**: yes
 
 ### Phase 3: forge-bridge Deploy
