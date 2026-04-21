@@ -1109,3 +1109,242 @@ class TestFbxToV5JsonFrameEnd:
             f"surviving frame should be the boundary {boundary}; "
             f"got {frames[0]['frame']}"
         )
+
+
+class TestFbxToV5JsonFrameStart:
+    """Tests for the optional ``frame_start`` kwarg added to
+    ``fbx_to_v5_json`` (and inner ``_merge_curves``) in quick task
+    260421-c1w.
+
+    Background: this is the THIRD fix in the chain:
+      - 260420-uzv: added ``frame_offset`` so the FBX round-trip surfaces
+        real plate frame numbers in Blender (not zero-based KTime).
+      - 260421-bhg: added ``frame_end`` (INCLUSIVE upper bound) to drop
+        the single trailing keyframe that
+        ``action.export_fbx(bake_animation=True)`` bakes past the user's
+        batch range.
+      - 260421-c1w (this test class): adds ``frame_start`` (INCLUSIVE
+        lower bound) to drop the implicit PRE-ROLL keyframe that Flame
+        emits at FBX KTime 0, AND corrects the ``frame_offset`` to be
+        ``start_frame - 1`` so the real per-frame samples (KTimes 1..N)
+        land on their correct user-facing plate frames.
+
+    UAT on the 260421-bhg deploy (which correctly dropped the errant
+    1101 trailing key) surfaced a deeper bake-shape issue that was
+    previously hidden BEHIND the trailing-frame bug. The actual Flame
+    bake shape is:
+      - KTime 0 = implicit PRE-ROLL (initial state — held before the
+        first "real" key)
+      - KTime k (k>=1) = source frame ``start_frame + k - 1``
+    So for a 1001..1100 batch, the fix is TWO coordinated changes:
+      - ``frame_offset = 1000`` (so KTime 1 -> 1001, not 1002)
+      - ``frame_start = 1001`` (so KTime 0 -> 1000 -> DROPPED)
+
+    ``frame_start`` is INCLUSIVE (STRICT ``<`` drop — boundary frame is
+    KEPT), symmetric with ``frame_end``'s INCLUSIVE upper bound.
+
+    Uses ``forge_fbx_baked.fbx`` — the live Flame 2026.2.1 export with
+    ``bake_animation=True`` (exercises the keyed branch of
+    ``_merge_curves``). Fixture has KTime 0 pre-roll plus at least one
+    real-sample KTime.
+
+    Tests cover:
+    - Test A: UAT-shaped call (offset=1000 + start=1001 + end=<derived>)
+      drops the pre-roll AND the Xpos at the first surviving frame
+      matches the SECOND baseline frame's Xpos (regression guard for
+      the +1 shift — if ``frame_offset = start_frame`` returns instead
+      of ``start_frame - 1``, this goes red).
+    - Test B: ``frame_start=None`` (default) is a no-op vs omitting the
+      kwarg entirely (regression guard — preserves the 260421-bhg
+      post-state).
+    - Test C: ``frame_start`` equal to the minimum offset-adjusted
+      frame keeps ALL frames (locks in the INCLUSIVE semantic — STRICT
+      ``<`` drop, boundary frame kept).
+    - Test D: ``frame_start`` above all offset-adjusted frames yields
+      an empty list (edge case — no crash, no None).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_a_uat_preroll_drop_and_shift_correction(self, tmp_path):
+        """Test A — the exact UAT scenario:
+
+        1. Read the no-offset, no-clip baseline to discover the
+           fixture's natural range at runtime (so this test stays
+           correct if the fixture is regenerated).
+        2. Capture the SECOND baseline frame's ``position[0]`` — this
+           is the first REAL sample's Xpos (KTime 1), which under the
+           fix must land on user-facing frame 1001.
+        3. Call with the full UAT-shaped kwargs:
+           ``frame_offset=1000, frame_start=1001,
+             frame_end=1001 + baseline_last - 1``.
+        4. Assert:
+           - first surviving frame is 1001 (pre-roll was dropped);
+           - Xpos at frame 1001 equals the KTime 1 baseline Xpos
+             (regression guard for the +1 shift);
+           - exactly one frame (the pre-roll) was dropped;
+           - every emitted frame is in the closed range
+             ``[frame_start, frame_end]``.
+        """
+        # Step 1: no-offset, no-clip baseline.
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_frames = result_baseline["frames"]
+        assert len(baseline_frames) >= 2, (
+            "fixture must have a pre-roll AND at least one real sample "
+            "for this test to meaningfully exercise the pre-roll drop"
+        )
+        baseline_count = len(baseline_frames)
+        baseline_last = baseline_frames[-1]["frame"]
+        # Step 2: capture the KTime 1 Xpos (first REAL sample).
+        ktime_1_xpos = baseline_frames[1]["position"][0]
+
+        # Step 3: UAT-shaped call.
+        boundary_end = 1001 + baseline_last - 1
+        json_clipped = tmp_path / "clipped.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_clipped),
+            **self._COMMON_KWARGS,
+            frame_offset=1000,
+            frame_start=1001,
+            frame_end=boundary_end,
+        )
+        frames = result["frames"]
+
+        # Step 4a: first surviving frame is the inclusive boundary.
+        assert frames[0]["frame"] == 1001, (
+            f"first surviving frame should be 1001 (the pre-roll at "
+            f"offset-adjusted 1000 should be dropped); got "
+            f"{frames[0]['frame']}"
+        )
+        # Step 4b: Xpos regression guard for the +1 shift correction.
+        # Under the fix, user-facing frame 1001 shows the KTime 1 pose
+        # (the first real sample). If someone reverts
+        # ``frame_offset = int(float(sf)) - 1`` back to
+        # ``int(float(sf))``, frame 1001 would show the KTime 0
+        # pre-roll pose instead and this assertion goes red.
+        assert frames[0]["position"][0] == ktime_1_xpos, (
+            f"Xpos at frame 1001 should be the KTime 1 pose "
+            f"({ktime_1_xpos}); got {frames[0]['position'][0]}. "
+            f"Regression: +1 shift correction "
+            f"(frame_offset = start_frame - 1) is broken."
+        )
+        # Step 4c: exactly one frame (the pre-roll) was dropped.
+        assert len(frames) == baseline_count - 1, (
+            f"expected exactly one frame (pre-roll) dropped "
+            f"(baseline={baseline_count} -> clipped="
+            f"{baseline_count - 1}); got {len(frames)}"
+        )
+        # Step 4d: every emitted frame in the closed range.
+        for entry in frames:
+            assert 1001 <= entry["frame"] <= boundary_end, (
+                f"frame {entry['frame']} outside closed range "
+                f"[1001, {boundary_end}]"
+            )
+
+    def test_b_none_default_is_no_op(self, tmp_path):
+        """Test B — ``frame_start=None`` (default) is identical to
+        omitting the kwarg, and both preserve pre-260421-c1w behavior
+        (regression guard on the 260421-bhg post-state)."""
+        json_no_kwarg = tmp_path / "no_kwarg.json"
+        result_no_kwarg = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_no_kwarg),
+            **self._COMMON_KWARGS,
+        )
+        json_explicit_none = tmp_path / "explicit_none.json"
+        result_explicit_none = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_explicit_none),
+            **self._COMMON_KWARGS,
+            frame_start=None,
+        )
+        frames_no_kwarg = result_no_kwarg["frames"]
+        frames_explicit_none = result_explicit_none["frames"]
+        # Same frame numbers AND same positions — the default is a
+        # pure no-op, not just "same count".
+        assert [e["frame"] for e in frames_no_kwarg] == [
+            e["frame"] for e in frames_explicit_none
+        ], "frame_start=None must preserve frame numbers exactly"
+        assert [e["position"] for e in frames_no_kwarg] == [
+            e["position"] for e in frames_explicit_none
+        ], "frame_start=None must preserve positions exactly"
+
+    def test_c_inclusive_boundary_keeps_boundary_frame(self, tmp_path):
+        """Test C — inclusive boundary: call with
+        ``frame_offset=1001, frame_start=1001 + baseline_first``. The
+        boundary equals the minimum offset-adjusted frame, so under
+        STRICT ``<`` drop semantics ALL frames are kept. If someone
+        changes ``<`` to ``<=``, the boundary frame gets dropped and
+        this test goes red."""
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_frames = result_baseline["frames"]
+        baseline_first = baseline_frames[0]["frame"]
+        baseline_count = len(baseline_frames)
+        boundary = 1001 + baseline_first
+
+        json_clipped = tmp_path / "clipped.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_clipped),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+            frame_start=boundary,
+        )
+        frames = result["frames"]
+        # Nothing dropped — boundary is INCLUSIVE.
+        assert len(frames) == baseline_count, (
+            f"expected all {baseline_count} frames to survive when "
+            f"frame_start equals the minimum offset-adjusted frame "
+            f"(INCLUSIVE boundary); got {len(frames)}. If you see "
+            f"{baseline_count - 1}, the drop condition was changed "
+            f"from `<` to `<=`."
+        )
+        assert frames[0]["frame"] == boundary, (
+            f"first surviving frame should be the boundary {boundary}; "
+            f"got {frames[0]['frame']}"
+        )
+
+    def test_d_frame_start_above_all_yields_empty(self, tmp_path):
+        """Test D — ``frame_offset=0, frame_start=baseline_last + 1``:
+        every offset-adjusted frame is ``<= baseline_last <
+        frame_start``, so ALL frames are dropped. Result must be an
+        empty list — NOT a crash, NOT None. Mirrors
+        ``TestFbxToV5JsonFrameEnd.test_c_frame_end_below_min_yields_empty``
+        from the other direction."""
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_last = result_baseline["frames"][-1]["frame"]
+
+        json_path = tmp_path / "empty.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            frame_offset=0,
+            frame_start=baseline_last + 1,
+        )
+        assert result["frames"] == [], (
+            f"expected empty frames list when frame_start above all "
+            f"offset-adjusted frames; got {result['frames']!r}"
+        )

@@ -614,6 +614,7 @@ def _merge_curves(
     frame_rate: str,
     *,
     frame_offset: int = 0,
+    frame_start: Optional[int] = None,
     frame_end: Optional[int] = None,
 ) -> list[dict[str, Any]]:
     """Resolve T, R, FoV curves for a camera and interleave them into a
@@ -629,6 +630,17 @@ def _merge_curves(
     is how the Flame batch's ``start_frame`` survives the FBX
     round-trip — ``action.export_fbx(bake_animation=True)`` zero-bases
     the KTime stream, so the offset must be reapplied on read.
+
+    If ``frame_start`` is not None, any frame whose POST-OFFSET value
+    is STRICTLY less than ``frame_start`` is dropped (INCLUSIVE lower
+    bound — ``frame == frame_start`` is kept; only
+    ``frame < frame_start`` is dropped). This is how the Flame batch's
+    ``start_frame``, combined with a ``frame_offset = start_frame - 1``,
+    drops the implicit PRE-ROLL keyframe that
+    ``action.export_fbx(bake_animation=True)`` emits at FBX KTime 0.
+    The symmetric counterpart of ``frame_end``: together they define a
+    closed range ``[frame_start, frame_end]`` in post-offset plate-frame
+    space.
 
     If ``frame_end`` is not None, any frame whose POST-OFFSET value
     exceeds it is dropped (INCLUSIVE upper bound — ``frame == frame_end``
@@ -654,9 +666,14 @@ def _merge_curves(
         frame = frame_offset
         # Clip AFTER the offset so the comparison is against the
         # user-facing plate frame number. Symmetric with the keyed
-        # path below; in practice the static case rarely trips this
-        # (a static camera in a Flame batch with start_frame > end_frame
-        # is degenerate), but apply for defensive correctness.
+        # path below; in practice the static case rarely trips either
+        # guard (a static camera in an offset-inverted batch is
+        # degenerate), but apply for defensive correctness. STRICT
+        # ``<`` preserves the INCLUSIVE lower bound — ``frame ==
+        # frame_start`` is kept. Filter order matches the signature
+        # order (``frame_start`` first, then ``frame_end``).
+        if frame_start is not None and frame < frame_start:
+            return []
         if frame_end is not None and frame > frame_end:
             return []
         sp = cam.static_position
@@ -681,10 +698,16 @@ def _merge_curves(
     out: list[dict[str, Any]] = []
     for ktime in sorted_times:
         frame = frame_from_ktime(ktime, frame_rate) + frame_offset
-        # Clip AFTER the offset is added, because frame_end is a
-        # user-facing plate frame number (from flame.batch.end_frame),
-        # not a raw FBX KTime index. STRICT `>` preserves the inclusive
-        # upper bound — ``frame == frame_end`` is kept.
+        # Clip AFTER the offset is added, because frame_start and
+        # frame_end are both user-facing plate frame numbers (from
+        # flame.batch.start_frame / end_frame), not raw FBX KTime
+        # indices. STRICT ``<`` / ``>`` preserve the INCLUSIVE bounds
+        # — ``frame == frame_start`` and ``frame == frame_end`` are
+        # both kept. Filter order matches the signature order
+        # (``frame_start`` first, then ``frame_end``); either drops
+        # the frame independently.
+        if frame_start is not None and frame < frame_start:
+            continue
         if frame_end is not None and frame > frame_end:
             continue
         px = _sample_at(tx, ktime, cam.static_position[0])
@@ -750,6 +773,7 @@ def fbx_to_v5_json(
     camera_name: Optional[str] = None,
     custom_properties: Optional[dict] = None,
     frame_offset: int = 0,
+    frame_start: Optional[int] = None,
     frame_end: Optional[int] = None,
 ) -> dict:
     """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
@@ -783,12 +807,25 @@ def fbx_to_v5_json(
             with pre-v6.3 consumers).
         frame_offset: integer added to every ``frame`` value in the
             output. Default 0 (preserves Flame's zero-based KTime).
-            Set to the Flame batch's ``start_frame`` to keep round-trip
-            frame numbers aligned with the source plate —
-            ``action.export_fbx(bake_animation=True)`` zero-bases the
-            KTime stream regardless of the batch's start_frame, so this
-            offset is the Flame-side mechanism for restoring real plate
-            frame numbers in the v5 JSON output.
+            Set to ``start_frame - 1`` (NOT ``start_frame`` — see
+            260421-c1w) to keep round-trip frame numbers aligned with
+            the source plate: ``action.export_fbx(bake_animation=True)``
+            zero-bases the KTime stream AND emits an implicit pre-roll
+            at KTime 0, so the first real sample lives at KTime 1 and
+            must be shifted by ``start_frame - 1`` to land on
+            ``start_frame``.
+        frame_start: optional INCLUSIVE lower bound on emitted
+            ``frame`` values. Applied AFTER ``frame_offset``. Any frame
+            whose post-offset value is STRICTLY less than ``frame_start``
+            is dropped. Default ``None`` (no clipping — preserves
+            pre-260421-c1w behavior). Set to the Flame batch's
+            ``start_frame`` (paired with
+            ``frame_offset = start_frame - 1``) to drop the implicit
+            PRE-ROLL keyframe that
+            ``action.export_fbx(bake_animation=True)`` emits at FBX
+            KTime 0. Symmetric counterpart of ``frame_end``: together
+            they define a closed range ``[frame_start, frame_end]`` in
+            post-offset plate-frame space.
         frame_end: optional INCLUSIVE upper bound on emitted ``frame``
             values. Applied AFTER ``frame_offset``. Any frame whose
             post-offset value exceeds ``frame_end`` is dropped. Default
@@ -821,6 +858,7 @@ def fbx_to_v5_json(
     frames = _merge_curves(
         cam, tree, frame_rate,
         frame_offset=frame_offset,
+        frame_start=frame_start,
         frame_end=frame_end,
     )
 

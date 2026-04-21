@@ -2102,27 +2102,46 @@ def _export_camera_to_blender(selection):
                 type="error", buttons=["OK"])
             return
 
-        # --- Frame offset — preserve Flame batch's start_frame so the
-        # round-trip surfaces real plate frame numbers in Blender, not
-        # zero-based KTime. action.export_fbx(bake_animation=True) emits
-        # FBX KTimes starting at 0 regardless of the batch's start_frame,
-        # so we must thread the offset through the FBX-to-JSON read.
-        # flame.batch.start_frame is a PyAttribute that has not been
-        # previously probed in this codebase; guard ALL failure modes
-        # (missing attr, raises, returns non-numeric) and degrade to 0.
-        # A 0-offset reproduces pre-fix behavior — the only user-visible
-        # cost of the fallback is that Blender frames stay zero-based,
-        # which is the status quo we are improving on. NEVER let an
-        # unknown PyAttribute shape crash a working export. ---
+        # --- Frame offset / frame start — preserve Flame batch's
+        # start_frame AND correct for Flame's bake-animation pre-roll
+        # behavior. UAT on 260421-bhg revealed that
+        # action.export_fbx(bake_animation=True) emits an implicit
+        # PRE-ROLL at FBX KTime 0 (the camera's initial state — Flame
+        # holds the value before the first "real" key); the real
+        # per-frame samples live at KTimes 1..N, where KTime k contains
+        # the pose at source frame (start_frame + k - 1). Therefore:
+        #   frame_offset = start_frame - 1
+        #       so KTime 1 -> start_frame, KTime 2 -> start_frame + 1,
+        #       etc. (the real samples land on their correct plate
+        #       frames).
+        #   frame_start  = start_frame
+        #       so the now-offset-shifted KTime 0 (which lands at
+        #       start_frame - 1) gets dropped as pre-roll.
+        # ONE read of start_frame drives both values — do NOT duplicate
+        # the defensive try/except.
+        #
+        # Fallback semantics: frame_offset=0 AND frame_start=None on
+        # error. This reproduces the strict pre-260420-uzv state
+        # (zero-based KTime stream, no clipping). Slightly worse than
+        # the 260420-uzv-only fallback used by 260421-bhg's frame_end
+        # block, but the ONLY fallback that composes cleanly — using
+        # frame_offset=0 AND frame_start=start_frame_int would silently
+        # drop every real frame if the offset path somehow failed.
+        # Paired (0, None) is the safe no-op. NEVER let an unknown
+        # PyAttribute shape crash a working export. ---
         frame_offset = 0
+        frame_start = None
         try:
             sf = flame.batch.start_frame.get_value()
             # PyAttribute may return int, float, or string depending on
             # attr type; coerce defensively. int(float(x)) handles
             # "1001", 1001, 1001.0 uniformly.
-            frame_offset = int(float(sf))
+            start_frame_int = int(float(sf))
+            frame_offset = start_frame_int - 1  # shift for KTime 0 pre-roll
+            frame_start = start_frame_int       # INCLUSIVE drop of pre-roll
         except Exception:
-            frame_offset = 0  # silent fallback; do not surface to user
+            frame_offset = 0    # silent fallback; no shift
+            frame_start = None  # silent fallback; no clip
 
         # --- Frame end — drop the single trailing keyframe that
         # bake_animation=True bakes past the user's batch range. Flame
@@ -2152,6 +2171,7 @@ def _export_camera_to_blender(selection):
                 film_back_mm=36.0,
                 camera_name=raw_cam_name,
                 frame_offset=frame_offset,
+                frame_start=frame_start,
                 frame_end=frame_end,
                 custom_properties={
                     "forge_bake_action_name": raw_action_name,
