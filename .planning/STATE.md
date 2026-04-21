@@ -4,8 +4,8 @@ milestone: v6.3
 milestone_name: milestone
 status: executing
 stopped_at: Phase 1 context gathered
-last_updated: "2026-04-21T15:20:00.000Z"
-last_activity: 2026-04-21 -- Completed quick task 260421-bhg: Clip FBX bake trailing frame to Flame batch end_frame
+last_updated: "2026-04-21T15:50:00.000Z"
+last_activity: 2026-04-21 -- Completed quick task 260421-c1w: Fix FBX bake pre-roll frame shift (frame_start clip + offset-1)
 progress:
   total_phases: 4
   completed_phases: 0
@@ -80,6 +80,7 @@ None yet.
 |---|-------------|------|--------|-----------|
 | 260420-uzv | Preserve Flame batch start frame in FBX bake (frame_offset) | 2026-04-21 | 9c7f109 | [260420-uzv-preserve-flame-batch-start-frame-in-fbx-](./quick/260420-uzv-preserve-flame-batch-start-frame-in-fbx-/) |
 | 260421-bhg | Clip FBX bake trailing frame to Flame batch end_frame | 2026-04-21 | cf0e002 | [260421-bhg-clip-fbx-bake-trailing-frame-to-flame-ba](./quick/260421-bhg-clip-fbx-bake-trailing-frame-to-flame-ba/) |
+| 260421-c1w | Fix FBX bake pre-roll frame shift (frame_start clip + offset-1) | 2026-04-21 | 61b3e8c | [260421-c1w-fix-fbx-bake-pre-roll-frame-shift-frame-](./quick/260421-c1w-fix-fbx-bake-pre-roll-frame-shift-frame-/) |
 
 ## Deferred Items
 
