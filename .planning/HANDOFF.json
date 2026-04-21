@@ -1,0 +1,56 @@
+{
+  "version": "1.0",
+  "timestamp": "2026-04-21T01:44:59.231Z",
+  "phase": "01",
+  "phase_name": "export-polish",
+  "phase_dir": ".planning/phases/01-export-polish",
+  "plan": null,
+  "task": null,
+  "total_tasks": null,
+  "status": "paused",
+  "context": "phase",
+  "phase_execution_stage": "awaiting_human_uat",
+  "plans_completed": [
+    {"id": "01-01", "name": "PyActionNode.resolution probe", "status": "done", "summary_commit": "e4e41f7"},
+    {"id": "01-02", "name": "v5 JSON custom_properties + Blender consumer", "status": "done", "summary_commit": "82eb503"},
+    {"id": "01-03", "name": "Config surface for Blender focus-steal", "status": "done", "summary_commit": "9b396ed"},
+    {"id": "01-04", "name": "Handler rework — dialog-free export", "status": "done", "summary_commit": "e760f38"}
+  ],
+  "phase_artifacts": {
+    "probe": ".planning/phases/01-export-polish/01-PROBE.md",
+    "review": ".planning/phases/01-export-polish/01-REVIEW.md",
+    "verification": ".planning/phases/01-export-polish/01-VERIFICATION.md",
+    "human_uat": ".planning/phases/01-export-polish/01-HUMAN-UAT.md"
+  },
+  "verification_status": "human_needed",
+  "verification_score": "4/5 must-haves verified statically",
+  "code_review_findings": {
+    "critical": 0,
+    "warning": 2,
+    "info": 4,
+    "advisory_only": true
+  },
+  "blockers": [],
+  "human_actions_pending": [
+    {
+      "action": "Run live end-to-end test in Flame + Blender per .planning/phases/01-export-polish/01-HUMAN-UAT.md",
+      "context": "Zero-dialog happy path (SC1) cannot be verified statically — requires live Flame 2026.2.1 + Blender. Sync to /opt/Autodesk/shared/python/, restart Flame, right-click an Action → Camera Match → Export Camera to Blender.",
+      "blocking": true
+    }
+  ],
+  "code_review_fix_recommendation": {
+    "action": "Optional — not blocking",
+    "findings_to_address": [
+      "WR-01 (correctness): tools/blender/bake_camera.py:167-173 — apply caller custom_properties BEFORE reserved forge_bake_* stamps so callers can't clobber the round-trip keys",
+      "WR-02 (fs safety): flame/camera_match_hook.py:1822-1850 — tighten _sanitize_name_component fallback to reject names like `.`, `..`, `.hidden`"
+    ],
+    "command": "/gsd-code-review-fix 01"
+  },
+  "decisions": [
+    {"decision": "TIER1_DISPOSITION = use-attr-width-height", "rationale": "Live probe against Flame 2026.2.1 confirmed action.resolution.get_value() returns PyResolution with .width/.height attrs", "phase": "01"},
+    {"decision": "custom_properties applied AFTER reserved forge_bake_* stamps in _stamp_metadata (current state)", "rationale": "Flagged as WR-01 — will swap ordering on fix pass before Phase 2 consumes them", "phase": "01"}
+  ],
+  "uncommitted_files": [],
+  "next_action_when_resuming": "Either: (a) if live-Flame UAT is pending, ask user for UAT result and then call /gsd-verify-work 01 or mark HUMAN-UAT resolved manually, then run `node $HOME/.claude/get-shit-done/bin/gsd-tools.cjs phase complete 01` to advance; or (b) if user ran UAT and it passed, go straight to phase complete; or (c) apply code review fixes first with /gsd-code-review-fix 01 then complete.",
+  "context_notes": "Phase 1 execution complete end-to-end. All 4 plans shipped. 268 tests green. Code review advisory (2 warnings, 0 critical). Verification returned human_needed — 4/5 must-haves pass static inspection, SC1 (zero-dialog happy path) cannot be confirmed without live Flame. HUMAN-UAT.md committed as 125075c. VERIFICATION.md committed as b037e4f. REVIEW.md committed as 3342840. Current branch: main. Working tree has untracked .claude/worktrees/ (runtime-locked, ignore)."
+}
