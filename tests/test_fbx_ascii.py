@@ -38,6 +38,7 @@ from forge_flame.fbx_ascii import (  # noqa: E402
     ktime_from_frame,
     ktime_per_frame,
     parse_fbx_ascii,
+    v5_json_str_to_fbx,
     v5_json_to_fbx,
     _tokenize,
     _T_COLON,
@@ -691,6 +692,92 @@ class TestWriter:
         for required in ("FBXHeaderExtension", "GlobalSettings", "Objects",
                          "Connections", "Takes"):
             assert required + ":" in text, f"missing {required} block"
+
+
+# =============================================================================
+# Group 7b: v5_json_str_to_fbx — in-memory string sibling (Plan 02-02, D-01)
+# =============================================================================
+
+
+class TestV5JsonStrToFbx:
+    """D-01: in-memory JSON string variant must produce byte-identical
+    FBX output to the file-path variant for the same payload, so the
+    Blender "Send to Flame" addon can feed the forge-bridge template a
+    string directly without an intermediate file on the Flame side.
+    """
+
+    def _simple_payload(self, frames_count=2):
+        """Mirror TestWriter._simple_payload — same shape, fewer frames
+        so the string-variant tests run cheap."""
+        frames = []
+        for i in range(frames_count):
+            frames.append({
+                "frame": i,
+                "position": [100.0 * i, 50.0 * i, 4000.0 + 10.0 * i],
+                "rotation_flame_euler": [float(i), float(i * 2), float(i * 3)],
+                "focal_mm": 35.0 + i,
+            })
+        return {
+            "width": 1920,
+            "height": 1080,
+            "film_back_mm": 36.0,
+            "frames": frames,
+        }
+
+    def test_v5_json_str_to_fbx_equivalent_to_file_variant(self, tmp_path):
+        """Given the same payload: writing it to a tempfile and calling
+        v5_json_to_fbx must produce byte-identical output to serializing
+        it and calling v5_json_str_to_fbx. This is the contract the
+        shared _payload_to_fbx helper guarantees."""
+        payload = self._simple_payload(frames_count=3)
+        json_str = json.dumps(payload)
+
+        # File variant.
+        json_path = tmp_path / "in.json"
+        json_path.write_text(json_str)
+        fbx_from_file = tmp_path / "from_file.fbx"
+        v5_json_to_fbx(str(json_path), str(fbx_from_file),
+                       camera_name="Cam")
+
+        # String variant.
+        fbx_from_str = tmp_path / "from_str.fbx"
+        v5_json_str_to_fbx(json_str, str(fbx_from_str),
+                           camera_name="Cam")
+
+        assert fbx_from_file.read_text() == fbx_from_str.read_text()
+
+    def test_v5_json_str_to_fbx_signature_keyword_only(self, tmp_path):
+        """camera_name / frame_rate / pixel_to_units must be keyword-only
+        — guards against drift from the D-01 locked signature."""
+        payload = self._simple_payload(frames_count=1)
+        json_str = json.dumps(payload)
+        out = tmp_path / "cam.fbx"
+
+        # Positional call of the keyword-only args must raise.
+        with pytest.raises(TypeError):
+            v5_json_str_to_fbx(json_str, str(out), "Cam")  # type: ignore
+
+    def test_v5_json_str_to_fbx_parses_json_str_input(self, tmp_path):
+        """Invalid JSON as the first arg must raise json.JSONDecodeError
+        — confirms the sibling uses json.loads, not json.load."""
+        out = tmp_path / "cam.fbx"
+        with pytest.raises(json.JSONDecodeError):
+            v5_json_str_to_fbx("{ this is not json }", str(out),
+                               camera_name="Cam")
+
+    def test_v5_json_to_fbx_file_variant_unchanged(self, tmp_path):
+        """Regression guard: the existing file-path variant must still
+        accept a path string as its first positional arg and return the
+        absolute output path. PATTERNS §1.3 "Do NOT touch v5_json_to_fbx's
+        signature or docstring"."""
+        payload = self._simple_payload(frames_count=1)
+        json_in = tmp_path / "in.json"
+        json_in.write_text(json.dumps(payload))
+        out = tmp_path / "out.fbx"
+
+        returned = v5_json_to_fbx(str(json_in), str(out), camera_name="Cam")
+        assert returned == os.path.abspath(str(out))
+        assert out.exists()
 
 
 # =============================================================================

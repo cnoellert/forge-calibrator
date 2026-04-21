@@ -1227,6 +1227,35 @@ def _mutate_template_with_payload(
                         [fov_vals[0]])
 
 
+def _payload_to_fbx(
+    payload,
+    out_fbx_path: str,
+    *,
+    camera_name: str,
+    frame_rate: str,
+    pixel_to_units: float,
+) -> str:
+    """Shared tail for the v5-JSON → FBX converter pair.
+
+    Takes a pre-parsed v5 payload dict and runs the template-mutate +
+    emit + write steps. Both ``v5_json_to_fbx`` (file-path input) and
+    ``v5_json_str_to_fbx`` (string input) call this helper so the two
+    public functions produce byte-identical FBX output for the same
+    payload (Plan 02-02 D-01 guarantee).
+    """
+    tree = _load_template_tree()
+    _mutate_template_with_payload(tree, payload, camera_name,
+                                  frame_rate, pixel_to_units)
+
+    text = emit_fbx_ascii(tree)
+
+    out_abs = os.path.abspath(out_fbx_path)
+    os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
+    with open(out_abs, "w") as f:
+        f.write(text)
+    return out_abs
+
+
 def v5_json_to_fbx(
     json_path: str,
     out_fbx_path: str,
@@ -1257,15 +1286,48 @@ def v5_json_to_fbx(
     """
     with open(json_path, "r") as f:
         payload = json.load(f)
+    return _payload_to_fbx(payload, out_fbx_path,
+                           camera_name=camera_name,
+                           frame_rate=frame_rate,
+                           pixel_to_units=pixel_to_units)
 
-    tree = _load_template_tree()
-    _mutate_template_with_payload(tree, payload, camera_name,
-                                  frame_rate, pixel_to_units)
 
-    text = emit_fbx_ascii(tree)
+def v5_json_str_to_fbx(
+    json_str: str,
+    out_fbx_path: str,
+    *,
+    camera_name: str = "Camera",
+    frame_rate: str = "23.976 fps",
+    pixel_to_units: float = 0.1,
+) -> str:
+    """Convert an in-memory v5 JSON string to ASCII FBX.
 
-    out_abs = os.path.abspath(out_fbx_path)
-    os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
-    with open(out_abs, "w") as f:
-        f.write(text)
-    return out_abs
+    Sibling of :func:`v5_json_to_fbx`; shares the template-mutate
+    emit path via :func:`_payload_to_fbx`. Used by the Blender
+    "Send to Flame" addon via the forge-bridge payload so no
+    intermediate JSON file is needed on the Flame side.
+
+    Args:
+        json_str: v5 JSON payload as a string (output of ``json.dumps``
+            on the dict produced by
+            ``forge_sender.flame_math.build_v5_payload``).
+        out_fbx_path: destination FBX path. Parent dir is created.
+        camera_name: name to give the emitted camera. Flame's import
+            will collide on duplicates and auto-rename.
+        frame_rate: FBX KTime conversion basis. Must be one of the
+            keys in ``_FPS_FROM_FRAME_RATE`` (unknown strings silently
+            fall back to 24 fps — the caller is responsible for
+            supplying a valid key; see Phase 2 Plan 01 D-19: the
+            Blender addon owns the frame-rate ladder and passes the
+            resolved value here as a caller-provided kwarg).
+        pixel_to_units: position divisor written into Lcl Translation.
+            Default 0.1 pairs with ``fbx_io.import_fbx_to_action``'s
+            default ``unit_to_pixels=10.0``.
+
+    Returns the absolute path of the written FBX.
+    """
+    payload = json.loads(json_str)
+    return _payload_to_fbx(payload, out_fbx_path,
+                           camera_name=camera_name,
+                           frame_rate=frame_rate,
+                           pixel_to_units=pixel_to_units)
