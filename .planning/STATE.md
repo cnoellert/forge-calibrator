@@ -66,7 +66,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-None yet.
+- [Verify multi-camera picker in live UAT](./todos/pending/2026-04-21-verify-multi-camera-picker-in-live-uat.md) — code path exists but only single-camera was exercised in Phase 01 UAT
 
 ### Blockers/Concerns
 
