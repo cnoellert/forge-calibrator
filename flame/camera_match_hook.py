@@ -2102,6 +2102,28 @@ def _export_camera_to_blender(selection):
                 type="error", buttons=["OK"])
             return
 
+        # --- Frame offset — preserve Flame batch's start_frame so the
+        # round-trip surfaces real plate frame numbers in Blender, not
+        # zero-based KTime. action.export_fbx(bake_animation=True) emits
+        # FBX KTimes starting at 0 regardless of the batch's start_frame,
+        # so we must thread the offset through the FBX-to-JSON read.
+        # flame.batch.start_frame is a PyAttribute that has not been
+        # previously probed in this codebase; guard ALL failure modes
+        # (missing attr, raises, returns non-numeric) and degrade to 0.
+        # A 0-offset reproduces pre-fix behavior — the only user-visible
+        # cost of the fallback is that Blender frames stay zero-based,
+        # which is the status quo we are improving on. NEVER let an
+        # unknown PyAttribute shape crash a working export. ---
+        frame_offset = 0
+        try:
+            sf = flame.batch.start_frame.get_value()
+            # PyAttribute may return int, float, or string depending on
+            # attr type; coerce defensively. int(float(x)) handles
+            # "1001", 1001, 1001.0 uniformly.
+            frame_offset = int(float(sf))
+        except Exception:
+            frame_offset = 0  # silent fallback; do not surface to user
+
         # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
         # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
         # names per D-11. Phase 2's "Send to Flame" looks these up against
@@ -2113,6 +2135,7 @@ def _export_camera_to_blender(selection):
                 width=width, height=height,
                 film_back_mm=36.0,
                 camera_name=raw_cam_name,
+                frame_offset=frame_offset,
                 custom_properties={
                     "forge_bake_action_name": raw_action_name,
                     "forge_bake_camera_name": raw_cam_name,

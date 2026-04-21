@@ -612,6 +612,8 @@ def _merge_curves(
     cam: _CameraExtract,
     root: list[FBXNode],
     frame_rate: str,
+    *,
+    frame_offset: int = 0,
 ) -> list[dict[str, Any]]:
     """Resolve T, R, FoV curves for a camera and interleave them into a
     per-frame list. We take the union of unique KeyTime stamps across
@@ -620,6 +622,12 @@ def _merge_curves(
 
     If the camera has no keyframes at all (static export) we emit a
     single entry at frame 0 using the static Lcl Translation/Rotation.
+
+    If ``frame_offset`` is non-zero it is added to every emitted
+    ``frame`` value (both the static-fallback and keyed paths). This
+    is how the Flame batch's ``start_frame`` survives the FBX
+    round-trip — ``action.export_fbx(bake_animation=True)`` zero-bases
+    the KTime stream, so the offset must be reapplied on read.
     """
     tx = _read_curve(cam.t_curve_ids.get("X"), root)
     ty = _read_curve(cam.t_curve_ids.get("Y"), root)
@@ -632,7 +640,7 @@ def _merge_curves(
     # Static fallback: none of the curves had any keys.
     any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
     if not any_keyed:
-        frame = 0
+        frame = frame_offset
         sp = cam.static_position
         sr = cam.static_rotation
         film_back_mm = _inches_to_mm(cam.film_height_inches)
@@ -654,7 +662,7 @@ def _merge_curves(
 
     out: list[dict[str, Any]] = []
     for ktime in sorted_times:
-        frame = frame_from_ktime(ktime, frame_rate)
+        frame = frame_from_ktime(ktime, frame_rate) + frame_offset
         px = _sample_at(tx, ktime, cam.static_position[0])
         py = _sample_at(ty, ktime, cam.static_position[1])
         pz = _sample_at(tz, ktime, cam.static_position[2])
@@ -717,6 +725,7 @@ def fbx_to_v5_json(
     frame_rate: str = "23.976 fps",
     camera_name: Optional[str] = None,
     custom_properties: Optional[dict] = None,
+    frame_offset: int = 0,
 ) -> dict:
     """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
 
@@ -747,6 +756,14 @@ def fbx_to_v5_json(
             consumes this field). When ``None`` or empty, no
             ``custom_properties`` key is emitted (backward-compatible
             with pre-v6.3 consumers).
+        frame_offset: integer added to every ``frame`` value in the
+            output. Default 0 (preserves Flame's zero-based KTime).
+            Set to the Flame batch's ``start_frame`` to keep round-trip
+            frame numbers aligned with the source plate —
+            ``action.export_fbx(bake_animation=True)`` zero-bases the
+            KTime stream regardless of the batch's start_frame, so this
+            offset is the Flame-side mechanism for restoring real plate
+            frame numbers in the v5 JSON output.
 
     Returns the parsed v5 JSON dict (also written to disk).
     """
@@ -767,7 +784,7 @@ def fbx_to_v5_json(
             f"pass camera_name= to select one")
     cam = cameras[0]
 
-    frames = _merge_curves(cam, tree, frame_rate)
+    frames = _merge_curves(cam, tree, frame_rate, frame_offset=frame_offset)
 
     if film_back_mm is None:
         film_back_mm = _inches_to_mm(cam.film_height_inches)

@@ -797,3 +797,122 @@ class TestFbxToV5JsonCustomProperties:
             on_disk = json.load(f)
         assert on_disk["custom_properties"]["forge_bake_action_name"] == "Action_01"
         assert "extra_key" not in on_disk["custom_properties"]
+
+
+# =============================================================================
+# Group 6: fbx_to_v5_json — frame_offset preserves Flame batch start_frame
+# =============================================================================
+
+
+class TestFbxToV5JsonFrameOffset:
+    """Tests for the optional ``frame_offset`` kwarg added to
+    ``fbx_to_v5_json`` (and inner ``_merge_curves``) in quick task
+    260420-uzv.
+
+    Background: ``action.export_fbx(bake_animation=True)`` zero-bases the
+    FBX KTime stream regardless of the Flame batch's ``start_frame``, so
+    a Flame batch whose frame range is 1001..1100 emits FBX KTimes that
+    decode to frames 0..99. The Flame-side hook reads ``flame.batch.start_frame``
+    and threads it through as ``frame_offset`` so the v5 JSON — and the
+    eventual Blender scene — keep the source plate's frame numbers.
+
+    Uses ``forge_fbx_baked.fbx`` — a live Flame 2026.2.1 export with
+    ``bake_animation=True`` (two-keyframe endpoints on each curve), so
+    the keyed branch of ``_merge_curves`` is exercised.
+
+    Tests cover:
+    - Test A: a non-zero offset shifts every emitted ``frame`` value.
+    - Test B: the kwarg defaults to 0 (regression guard — existing
+      behavior is unchanged when callers don't pass it).
+    - Test C: the offset survives the on-disk serialization path.
+    - Test D: negative offsets are honored (proves "plain integer add",
+      no clamping that could regress in future "helpful" patches).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_a_offset_shifts_frames(self, tmp_path):
+        """Test A: frame_offset=1001 shifts every frame to >= 1001 and
+        the first frame lands exactly on 1001."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+        )
+        frames = result["frames"]
+        assert len(frames) > 0, "fixture should produce at least one frame"
+        assert frames[0]["frame"] == 1001
+        # Defends against the +offset being applied to only some keys.
+        for entry in frames:
+            assert entry["frame"] >= 1001, (
+                f"all frames must be shifted; got {entry['frame']}"
+            )
+
+    def test_b_default_offset_is_zero(self, tmp_path):
+        """Test B: omitting frame_offset behaves identically to
+        frame_offset=0 — proves the kwarg defaults to 0 and that 0 is a
+        no-op (regression guard for pre-fix behavior)."""
+        json_no_kwarg = tmp_path / "no_kwarg.json"
+        result_no_kwarg = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_no_kwarg),
+            **self._COMMON_KWARGS,
+        )
+        json_zero = tmp_path / "zero.json"
+        result_zero = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_zero),
+            **self._COMMON_KWARGS,
+            frame_offset=0,
+        )
+        frames_no_kwarg = [e["frame"] for e in result_no_kwarg["frames"]]
+        frames_zero = [e["frame"] for e in result_zero["frames"]]
+        assert frames_no_kwarg == frames_zero
+
+    def test_c_on_disk_parity(self, tmp_path):
+        """Test C: the offset survives the full serialization path —
+        the on-disk JSON shows the shifted frame numbers, not just the
+        in-memory return."""
+        json_path = tmp_path / "out.json"
+        fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            frame_offset=1001,
+        )
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert on_disk["frames"][0]["frame"] == 1001
+        for entry in on_disk["frames"]:
+            assert entry["frame"] >= 1001
+
+    def test_d_large_negative_offset(self, tmp_path):
+        """Test D: negative offsets are honored — frame_offset=-50
+        shifts the first frame by -50 from the no-offset baseline.
+        Negative offsets aren't a real production case but proving
+        "plain integer add, no clamping" prevents future regressions
+        where someone "helpfully" adds ``max(0, ...)``."""
+        json_baseline = tmp_path / "baseline.json"
+        result_baseline = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_baseline),
+            **self._COMMON_KWARGS,
+        )
+        baseline_first = result_baseline["frames"][0]["frame"]
+
+        json_neg = tmp_path / "neg.json"
+        result_neg = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_neg),
+            **self._COMMON_KWARGS,
+            frame_offset=-50,
+        )
+        assert result_neg["frames"][0]["frame"] == baseline_first - 50
