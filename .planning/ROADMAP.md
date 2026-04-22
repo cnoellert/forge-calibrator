@@ -71,8 +71,8 @@ Plans:
   2. A user reading the documentation (README section or `docs/seamless-bridge.md`) can install the Blender addon, understand how the forge-bridge autostart works, and follow at least three troubleshooting recipes (bridge not running, addon missing metadata, import failure)
 **Plans:** 2 plans
 Plans:
-- [ ] 04-01-PLAN.md — User-facing docs: README.md (repo root) + docs/seamless-bridge.md (canonical guide, install TD+artist, autostart, Send-to-Flame walkthrough, 5 grep-anchored troubleshooting recipes) — DOC-02
-- [ ] 04-02-PLAN.md — E2E smoke-test script: tools/smoke-test/seamless-bridge-smoke.sh (hybrid [mech]+[human], 10 steps, folds Phase 3 HUMAN-UAT Test 3) — DOC-01
+- [x] 04-01-PLAN.md — User-facing docs: README.md (repo root) + docs/seamless-bridge.md (canonical guide, install TD+artist, autostart, Send-to-Flame walkthrough, 5 grep-anchored troubleshooting recipes) — DOC-02
+- [x] 04-02-PLAN.md — E2E smoke-test script: tools/smoke-test/seamless-bridge-smoke.sh (hybrid [mech]+[human], 10 steps, folds Phase 3 HUMAN-UAT Test 3) — DOC-01
 
 ### Phase 4.1: Phase 4 polish items (INSERTED)
 
