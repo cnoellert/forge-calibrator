@@ -1,0 +1,170 @@
+# Seamless Flame↔Blender bridge
+
+## Overview
+
+The seamless bridge connects three moving parts to close the Flame↔Blender round-trip
+without requiring the artist to return to Flame's batch menu for the return leg. The
+Flame hook (`camera_match_hook.py`) bakes the Action camera to a `.blend` file when the
+artist right-clicks the Action. forge-bridge runs as a local HTTP endpoint
+(`127.0.0.1:9999`) inside Flame's Python, starting automatically when Flame boots. The
+Blender "Send to Flame" addon (N-panel → Forge tab) posts the edited camera back to the
+target Action in a single click.
+
+The user-facing flow: right-click Action → Export Camera to Blender → edit camera in
+Blender → click Send to Flame → the updated camera appears in the target Action with
+keyframes preserved. No alt-tab to Flame's batch menu for the return trip.
+
+## Install
+
+### For pipeline TDs
+
+Run `./install.sh` from the repo root. The installer performs preflight checks before
+deploying anything:
+
+- forge conda environment (`$FORGE_ENV`, defaults to `~/miniconda3/envs/forge`)
+- Wiretap CLI at `/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame`
+- PyOpenColorIO from Flame's bundled Python at `/opt/Autodesk/python/`
+- OCIO config resolvable under `/opt/Autodesk/colour_mgmt/configs/`
+
+When the installer prints `> forge_core + forge_flame`, it is copying the
+host-agnostic solver and Flame-specific adapters to
+`/opt/Autodesk/shared/python/forge_core/` and `/opt/Autodesk/shared/python/forge_flame/`.
+
+When it prints `> forge-bridge`, it is deploying the bridge hook to
+`/opt/Autodesk/shared/python/forge_bridge/`. If forge-bridge deployment fails (network
+unavailable, no local clone), the installer emits the warning in recipe 4 below and
+continues — VP-solve and the static camera round-trip still work.
+
+When it prints `> Install`, it is placing the Camera Match hook at
+`/opt/Autodesk/shared/python/camera_match/`.
+
+When it prints `> tools/blender`, it is copying Blender bake and extract scripts to
+`/opt/Autodesk/shared/python/tools/blender/`.
+
+**Offline / air-gapped installs:** set `FORGE_BRIDGE_REPO=<path-to-local-clone>` before
+running `./install.sh` to point the bridge installer at a local copy. Set
+`FORGE_BRIDGE_VERSION` to pin the bridge version.
+
+`install.sh` is idempotent — safe to re-run against an already-installed workstation
+without `--force`.
+
+### For artists
+
+1. Zip `tools/blender/forge_sender/` (or use the pre-built zip provided by your
+   pipeline TD).
+2. In Blender: Edit → Preferences → Add-ons → Install from file → pick the zip.
+3. Enable **Forge Sender** in the Add-ons list.
+4. Open the 3D viewport's N-panel (press N) — you should see a **Forge** tab with a
+   **Send to Flame** button.
+5. No further setup required. forge-bridge starts automatically when Flame boots.
+
+## How forge-bridge autostart works
+
+When Flame starts, it loads the Camera Match hook (`camera_match_hook.py`). The hook
+spawns `forge_bridge.py` as a subprocess, which binds `127.0.0.1:9999`. The bridge
+lifecycle is tied to the Flame session — when Flame quits, the bridge subprocess exits.
+No launchd, systemd, or manual process management is needed.
+
+The bridge is only accessible locally. It binds `127.0.0.1` and is never exposed on
+the network.
+
+No user action is required to start or stop the bridge. Restarting Flame is the only
+way to restart a crashed bridge. Hook changes also require a Flame restart to take
+effect (Flame captures menu callbacks at load time; dynamic reload does not refresh
+them).
+
+To confirm the bridge is reachable after Flame boots:
+
+```
+curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"
+# expect: 200
+```
+
+## Using Send to Flame
+
+1. In Flame: right-click the target Action → Camera Match → **Export Camera to
+   Blender**. Blender opens with the baked camera. No dialog prompts, no save-path
+   selection.
+2. In Blender: edit the camera — move it, rotate it, scrub or add keyframes.
+3. Open the N-panel (N key) → **Forge** tab → click **Send to Flame**.
+4. On success, a popup reads `Sent to Flame: camera <name> in Action <action-name>`.
+   The updated camera appears in the target Action in Flame with keyframes preserved.
+
+You never have to return to Flame's batch menu to trigger the import. If the popup
+shows an error instead of the success message, see [Troubleshooting](#troubleshooting)
+below.
+
+## Troubleshooting
+
+### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Match hook loaded?
+
+**Likely cause:** Flame is not running, or forge-bridge did not start when Flame
+booted.
+
+**Fix:**
+1. Confirm Flame is running.
+2. Probe the bridge: `curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"` — expect `200`.
+3. If the probe returns non-200 or fails, restart Flame (the bridge starts as a
+   Flame-spawned subprocess).
+
+---
+
+### Symptom: Send to Flame: active camera is missing 'forge_bake_action_name' — this camera was not baked by forge-calibrator. Re-export from Flame via right-click → Camera Match → Export Camera to Blender
+
+**Likely cause:** The active Blender camera was not baked from Flame, or was baked by
+an older tool that does not stamp metadata. (The error may name
+`'forge_bake_camera_name'` instead — the missing-key slot surfaces whichever stamped
+property is absent first.)
+
+**Fix:**
+1. In Flame: right-click the target Action → Camera Match → Export Camera to Blender.
+2. Use the freshly baked camera in Blender; the stamped metadata is attached
+   automatically.
+
+---
+
+### Symptom: Send to Flame failed: {error}
+
+{traceback}
+
+**Likely cause:** The Flame-side import crashed, the FBX parse failed, or the target
+Action was renamed or deleted after the bake.
+
+**Fix:**
+1. Read the top line of the traceback — it names the underlying error.
+2. Most common cause: the Action was renamed after the bake. Re-bake from the current
+   Action (right-click Action → Camera Match → Export Camera to Blender).
+3. Second most common: the Action has two cameras with the same name. Rename one to
+   disambiguate, then re-send.
+
+---
+
+### Symptom: [WARN] forge-bridge install skipped (sibling installer exited non-zero). VP-solve and v6.2 static round-trip still work.
+
+**Likely cause:** `install.sh` could not find a local forge-bridge clone AND the
+curl-fallback to `raw.githubusercontent.com` failed (usually offline or firewalled).
+
+**Fix:**
+- If you have a local forge-bridge clone: `FORGE_BRIDGE_REPO=<path-to-clone> ./install.sh`
+- If you have network access: ensure `raw.githubusercontent.com` is reachable, then
+  re-run `./install.sh`.
+- VP-solve and the v6.2 static-camera round-trip continue to work without the bridge;
+  only Send to Flame is affected.
+
+---
+
+### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Match hook loaded? (and `lsof -i :9999` shows a non-forge-bridge process listening)
+
+**Likely cause:** Another process — a stale forge-bridge from a previous Flame session
+that did not shut down cleanly, or an unrelated service — is holding port 9999.
+
+**Fix:**
+1. Find the PID: `lsof -i :9999`
+2. Kill it: `kill <pid>`
+3. Restart Flame — the bridge starts cleanly on the freed port.
+4. If the conflict recurs, check for a second Flame instance running on the same
+   workstation.
+
+---
+
+[back to README](../README.md)
