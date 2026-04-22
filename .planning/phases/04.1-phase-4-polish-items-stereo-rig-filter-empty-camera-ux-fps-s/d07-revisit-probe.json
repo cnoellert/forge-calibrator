@@ -1,0 +1,9 @@
+{
+  "probe_attempted": "2026-04-22T22:57:33Z",
+  "status": "deferred",
+  "reason": "bridge_offline",
+  "connection_result": "connection refused on 127.0.0.1:9999 (curl exit 7)",
+  "conclusion": "D-07 probe deferred — bridge offline; duck-type proceeds per D-06 default",
+  "fallback": "D-06 duck-type predicate applied: all(hasattr(c, a) for a in ('position', 'rotation', 'fov', 'focal')) and c.name.get_value() != 'Perspective'",
+  "note": "Per Task 1 protocol: if forge-bridge is not currently running, document here and proceed to Task 2 with D-06 default. A live probe would collect dir(cam), type(cam).__name__, type(cam).__module__, tag/user_visible/keyframable attributes for real camera vs stereo-rig sibling for side-by-side comparison. This probe should be re-run against a live Flame session when forge-bridge is available to confirm or replace the duck-type predicate."
+}
