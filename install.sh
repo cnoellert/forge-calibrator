@@ -83,6 +83,21 @@ warn() { printf "  %s!%s %s\n" "$C_WARN" "$C_END" "$*"; }
 err()  { printf "  %s✗%s %s\n" "$C_ERR"  "$C_END" "$*" >&2; }
 step() { printf "\n%s>%s %s\n" "$C_DIM" "$C_END" "$*"; }
 
+# ---- forge-bridge version validation (WR-01) ---------------------------------
+# FORGE_BRIDGE_VERSION is interpolated into (a) the curl URL in
+# _resolve_forge_bridge_source's fallback branch and (b) the D-10 retry-hint
+# printf on failure. Both paths eventually flow through `eval` (via run()) or
+# raw printf substitution, so a value like  v1.3.0"; rm -rf ~; echo "  would
+# break out of the surrounding quotes. Lock the shape to a strict semver tag
+# (vN.N.N optionally followed by -prerelease or .build segments) before any
+# downstream code reads the variable. Intentionally placed AFTER the err()
+# helper is defined and BEFORE the arg-parser / bridge section so the check
+# runs on every invocation, including --help and --dry-run.
+if [[ ! "${FORGE_BRIDGE_VERSION}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-.][A-Za-z0-9]+)*$ ]]; then
+  err "FORGE_BRIDGE_VERSION=${FORGE_BRIDGE_VERSION} is not a valid semver tag (expected vN.N.N, optionally -prerelease or .build)"
+  exit 2
+fi
+
 # ---- arg parsing --------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
