@@ -350,3 +350,323 @@ class TestFilterStereoRigAndFbxInternalNodes:
     def test_template_contains_perspective_exclusion(self):
         """The template string must contain the Perspective-by-name exclusion."""
         assert 'c.name.get_value() != "Perspective"' in transport._FLAME_SIDE_TEMPLATE
+
+
+# ---------------------------------------------------------------------------
+# Helpers for instrumentation tests (Phase 4.1 item 3 — GA-4 crash logging)
+# ---------------------------------------------------------------------------
+
+def _exec_template_with_fakes(
+    action_name="TestAction",
+    *,
+    action_exists=True,
+    patch_rmtree=True,
+):
+    """Execute _FLAME_SIDE_TEMPLATE in a fake Flame namespace.
+
+    Returns ``(result, log_content, tmpdir_path)`` on success path,
+    ``(None, log_content, tmpdir_path)`` on failure path (RuntimeError raised
+    by the template — the log file survives because P-4 preserves the tempdir
+    on failure).
+
+    ``patch_rmtree``: when True (default), monkey-patches shutil.rmtree inside
+    the template namespace to a no-op so the log file survives for assertion
+    even on the success path.  Tests that verify P-4 cleanup behaviour set
+    this to False and inspect tmpdir absence instead.
+
+    Security contract: log_content must NEVER contain v5_json_str body or
+    credentials.  Test I5 asserts this.
+    """
+    import json as _json
+    import os as _os
+    import shutil as _shutil
+    import tempfile as _tempfile
+
+    dummy_json = _json.dumps({
+        "custom_properties": {
+            "forge_bake_action_name": action_name,
+        }
+    })
+
+    cam = _make_node("BakedCamera")
+    fake_action = type("_FakeAction", (), {
+        "name": _Attr(action_name),
+        "import_fbx": lambda self, path: [cam],  # noqa: ARG005
+    })()
+
+    class _FakeBatch:
+        nodes = [fake_action] if action_exists else []
+
+    class _FakeFlame:
+        batch = _FakeBatch()
+
+    class _FakeFbxIo:
+        @staticmethod
+        def import_fbx_to_action(action, fbx_path):  # noqa: ARG004
+            return [cam]
+
+    class _FakeFbxAscii:
+        @staticmethod
+        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):  # noqa: ARG004
+            # no-op; just create the file so the template doesn't error
+            open(fbx_path, "w").write("")  # noqa: WPS515
+
+    # Capture tmpdir paths so we can read the log after the template runs.
+    created_tmpdirs = []
+    original_mkdtemp = _tempfile.mkdtemp
+
+    def _tracking_mkdtemp(*args, **kwargs):
+        path = original_mkdtemp(*args, **kwargs)
+        created_tmpdirs.append(path)
+        return path
+
+    rmtree_calls = []
+
+    def _fake_rmtree(path, **kwargs):  # noqa: ARG001
+        rmtree_calls.append(path)
+        # Do NOT actually remove — let log survive for assertion.
+
+    # Use types.SimpleNamespace so method lookup doesn't bind 'self',
+    # which would cause tempfile.mkdtemp(prefix=...) to pass the namespace
+    # object as the first positional argument to the real mkdtemp.
+    import types as _types
+    fake_shutil = _types.SimpleNamespace(
+        rmtree=_fake_rmtree if patch_rmtree else _shutil.rmtree,
+    )
+    fake_tempfile = _types.SimpleNamespace(mkdtemp=_tracking_mkdtemp)
+
+    fake_globals = {
+        "json": _json,
+        "os": _os,
+        "shutil": fake_shutil,
+        "tempfile": fake_tempfile,
+        "flame": _FakeFlame(),
+        "fbx_io": _FakeFbxIo(),
+        "fbx_ascii": _FakeFbxAscii(),
+    }
+
+    code = transport._FLAME_SIDE_TEMPLATE.format(
+        json_str_repr=repr(dummy_json),
+        frame_rate_repr=repr("24 fps"),
+    )
+
+    # The template ends with a bare `_forge_send()` call.  Strip it so exec
+    # only defines the function; we then call it once via eval so we can
+    # cleanly catch RuntimeError from the failure path.
+    # (This mirrors the _apply_filter helper approach from Plan 04.1-01.)
+    code_without_call = code.rstrip()
+    if code_without_call.endswith("_forge_send()"):
+        code_without_call = code_without_call[: -len("_forge_send()")]
+
+    local_ns = {}
+    exec(code_without_call, fake_globals, local_ns)  # defines _forge_send only
+
+    result = None
+    raised = None
+    try:
+        result = eval("_forge_send()", fake_globals, local_ns)
+    except RuntimeError as exc:
+        raised = exc
+
+    # Read the log file from the first tmpdir created.
+    log_content = ""
+    tmpdir_path = created_tmpdirs[0] if created_tmpdirs else None
+    if tmpdir_path:
+        log_path = _os.path.join(tmpdir_path, "forge_send_debug.log")
+        if _os.path.exists(log_path):
+            with open(log_path) as f:
+                log_content = f.read()
+
+    # Cleanup: if we patched rmtree, the tmpdir is still on disk; remove now.
+    if patch_rmtree and tmpdir_path and _os.path.isdir(tmpdir_path):
+        _shutil.rmtree(tmpdir_path, ignore_errors=True)
+
+    if raised is not None:
+        return (None, log_content, tmpdir_path)
+    return (result, log_content, tmpdir_path)
+
+
+class TestInstrumentationLogging:
+    """Phase 4.1 item 3 (GA-4) — forge_send_debug.log written by _FLAME_SIDE_TEMPLATE.
+
+    Tests I1-I6 match the <behavior> block in 04.1-03-PLAN.md.
+    These tests are RED until _FLAME_SIDE_TEMPLATE adds the _log helper and
+    phase-tagged log calls at start / pre_fbx_parse / post_fbx_parse /
+    pre_flame_batch_nodes_scan / matched / pre_import_fbx / post_import_fbx.
+    """
+
+    def test_i1_success_path_log_file_exists_with_all_phases(self):
+        """I1: on SUCCESS path, log file exists and contains all six phase tags."""
+        result, log_content, _ = _exec_template_with_fakes()
+        assert result is not None, "template should succeed when action exists"
+        # All six phase tags must be present.
+        for phase in (
+            "step=start",
+            "step=pre_fbx_parse",
+            "step=post_fbx_parse",
+            "step=pre_flame_batch_nodes_scan",
+            "step=matched",
+            "step=pre_import_fbx",
+            "step=post_import_fbx",
+        ):
+            assert phase in log_content, (
+                f"Expected log phase tag {phase!r} not found in log:\n{log_content}"
+            )
+
+    def test_i2_success_path_rmtree_called_on_tmpdir(self):
+        """I2: on SUCCESS path, shutil.rmtree is called (P-4 cleanup invariant).
+
+        We verify the rmtree call happens by NOT patching rmtree and confirming
+        the tmpdir is gone after the template runs.
+        """
+        import os as _os
+        import tempfile as _tempfile
+
+        # Use a real tmpdir to check it disappears.
+        # We won't patch rmtree, so the SUCCESS path should clean up.
+        # To inspect the log before cleanup, we must read it DURING exec — but
+        # that's not easy without a side-channel.  Instead we verify the
+        # contract: result is not None (success) AND tmpdir is removed.
+        # Patch only to track which tmpdir was created.
+        original_mkdtemp = _tempfile.mkdtemp
+        created_tmpdirs = []
+
+        import json as _json
+        import shutil as _shutil
+
+        dummy_json = _json.dumps({
+            "custom_properties": {"forge_bake_action_name": "TestAction"}
+        })
+        cam = _make_node("BakedCamera")
+        fake_action = type("_FA", (), {
+            "name": _Attr("TestAction"),
+            "import_fbx": lambda self, path: [cam],
+        })()
+
+        class _FakeBatch2:
+            nodes = [fake_action]
+
+        class _FakeFlame2:
+            batch = _FakeBatch2()
+
+        class _FakeFbxIo2:
+            @staticmethod
+            def import_fbx_to_action(action, fbx_path):  # noqa: ARG004
+                return [cam]
+
+        class _FakeFbxAscii2:
+            @staticmethod
+            def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):  # noqa: ARG004
+                open(fbx_path, "w").write("")  # noqa: WPS515
+
+        def _tracking_mkdtemp(*args, **kwargs):
+            path = original_mkdtemp(*args, **kwargs)
+            created_tmpdirs.append(path)
+            return path
+
+        import tempfile as _tempfile2  # noqa: F401
+        import types as _types2
+        fake_globals = {
+            "json": _json,
+            "os": _os,
+            "shutil": _shutil,
+            "tempfile": _types2.SimpleNamespace(mkdtemp=_tracking_mkdtemp),
+            "flame": _FakeFlame2(),
+            "fbx_io": _FakeFbxIo2(),
+            "fbx_ascii": _FakeFbxAscii2(),
+        }
+
+        code = transport._FLAME_SIDE_TEMPLATE.format(
+            json_str_repr=repr(dummy_json),
+            frame_rate_repr=repr("24 fps"),
+        )
+        local_ns = {}
+        exec(code, fake_globals, local_ns)
+        result = eval("_forge_send()", fake_globals, local_ns)
+
+        assert result is not None, "template should succeed"
+        assert created_tmpdirs, "mkdtemp should have been called"
+        # P-4: on success path, rmtree must have been called — tmpdir gone.
+        tmpdir = created_tmpdirs[0]
+        assert not _os.path.isdir(tmpdir), (
+            "Success path must remove tmpdir via shutil.rmtree"
+        )
+
+    def test_i3_failure_path_log_preserved_with_scan_and_matched(self):
+        """I3: on FAILURE path (no action found), log file preserved with scan phase."""
+        result, log_content, tmpdir_path = _exec_template_with_fakes(
+            action_name="NonExistentAction",
+            action_exists=False,
+        )
+        assert result is None, "template should raise RuntimeError on missing action"
+        # Log must be preserved on failure path (P-4 invariant).
+        assert log_content, "log file must survive on failure path"
+        assert "step=pre_flame_batch_nodes_scan" in log_content
+        assert "step=matched" in log_content
+
+    def test_i4_log_format_every_line_starts_with_forge_send_tag_and_step(self):
+        """I4: every log line starts with [forge-send] and contains a step= key."""
+        _, log_content, _ = _exec_template_with_fakes()
+        assert log_content, "log must not be empty on success path"
+        lines = [l for l in log_content.splitlines() if l.strip()]
+        for line in lines:
+            assert line.startswith("[forge-send]"), (
+                f"Log line does not start with [forge-send]: {line!r}"
+            )
+            assert "step=" in line, (
+                f"Log line missing step= key: {line!r}"
+            )
+
+    def test_i5_security_no_json_body_in_log(self):
+        """I5: log must NOT contain v5_json_str contents (security gate)."""
+        _, log_content, _ = _exec_template_with_fakes()
+        # The dummy JSON body contains "forge_bake_action_name" — this must NOT
+        # appear in the log (it's a key inside the JSON body, not a phase tag).
+        assert "forge_bake_action_name" not in log_content, (
+            "Security gate: JSON body key must not appear in log"
+        )
+        # The string "v5_json_str" must not appear in log content.
+        assert "v5_json_str" not in log_content, (
+            "Security gate: variable name v5_json_str must not appear in log"
+        )
+
+    def test_i6_failure_path_preserves_existing_tempdir_print(self):
+        """I6: failure path still prints the [forge-send] tempdir preserved line."""
+        import io
+        import sys as _sys
+
+        captured = io.StringIO()
+        old_stdout = _sys.stdout
+        _sys.stdout = captured
+        try:
+            _exec_template_with_fakes(
+                action_name="GoneAction",
+                action_exists=False,
+            )
+        finally:
+            _sys.stdout = old_stdout
+
+        stdout_output = captured.getvalue()
+        assert "tempdir preserved" in stdout_output, (
+            "Failure path must still print 'tempdir preserved' for bridge envelope visibility"
+        )
+
+    def test_template_contains_forge_send_debug_log_filename(self):
+        """Template string must reference forge_send_debug.log (grep anchor)."""
+        assert "forge_send_debug.log" in transport._FLAME_SIDE_TEMPLATE
+
+    def test_template_contains_all_six_step_tags(self):
+        """Template string must contain all six phase step= tags."""
+        template = transport._FLAME_SIDE_TEMPLATE
+        for tag in (
+            "step=start",
+            "step=pre_fbx_parse",
+            "step=post_fbx_parse",
+            "step=pre_flame_batch_nodes_scan",
+            "step=matched",
+            "step=pre_import_fbx",
+            "step=post_import_fbx",
+        ):
+            assert tag in template, (
+                f"Template missing phase tag {tag!r}"
+            )
