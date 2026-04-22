@@ -18,6 +18,14 @@
 #   ./install.sh --dry-run        # print actions, change nothing
 #   ./install.sh --install-dir X  # override target
 #   ./install.sh --force          # overwrite without prompting
+#
+# Environment overrides:
+#   FORGE_BRIDGE_VERSION    git tag of forge-bridge to deploy (default: v1.3.0)
+#   FORGE_BRIDGE_REPO       absolute path to a local forge-bridge clone; when set,
+#                           install.sh uses that clone's scripts/install-flame-hook.sh
+#                           instead of curl-fetching the pinned tag from GitHub
+#   FORGE_ENV               conda forge env path (default: $HOME/miniconda3/envs/forge)
+#
 
 set -euo pipefail
 
@@ -43,6 +51,24 @@ WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
 FLAME_PYOCIO_GLOB="/opt/Autodesk/python/*/lib/python3.11/site-packages/PyOpenColorIO"
 
+# ---- forge-bridge integration (Phase 3) ---------------------------------------
+# Pinned forge-bridge release tag. The sibling repo at github.com/cnoellert/forge-bridge
+# owns the Flame hook that auto-spawns the 127.0.0.1:9999 /exec server on Flame boot.
+# Upgrading this pin is a deliberate code change + review step (per D-04). Confirmed
+# current tag at time of writing: v1.3.0 (2026-04-21 — see .planning/phases/
+# 03-forge-bridge-deploy/03-CONTEXT.md §D-04).
+FORGE_BRIDGE_VERSION="${FORGE_BRIDGE_VERSION:-v1.3.0}"
+
+# Optional override: absolute path to a local forge-bridge clone. When set, install.sh
+# prefers this clone's scripts/install-flame-hook.sh over the curl fallback. Leaving it
+# unset triggers the sibling-directory auto-detect in _resolve_forge_bridge_source below
+# (per D-01 / D-02).
+FORGE_BRIDGE_REPO="${FORGE_BRIDGE_REPO:-}"
+
+# Hook's installed location — matches the forge-bridge sibling installer's default. We
+# track it here so --force can explicitly rm the old file before reinstall (per D-13).
+FORGE_BRIDGE_HOOK_PATH="/opt/Autodesk/shared/python/forge_bridge/scripts/forge_bridge.py"
+
 DRY_RUN=0
 FORCE=0
 
@@ -64,7 +90,7 @@ while [[ $# -gt 0 ]]; do
     --force)       FORCE=1 ; shift ;;
     --install-dir) INSTALL_DIR="$2" ; shift 2 ;;
     -h|--help)
-      sed -n '3,23p' "$0" | sed 's/^# \{0,1\}//'
+      sed -n '3,29p' "$0" | sed 's/^# \{0,1\}//'
       exit 0 ;;
     *) err "unknown argument: $1" ; exit 2 ;;
   esac
