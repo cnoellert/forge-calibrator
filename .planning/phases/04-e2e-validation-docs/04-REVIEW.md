@@ -12,7 +12,12 @@ findings:
   warning: 3
   info: 4
   total: 8
-status: issues_found
+  resolved: 1
+status: partially_resolved
+resolved_findings:
+  - id: CR-01
+    commit: d96c8ab
+    note: "Adopted bash 3.2-portable case-insensitive match via glob patterns in case statement; equivalent portable idiom confirmed in install.sh."
 ---
 
 # Phase 4: Code Review Report
