@@ -87,10 +87,12 @@ Plans:
 
 **Requirements**: None (no formal requirement IDs — these are polish / defense-in-depth items). Success criterion is "the smoke-test-surfaced blocking subset is addressed before v6.3 ships; the rest is documented as deferred-to-v2."
 **Depends on:** Phase 4 (needs Phase 4 smoke test results to prioritize; can run in parallel with Phase 4 docs if useful)
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
-- [ ] TBD (run `/gsd-plan-phase 4.1` after Phase 4 smoke test to break down)
+- [ ] 04.1-01-PLAN.md — Item 1 (GA-3) stereo-rig filter in _FLAME_SIDE_TEMPLATE + D-07 revisit probe
+- [ ] 04.1-02-PLAN.md — Items 2+5 (GA-2/GA-5): detect-and-route in Export Camera to Blender + forge_bake_frame_rate stamp in bake_camera.py
+- [ ] 04.1-03-PLAN.md — Item 3 (GA-4) Task 5 crash instrumentation in _FLAME_SIDE_TEMPLATE + N=5 live repro attempt
 
 ## Backlog
 
