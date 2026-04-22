@@ -127,9 +127,18 @@ def _forge_send():
         created = fbx_io.import_fbx_to_action(action, fbx_path)
 
         success = True
+        # Filter per Phase 4.1 D-06: duck-type camera check mirrors
+        # forge_flame.fbx_io.iter_keyframable_cameras:63-70. Drops FBX-internal
+        # nodes (RootNode_*) and stereo-rig siblings (*_left/*_right) that
+        # action.import_fbx() auto-spawns — they lack one or more of the four
+        # camera attrs. Perspective-by-name exclusion matches fbx_io precedent.
         return {{
             "action_name": action_name,
-            "created": [c.name.get_value() for c in created],
+            "created": [
+                c.name.get_value() for c in created
+                if all(hasattr(c, a) for a in ("position", "rotation", "fov", "focal"))
+                and c.name.get_value() != "Perspective"
+            ],
         }}
     finally:
         if success:
