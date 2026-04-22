@@ -86,16 +86,18 @@ ask_human() {
 # Step 1: Working-tree clean [mech]
 # ==============================================================================
 step "Working-tree clean"
+# Intent: catch dirty source code. .claude/ is agent scratch state; .planning/ is
+# GSD bookkeeping (phase dirs, STATE.md, ROADMAP.md) — neither is production code.
 dirty=$(git status --porcelain 2>/dev/null \
   | grep -v '^.. \.claude/' \
-  | grep -v '^.. \.planning/phases/04-e2e-validation-docs/' \
+  | grep -v '^.. \.planning/' \
   || true)
 if [[ -n "$dirty" ]]; then
-  err "working tree has uncommitted changes (after ignoring .claude/ and in-phase .planning/):"
+  err "working tree has uncommitted source changes (after ignoring .claude/ and .planning/):"
   printf "%s\n" "$dirty" >&2
   exit 1
 fi
-ok "working tree clean (ignoring .claude/ and in-phase .planning/)"
+ok "working tree clean (ignoring .claude/ and .planning/)"
 
 # ==============================================================================
 # Step 2: install.sh dry-run [mech]
