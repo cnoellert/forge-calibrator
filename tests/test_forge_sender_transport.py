@@ -188,3 +188,165 @@ class TestParseEnvelope:
         err, result = transport.parse_envelope(env)
         assert err is None
         assert result == "R"
+
+
+# ---------------------------------------------------------------------------
+# Helpers for filter tests (Phase 4.1 item 1 — GA-3 stereo-rig popup filter)
+# ---------------------------------------------------------------------------
+
+class _Attr:
+    """Minimal Flame PyAttribute stub — supports get_value() only."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get_value(self):
+        return self._value
+
+
+def _make_node(name, *, has_position=True, has_rotation=True,
+               has_fov=True, has_focal=True):
+    """Build a fake Flame Action child node with selectable camera attrs."""
+
+    class _Node:
+        pass
+
+    n = _Node()
+    n.name = _Attr(name)
+    if has_position:
+        n.position = _Attr(0.0)
+    if has_rotation:
+        n.rotation = _Attr(0.0)
+    if has_fov:
+        n.fov = _Attr(50.0)
+    if has_focal:
+        n.focal = _Attr(35.0)
+    return n
+
+
+def _apply_filter(nodes):
+    """Apply the _FLAME_SIDE_TEMPLATE filter predicate to a list of nodes.
+
+    Mirrors the predicate that will appear in _FLAME_SIDE_TEMPLATE after
+    Plan 04.1-01 ships.  Written here as a pure-Python expression so the
+    tests stay RED until the actual template is updated.
+
+    The predicate is:
+        all(hasattr(c, a) for a in ("position", "rotation", "fov", "focal"))
+        and c.name.get_value() != "Perspective"
+
+    This helper executes the template as-built to exercise the REAL filter —
+    tests verify both the template text (grep checks) and the runtime
+    behaviour (this helper).
+    """
+    # Exec the formatted template in a fake Flame namespace so we can
+    # inspect the return value of _forge_send() with controlled nodes.
+    import json as _json
+    import ast as _ast
+
+    # We need a minimal v5 JSON with the required custom_properties keys
+    # so the template doesn't error before reaching the filter.
+    dummy_json = _json.dumps({
+        "custom_properties": {
+            "forge_bake_action_name": "TestAction",
+        }
+    })
+
+    # Build a fake namespace matching what the template imports.
+    class _FakeAction:
+        pass
+
+    fake_action = _FakeAction()
+    fake_action.name = _Attr("TestAction")
+    fake_action.import_fbx = lambda path: nodes  # returns the node list
+
+    class _FakeBatch:
+        nodes = [fake_action]
+
+    class _FakeFlame:
+        batch = _FakeBatch()
+
+    class _FakeFbxIo:
+        @staticmethod
+        def import_fbx_to_action(action, fbx_path):
+            return nodes
+
+    class _FakeFbxAscii:
+        @staticmethod
+        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):
+            pass  # no-op
+
+    import tempfile as _tempfile
+    import os as _os
+    import shutil as _shutil
+
+    fake_globals = {
+        "json": _json,
+        "os": _os,
+        "shutil": _shutil,
+        "tempfile": _tempfile,
+        "flame": _FakeFlame(),
+        "fbx_io": _FakeFbxIo(),
+        "fbx_ascii": _FakeFbxAscii(),
+    }
+
+    # Format the template with safe dummy values.
+    code = transport._FLAME_SIDE_TEMPLATE.format(
+        json_str_repr=repr(dummy_json),
+        frame_rate_repr=repr("24 fps"),
+    )
+
+    local_ns = {}
+    exec(code, fake_globals, local_ns)  # defines _forge_send
+    result = eval("_forge_send()", fake_globals, local_ns)
+    return result.get("created", [])
+
+
+class TestFilterStereoRigAndFbxInternalNodes:
+    """Phase 4.1 item 1 (GA-3) — filter inside _FLAME_SIDE_TEMPLATE.
+
+    These tests are RED until _FLAME_SIDE_TEMPLATE replaces the bare list-comp
+    with the duck-type + Perspective-name predicate per D-06.
+    """
+
+    def test_filter_accepts_real_camera(self):
+        """A node with all four camera attrs and name != 'Perspective' must appear."""
+        cam = _make_node("Camera1")
+        result = _apply_filter([cam])
+        assert "Camera1" in result
+
+    def test_filter_drops_node_missing_fov(self):
+        """A RootNode_*-style node lacking fov must be dropped."""
+        non_cam = _make_node("RootNode_Scene5", has_fov=False)
+        result = _apply_filter([non_cam])
+        assert "RootNode_Scene5" not in result
+
+    def test_filter_drops_perspective_by_name(self):
+        """Perspective has all four camera attrs but must be excluded by name
+        (matches iter_keyframable_cameras:67 precedent from fbx_io.py)."""
+        perspective = _make_node("Perspective")
+        result = _apply_filter([perspective])
+        assert "Perspective" not in result
+
+    def test_filter_drops_stereo_rig_sibling_lacking_focal(self):
+        """Stereo-rig siblings (*_left, *_right) that lack fov/focal must be dropped."""
+        left_cam = _make_node("Camera1_left", has_fov=False, has_focal=False)
+        result = _apply_filter([left_cam])
+        assert "Camera1_left" not in result
+
+    def test_filter_preserves_list_order(self):
+        """Filter must preserve order of real cameras (no set-based reordering)."""
+        cam_a = _make_node("CameraA")
+        cam_b = _make_node("CameraB")
+        cam_c = _make_node("CameraC")
+        result = _apply_filter([cam_a, cam_b, cam_c])
+        assert result == ["CameraA", "CameraB", "CameraC"]
+
+    def test_template_contains_duck_type_predicate(self):
+        """The template string must contain the duck-type hasattr predicate verbatim."""
+        assert 'all(hasattr(c, a) for a in ("position", "rotation", "fov", "focal"))' \
+            in transport._FLAME_SIDE_TEMPLATE
+
+    def test_template_contains_perspective_exclusion(self):
+        """The template string must contain the Perspective-by-name exclusion."""
+        assert 'c.name.get_value() != "Perspective"' in transport._FLAME_SIDE_TEMPLATE
