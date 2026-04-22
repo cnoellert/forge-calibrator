@@ -44,6 +44,7 @@ D-19 note (Plan 02-01 probe outcome):
 """
 from __future__ import annotations
 
+import ast
 import json
 from typing import Optional, Tuple
 
@@ -137,7 +138,7 @@ def _forge_send():
             print("[forge-send] tempdir preserved: %s" % tmpdir)
 
 
-_result = _forge_send()
+_forge_send()
 '''
 
 
@@ -198,8 +199,17 @@ def parse_envelope(envelope: dict) -> Tuple[Optional[str], Optional[dict]]:
 
     Envelope shape: ``{"result", "stdout", "stderr", "error", "traceback"}``.
 
+    The bridge wraps eval'd expression values in ``repr()``, so when
+    the Flame-side template ends with ``_forge_send()`` (an expression
+    returning a dict), the bridge's ``result`` field is a string like
+    ``"{'action_name': 'foo', 'created': ['cam1']}"``. We parse that
+    back into the dict with :func:`ast.literal_eval` so the operator
+    sees a real dict.
+
     Returns:
-        ``(None, result)`` on success (``error`` field absent or empty);
+        ``(None, result_dict)`` on success (``error`` field absent or
+        empty). ``result_dict`` is either a parsed dict or ``None`` if
+        the bridge returned no value.
         ``(formatted_error_string, None)`` on remote failure — the
         string follows UI-SPEC §Remote Tier copy template:
         ``Send to Flame failed: {error}\\n\\n{traceback}``.
@@ -208,4 +218,13 @@ def parse_envelope(envelope: dict) -> Tuple[Optional[str], Optional[dict]]:
     if error:
         traceback = envelope.get("traceback") or ""
         return (f"Send to Flame failed: {error}\n\n{traceback}", None)
-    return (None, envelope.get("result"))
+    raw = envelope.get("result")
+    if isinstance(raw, str):
+        try:
+            return (None, ast.literal_eval(raw))
+        except (ValueError, SyntaxError):
+            # Non-literal string — pass through unchanged so callers
+            # can still inspect it (preserves compatibility with
+            # earlier bridge responses that sent back bare strings).
+            return (None, raw)
+    return (None, raw)
