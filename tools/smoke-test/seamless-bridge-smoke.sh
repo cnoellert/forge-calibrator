@@ -71,11 +71,12 @@ FAILED_STEPS=()
 ask_human() {
   local desc="$1"
   read -r -p "  pass? [y/n] " ans
-  case "${ans,,}" in
-    y|yes) ok "$desc" ;;
-    *)     err "$desc — see docs/seamless-bridge.md#troubleshooting"
-           FAILED_STEPS+=("$desc")
-           HUMAN_FAIL=1 ;;
+  # Bash 3.2-portable case-insensitive match (macOS ships bash 3.2; ${var,,} is bash 4+)
+  case "$ans" in
+    [Yy]|[Yy][Ee][Ss]) ok "$desc" ;;
+    *)                 err "$desc — see docs/seamless-bridge.md#troubleshooting"
+                       FAILED_STEPS+=("$desc")
+                       HUMAN_FAIL=1 ;;
   esac
 }
 
