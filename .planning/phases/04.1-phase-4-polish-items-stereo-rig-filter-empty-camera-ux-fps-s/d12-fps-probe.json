@@ -1,0 +1,23 @@
+{
+  "probe": "D-12/D-13 Flame project fps source",
+  "status": "bridge-offline",
+  "timestamp": "2026-04-22T22:58:26Z",
+  "note": "forge-bridge connection to Flame 2026.2.1 is unavailable (no live Flame session during this execution). Per plan Task 1 blocker rule: documenting bridge-offline and proceeding with conservative default.",
+  "prior_findings": {
+    "source": "02-03-SUMMARY.md D-19 note",
+    "finding": "flame.batch.frame_rate was observed to be a NoneType slot on Flame 2026.2.1 during Phase 2 probing. This is why D-14 fallback exists."
+  },
+  "conservative_default": {
+    "primary_source": "flame.batch.frame_rate.get_value()",
+    "primary_description": "Attempt flame.batch.frame_rate.get_value() with defensive try/except. On Flame 2026.2.1 this was a NoneType slot (D-19) but may have been patched; the try/except covers both cases.",
+    "label_mapping": {
+      "strategy": "Map the raw fps value to a _FLAME_FPS_LABELS label string. If the source returns a label string already (e.g. '24 fps'), pass through. If it returns a numeric (e.g. 24.0), map to the nearest label within 0.1 tolerance. If no match, stamp '<num> fps' and emit a stderr warning.",
+      "supported_labels": ["23.976 fps", "24 fps", "25 fps", "29.97 fps", "30 fps", "48 fps", "50 fps", "59.94 fps", "60 fps"]
+    },
+    "fallback_chain": [
+      "1. flame.batch.frame_rate.get_value() — may be NoneType slot on 2026.2.1",
+      "2. '24 fps' + stderr warning (ABSOLUTE LAST RESORT; never silent)"
+    ],
+    "rationale": "flame.project.current_project.frame_rate could not be verified without a live Flame session. flame.batch.frame_rate is the closest documented path. D-14 fallback ensures the stamp always happens with a loud warning, never silently."
+  }
+}

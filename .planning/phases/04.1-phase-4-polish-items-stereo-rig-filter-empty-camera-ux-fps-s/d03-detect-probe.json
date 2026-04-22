@@ -1,0 +1,16 @@
+{
+  "probe": "D-03 detect-and-route mechanism",
+  "status": "bridge-offline",
+  "timestamp": "2026-04-22T22:58:26Z",
+  "note": "forge-bridge connection to Flame 2026.2.1 is unavailable (no live Flame session during this execution). Per plan Task 1 blocker rule: documenting bridge-offline and proceeding with conservative default.",
+  "conservative_default": {
+    "mechanism": "scratch-FBX-count",
+    "description": "Export a scratch FBX via action.export_fbx(bake_animation=True, ...) to a temp path, parse via fbx_ascii to count frames. A static camera produces 0 or 1 frames (the pre-roll single keyframe) — any frame count <= 1 is treated as static. An animated camera produces >= 2 frames.",
+    "fallback_behavior": "If the scratch-FBX mechanism raises an exception, _is_animated_camera returns False (static assumption). The static path is safe: a misidentified animated camera still produces a valid single-frame JSON. The reverse — treating a static camera as animated — is the bug this plan closes.",
+    "rationale": "Candidates (a) direct API and (b) docstring-named method could not be verified without a live Flame session. Candidate (c) indirect delta-read is documented as a HARD CRASH risk (auto_key=True path in memory/flame_keyframe_api.md). Candidate (d) scratch-FBX-count is the most reliable option that does not risk crashing Flame, and it is the PATTERNS.md §Site 6 documented failure site.",
+    "memory_refs": [
+      "flame_keyframe_api.md: PyAttribute has no keyframe API; .values is min/max bounds NOT keys",
+      "flame_bridge_probing.md: bridge offline; conservative defaults apply per Task 1 blocker rule"
+    ]
+  }
+}
