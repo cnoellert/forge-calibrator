@@ -422,12 +422,27 @@ fi
 
 # ---- done ---------------------------------------------------------------------
 step "Done"
+# ---- scope boundary ------------------------------------------------------------
+# install.sh does NOT:
+#   - Start or restart Flame
+#   - Curl 127.0.0.1:9999 to prove the bridge is reachable
+#   - Kill any running Flame / forge-bridge process
+# Live end-to-end verification (BRG-01 bridge starts on Flame boot, BRG-02 bridge
+# dies cleanly on Flame quit) is Phase 4's E2E smoke test — see .planning/phases/
+# 03-forge-bridge-deploy/03-CONTEXT.md §D-14. Phase 3's verification is strictly
+# "the hook file landed at FORGE_BRIDGE_HOOK_PATH and parses as Python" (D-15).
 cat <<EOF
 
 Next steps:
 
-  1. In Flame, if Camera Match is not yet registered, restart Flame.
-  2. Otherwise, reload the live module from a Python console:
+  1. Restart Flame. On next boot, both the Camera Match hook AND the forge-bridge
+     hook register — forge-bridge will start listening on http://127.0.0.1:9999.
+     If the forge-bridge install was skipped (see the [WARN] above), v6.3
+     Send-to-Flame will fail until the bridge is deployed; VP-solve and v6.2
+     static round-trip still work.
+
+  2. To reload the live Camera Match module without a restart (bridge still needs
+     a restart to register):
 
      import sys, gc, types
      src = open('$TARGET_HOOK').read()
@@ -440,5 +455,10 @@ Next steps:
              sys.modules['camera_match'] = o
 
   3. Close and reopen any Camera Match windows (Qt state is captured at construction).
+
+  4. Live smoke-test the bridge after Flame has fully booted:
+
+       curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"
+       # expect: 200
 
 EOF
