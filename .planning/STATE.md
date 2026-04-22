@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
 status: executing
-stopped_at: Phase 2 Wave 1 complete — probes done
-last_updated: "2026-04-21T22:55:00.000Z"
-last_activity: 2026-04-21 -- Phase 02 Wave 1 complete
+stopped_at: Phase 2 complete — ready for Phase 3 (forge-bridge-deploy)
+last_updated: "2026-04-22T03:10:00.000Z"
+last_activity: 2026-04-22 -- Phase 02 complete (verified 10/10)
 progress:
   total_phases: 5
-  completed_phases: 1
+  completed_phases: 2
   total_plans: 8
-  completed_plans: 4
-  percent: 50
+  completed_plans: 8
+  percent: 100
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 02 — blender-addon
+**Current focus:** Phase 03 — forge-bridge-deploy (next)
 
 ## Current Position
 
-Phase: 02 (blender-addon) — EXECUTING
-Plan: 1 of 4 complete (Wave 1 done — D-19 locked, FOLDED-01 closed)
-Status: Executing Phase 02
-Last activity: 2026-04-21 -- Phase 02 Wave 1 complete
+Phase: 3 (forge-bridge-deploy)
+Plan: Not started
+Status: Phase 02 complete; awaiting routing for Phase 03
+Last activity: 2026-04-22 -- Phase 02 verified + closed
 
-Progress: [██░░░░░░░░] 25%
+Progress: [████░░░░░░] 40% (2 of 5 phases complete)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 4
+- Total plans completed: 8
 - Average duration: —
 - Total execution time: —
 
@@ -45,6 +45,7 @@ Progress: [██░░░░░░░░] 25%
 | Phase | Plans | Total | Avg/Plan |
 |-------|-------|-------|----------|
 | 01 | 4 | - | - |
+| 02 | 4 | - | - |
 
 **Recent Trend:**
 
@@ -65,10 +66,15 @@ Recent decisions affecting current work:
 - Intermediate `.fbx` / `.json` files go to `tempfile.mkdtemp()` and are removed on success; only `.blend` stays visible
 - D-19 triggered: `flame.batch.frame_rate` is a plain `NoneType` slot (not a `PyAttribute`), returned `None` under all tested conditions including with a Batch + clip + Action loaded. Recovery ladder adopted: (1) read `cam["forge_bake_frame_rate"]` custom prop on the Blender camera, (2) fall back to `bpy.context.scene.render.fps / fps_base`, (3) popup asking the user. Plan 02-02's `v5_json_str_to_fbx` takes `frame_rate` as a caller-provided kwarg; Plan 02-03's addon owns the ladder. See `memory/flame_batch_frame_rate.md`.
 - FOLDED-01 closed: multi-camera picker 4-check sweep PASSED all checks. Perspective correctly filtered, dropdown order deterministic, Cancel path clean, picker→stamp integrity verified via JSON `forge_bake_camera_name`. See `.planning/todos/completed/2026-04-21-verify-multi-camera-picker-in-live-uat.md`.
+- Phase 2 shipped (2026-04-21): Forge Sender v1.0.0 addon, all IMP-01..IMP-06 verified live. Two hotfix commits landed during UAT (permissive operator poll(); bridge _result surfacing via trailing expression + ast.literal_eval). Four Phase 4 polish follow-ups captured in 02-04-SUMMARY: plural popup filter, Flame FBX stereo-rig expansion investigation, Blender reload discipline, single uncaptured Flame crash. Code review: 0 blockers, 2 warnings (fidelity-discipline on D-19 ladder fall-through), 3 info.
 
 ### Pending Todos
 
 - Phase 1 supplement: stamp `forge_bake_frame_rate` in `tools/blender/bake_camera.py` (D-19 recovery — sourced from `bpy.context.scene.render.fps / fps_base` at bake time). Low priority: Plan 02-03's addon ladder has fallback #2 covering this case, so this is additive robustness not a blocker.
+- Phase 4 polish: filter `import_fbx_to_action` return list before popup enumeration (drop FBX-internal nodes like `RootNode_Scene5` and stereo-rig siblings).
+- Phase 4 investigation: reproduce the Task 5 Flame crash with fresh batch + clean state; capture the error dialog this time.
+- Phase 4 polish: empty-camera Flame→Blender bake UX (currently fails loud with `no frames in JSON`; should either emit a single-frame static keyframe or surface a clearer message).
+- Optional: address 2 warnings from code review (02-REVIEW.md) — fail loud on stamped-but-unsupported `forge_bake_frame_rate`, add defense-in-depth fps validation in the Flame-side template. Run `/gsd-code-review-fix 02` to auto-apply.
 
 ### Blockers/Concerns
 
@@ -94,6 +100,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-04-21T22:55:00.000Z
-Stopped at: Phase 2 Wave 1 complete — probes done
-Resume file: .planning/phases/02-blender-addon/02-01-SUMMARY.md
+Last session: 2026-04-22T03:10:00.000Z
+Stopped at: Phase 2 complete — ready for Phase 3 (forge-bridge-deploy)
+Resume file: .planning/phases/02-blender-addon/02-VERIFICATION.md
