@@ -99,19 +99,43 @@ def _forge_send():
 
     tmpdir = tempfile.mkdtemp(prefix="forge_send_")
     fbx_path = os.path.join(tmpdir, "incoming.fbx")
+    # Phase 4.1 D-08: defensive instrumentation. Phase-tagged logs land
+    # in <tmpdir>/forge_send_debug.log alongside incoming.fbx. The file
+    # survives P-4's preserve-on-failure invariant naturally — no new
+    # cleanup path. Log CONTENT: phase tags + counts + action names
+    # ONLY. Never v5_json_str contents, never file contents, never
+    # credentials (none involved). Keep lines lean.
+    debuglog = os.path.join(tmpdir, "forge_send_debug.log")
+
+    def _log(msg):
+        # Phase 4.1 item 3: instrumentation. Logs land inside tmpdir so
+        # P-4 preserve-on-failure covers them. Security: phase tags plus
+        # counts plus action names ONLY — no file contents, no JSON body.
+        try:
+            with open(debuglog, "a") as f:
+                print("[forge-send] %s" % msg, file=f)
+        except Exception:
+            pass  # instrumentation failures must never crash the send
+        print("[forge-send] %s" % msg)
+
     success = False
+    _log("step=start")
     try:
+        _log("step=pre_fbx_parse fbx_path=%r" % fbx_path)
         fbx_ascii.v5_json_str_to_fbx(
             v5_json_str, fbx_path, frame_rate=frame_rate,
         )
+        _log("step=post_fbx_parse")
 
         payload = json.loads(v5_json_str)
         action_name = payload["custom_properties"]["forge_bake_action_name"]
 
+        _log("step=pre_flame_batch_nodes_scan action_name=%r" % action_name)
         matches = [
             n for n in flame.batch.nodes
             if hasattr(n, "import_fbx") and n.name.get_value() == action_name
         ]
+        _log("step=matched count=%d action_name=%r" % (len(matches), action_name))
         if not matches:
             raise RuntimeError(
                 "No Action named '%s' in current batch — was it renamed or deleted?"
@@ -124,7 +148,9 @@ def _forge_send():
             )
         action = matches[0]
 
+        _log("step=pre_import_fbx")
         created = fbx_io.import_fbx_to_action(action, fbx_path)
+        _log("step=post_import_fbx created_count=%d" % len(created))
 
         success = True
         # Filter per Phase 4.1 D-06: duck-type camera check mirrors
