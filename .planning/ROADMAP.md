@@ -45,7 +45,7 @@ Plans:
 - [x] 02-01-PLAN.md — Pre-work probes (D-18 frame_rate shape + FOLDED-01 multi-camera picker sweep)
 - [x] 02-02-PLAN.md — v5_json_str_to_fbx sibling + shared flame_math.py extraction + extract_camera.py refactor
 - [x] 02-03-PLAN.md — Addon scaffolding: preflight.py + transport.py + __init__.py (bl_info, Panel, Operator)
-- [ ] 02-04-PLAN.md — Build installable zip + live E2E validation (happy path + Tier 1/2/3 failure paths)
+- [x] 02-04-PLAN.md — Build installable zip + live E2E validation (happy path + Tier 1/2/3 failure paths)
 **UI hint**: yes
 
 ### Phase 3: forge-bridge Deploy
