@@ -1,19 +1,341 @@
-"""forge_sender — Blender addon package for "Send to Flame".
-
-This ``__init__.py`` declares the Python package boundary. Blender's
-addon loader reads ``bl_info`` from here (added in Plan 02-03). For
-now, the file exists so:
-
-  - ``tools/blender/extract_camera.py`` can do::
-
-        sys.path.insert(0, os.path.join(
-            os.path.dirname(__file__), "forge_sender"))
-        from flame_math import _rot3_to_flame_euler_deg, ...
-
-  - and the pytest suite can locate ``flame_math.py`` as a top-level
-    module via the same sys.path shim pattern.
-
-No imports here — Blender 4.5's addon loader will populate this
-file with ``bl_info``, ``register()`` / ``unregister()``, and class
-registrations in Plan 02-03.
 """
+forge_sender/__init__.py — "Send to Flame" Blender addon entry.
+
+Why this addon exists: completes the Flame ↔ Blender round-trip
+without requiring the artist to visit Flame's batch menu. Phase 1
+stamps ``forge_bake_action_name`` / ``forge_bake_camera_name`` /
+``forge_bake_source`` on the baked camera; this addon reads those
+back, extracts the current per-frame T/R/focal via
+``forge_sender.flame_math.build_v5_payload``, and POSTs to forge-bridge
+at http://127.0.0.1:9999/exec with a payload that runs
+``v5_json_str_to_fbx`` + target-Action resolution +
+``import_fbx_to_action`` inside Flame. Success / failure surfaces
+in a Blender popup.
+
+Scope boundaries:
+  - Single Panel in the 3D viewport N-panel 'Forge' tab.
+  - Single Operator: FORGE_OT_send_to_flame (bl_idname forge.send_to_flame).
+  - Synchronous POST with a 5 s timeout (D-16) — no threading.
+  - No config UI, no override inputs (D-14/D-15 minimal panel).
+
+UI contract: see .planning/phases/02-blender-addon/02-UI-SPEC.md
+for exact layout calls, icon names, and copy strings.
+Bridge contract: see memory/flame_bridge.md and
+memory/flame_bridge_probing.md.
+
+D-19 frame-rate ladder (Plan 02-01 recovery):
+  ``flame.batch.frame_rate`` is a NoneType slot on Flame 2026.2.1 —
+  the D-17 assumption was disproved by the live probe. The addon
+  therefore owns the frame-rate lookup via a 3-level ladder:
+
+    1. ``cam.data["forge_bake_frame_rate"]`` — authoritative when
+       stamped (optional Phase 1 supplement; not relied upon).
+    2. ``bpy.context.scene.render.fps / fps_base`` — mapped to one
+       of the keys in ``forge_flame.fbx_ascii._FPS_FROM_FRAME_RATE``.
+    3. If neither resolves, surface an error popup with the scene
+       fps and instructions (the "popup asking the user" step —
+       rendered as a Tier-1-style error rather than a live prompt
+       because a sync operator can't block for input without
+       reinventing modal state).
+
+  The resolved string is passed through ``transport.send(..., frame_rate=...)``
+  which forwards it into the bridge payload. The Flame-side template
+  receives the value from the payload, never by probing Flame.
+  See ``memory/flame_batch_frame_rate.md``.
+"""
+from __future__ import annotations
+
+import json
+from typing import Optional
+
+import bpy
+import requests  # D-13: bundled with Blender 4.5's Python
+
+# Relative imports from siblings. Blender addon loader exposes the
+# package namespace correctly when the directory is installed via
+# Preferences → Add-ons → Install from file.
+from . import flame_math, preflight, transport
+
+
+bl_info = {
+    "name": "Forge: Send Camera to Flame",
+    "author": "forge-calibrator",
+    "version": (1, 0, 0),
+    "blender": (4, 5, 0),
+    "location": "View3D > Sidebar > Forge",
+    "description": "Send the active Flame-baked camera back to its source Action in Flame.",
+    "category": "Import-Export",
+}
+
+
+# =============================================================================
+# D-19 frame-rate ladder
+# =============================================================================
+
+
+# Map Blender's scene.render.fps / fps_base numeric ratio to the string
+# keys accepted by ``forge_flame.fbx_ascii._FPS_FROM_FRAME_RATE``.
+# Tolerance is 1e-3 so 23.976 ≈ 24000/1001 = 23.9760239… matches the
+# "23.976 fps" key. Blender encodes 23.976 as fps=24, fps_base=1.001
+# (ratio 23.976023…), 24 as fps=24, fps_base=1.0, etc.
+_FLAME_FPS_LABELS = (
+    ("23.976 fps", 24000.0 / 1001.0),
+    ("24 fps", 24.0),
+    ("25 fps", 25.0),
+    ("29.97 fps", 30000.0 / 1001.0),
+    ("30 fps", 30.0),
+    ("48 fps", 48.0),
+    ("50 fps", 50.0),
+    ("59.94 fps", 60000.0 / 1001.0),
+    ("60 fps", 60.0),
+)
+
+
+def _map_scene_fps_to_flame_label(fps: float,
+                                  tolerance: float = 1e-3) -> Optional[str]:
+    """Return the Flame frame-rate string for a Blender numeric fps,
+    or None if no label matches within ``tolerance``."""
+    for label, target in _FLAME_FPS_LABELS:
+        if abs(fps - target) < tolerance:
+            return label
+    return None
+
+
+def _resolve_frame_rate(cam, context) -> (Optional[str], Optional[str]):
+    """D-19 ladder. Returns ``(label, None)`` on success or
+    ``(None, error_message)`` if the ladder exhausts without
+    resolving a supported Flame frame-rate label."""
+    # Ladder step 1: stamped custom prop on camera data (authoritative).
+    stamped = cam.data.get("forge_bake_frame_rate")
+    if stamped:
+        label = str(stamped)
+        # Accept the stamp verbatim if it's one of the supported labels;
+        # otherwise fall through to step 2 so we don't feed an unknown
+        # string into v5_json_str_to_fbx (which silently falls back to
+        # 24 fps on unknown keys — violates Core Value fidelity).
+        if label in {x[0] for x in _FLAME_FPS_LABELS}:
+            return (label, None)
+    # Ladder step 2: Blender scene fps / fps_base.
+    render = context.scene.render
+    try:
+        numeric_fps = float(render.fps) / float(render.fps_base)
+    except (TypeError, ZeroDivisionError):
+        numeric_fps = None
+    if numeric_fps is not None:
+        mapped = _map_scene_fps_to_flame_label(numeric_fps)
+        if mapped is not None:
+            return (mapped, None)
+    # Ladder step 3: exhausted — surface a descriptive error.
+    supported = ", ".join(x[0] for x in _FLAME_FPS_LABELS)
+    err = (f"Send to Flame: cannot resolve Flame frame rate — "
+           f"Blender scene fps={numeric_fps!r} is not one of the "
+           f"supported Flame labels ({supported}). Either set the "
+           f"scene frame rate to a supported value or stamp "
+           f"cam.data['forge_bake_frame_rate'] with one of the "
+           f"supported labels verbatim.")
+    return (None, err)
+
+
+# =============================================================================
+# Popup helpers
+# =============================================================================
+
+
+def _popup(context, message: str, *, title: str = "Send to Flame",
+           level: str = 'ERROR') -> None:
+    """Single-line popup via ``wm.popup_menu``.
+
+    Used for preflight Tier 1, transport Tier, and success (level='INFO').
+    """
+    def draw(self, _ctx):
+        self.layout.label(text=message)
+    icon = 'INFO' if level == 'INFO' else 'ERROR'
+    context.window_manager.popup_menu(draw, title=title, icon=icon)
+
+
+def _popup_multiline(context, message: str,
+                     *, title: str = "Send to Flame") -> None:
+    """Multi-line popup: one ``layout.label`` per line so pipeline-TDs
+    can screenshot / copy the Flame-side traceback verbatim
+    (UI-SPEC §Remote Tier "copy-paste-friendly"). Preserves
+    whitespace; does NOT reflow."""
+    lines = message.split("\n")
+
+    def draw(self, _ctx):
+        for line in lines:
+            # Empty ``layout.label()`` renders a zero-height spacer;
+            # preserve blank lines for the summary/traceback gap.
+            self.layout.label(text=line if line else " ")
+    context.window_manager.popup_menu(draw, title=title, icon='ERROR')
+
+
+# =============================================================================
+# Operator
+# =============================================================================
+
+
+class FORGE_OT_send_to_flame(bpy.types.Operator):
+    """Send the active Flame-baked camera to its source Action in Flame."""
+    bl_idname = "forge.send_to_flame"
+    bl_label = "Send to Flame"
+    bl_description = "Send the active Flame-baked camera to its source Action"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        # UI-SPEC §Panel Layout Contract: poll enables iff all five
+        # preflight conditions pass. check() returns None on pass.
+        return preflight.check(context) is None
+
+    def execute(self, context):
+        # Belt-and-braces: re-check preflight inside execute() so
+        # F3-search / keymap invocation can't bypass the panel gate.
+        err = preflight.check(context)
+        if err is not None:
+            self.report({'ERROR'}, err)
+            _popup(context, err)
+            return {'CANCELLED'}
+
+        cam = context.active_object
+
+        # D-19 frame-rate ladder — resolve before building the payload
+        # so an unsupported fps fails loud without ever touching the
+        # bridge (Core Value: geometric fidelity over frictionless UX).
+        frame_rate, fps_err = _resolve_frame_rate(cam, context)
+        if fps_err is not None:
+            self.report({'ERROR'}, fps_err)
+            _popup(context, fps_err)
+            return {'CANCELLED'}
+
+        # Build the v5 payload from the current Blender scene state.
+        # scale_override=None so _resolve_scale reads the stamped
+        # forge_bake_scale off cam.data.
+        payload_dict = flame_math.build_v5_payload(cam, scale_override=None)
+
+        # Inject the stamped metadata the Flame side needs to resolve
+        # the target Action (D-06/D-07). Phase 1 writes these keys on
+        # bake; we echo them back inside custom_properties so the
+        # bridge-side template can extract action_name without another
+        # round-trip.
+        payload_dict["custom_properties"] = {
+            "forge_bake_action_name": cam.data["forge_bake_action_name"],
+            "forge_bake_camera_name": cam.data["forge_bake_camera_name"],
+        }
+
+        v5_json_str = json.dumps(payload_dict)
+
+        # POST to forge-bridge. Transport Tier covers ConnectionError
+        # and Timeout; any other requests-layer error surfaces with
+        # the same Transport Tier framing plus exception class.
+        try:
+            envelope = transport.send(v5_json_str, frame_rate=frame_rate)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout):
+            msg = (
+                "Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999"
+                " — is Flame running with the Camera Match hook loaded?"
+            )
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+        except requests.exceptions.RequestException as exc:
+            # Any other requests-layer error: surface with Transport
+            # Tier framing plus exception class so pipeline-TDs can
+            # debug without having to curl the bridge themselves.
+            msg = (f"Send to Flame: forge-bridge request failed — "
+                   f"{type(exc).__name__}: {exc}")
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+
+        # Parse the envelope. Remote Tier on error, success on result.
+        err_msg, result = transport.parse_envelope(envelope)
+        if err_msg is not None:
+            self.report({'ERROR'}, err_msg)
+            _popup_multiline(context, err_msg)
+            return {'CANCELLED'}
+
+        # Success — format the D-10 popup.
+        action_name = (result or {}).get("action_name", "<unknown>")
+        created = (result or {}).get("created") or []
+        if len(created) == 1:
+            msg = (f"Sent to Flame: camera '{created[0]}' "
+                   f"in Action '{action_name}'")
+        elif len(created) > 1:
+            joined = ", ".join(f"'{n}'" for n in created)
+            msg = f"Sent to Flame: cameras {joined} in Action '{action_name}'"
+        else:
+            # Edge case: bridge returned a result with no created list.
+            msg = (f"Sent to Flame (no new camera reported) — "
+                   f"Action '{action_name}'")
+
+        self.report({'INFO'}, msg)
+        _popup(context, msg, level='INFO')
+        return {'FINISHED'}
+
+
+# =============================================================================
+# Panel
+# =============================================================================
+
+
+class VIEW3D_PT_forge_sender(bpy.types.Panel):
+    """N-panel under the 'Forge' tab — shows target Action/Camera
+    labels and the Send to Flame button, or a disabled-state warning
+    row when preflight fails (UI-SPEC §Panel Layout Contract)."""
+    bl_label = "Send to Flame"
+    bl_idname = "VIEW3D_PT_forge_sender"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "Forge"
+    bl_order = 0
+
+    def draw(self, context):
+        layout = self.layout
+        preflight_error = preflight.check(context)
+
+        if preflight_error is None:
+            # Happy path — UI-SPEC §Row order (valid camera).
+            cam_data = context.active_object.data
+            layout.label(
+                text=f"Target Action: {cam_data['forge_bake_action_name']}",
+                icon='OUTLINER_OB_CAMERA')
+            layout.label(
+                text=f"Target Camera: {cam_data['forge_bake_camera_name']}",
+                icon='CAMERA_DATA')
+            layout.separator()
+            layout.operator("forge.send_to_flame", icon='EXPORT')
+        else:
+            # Disabled state — UI-SPEC §Row order (preflight Tier 1 failure).
+            # row.alert renders in Blender's theme-defined "warning red";
+            # icon='ERROR' reinforces (D-15 co-occurrence rule).
+            row = layout.row()
+            row.alert = True
+            row.label(text="Not a Flame-baked camera", icon='ERROR')
+            layout.separator()
+            # The Send button is still drawn; poll() returns False so
+            # Blender renders it disabled and F3-search / keymap
+            # invocation cannot trigger it either.
+            layout.operator("forge.send_to_flame", icon='EXPORT')
+
+
+# =============================================================================
+# Register / unregister
+# =============================================================================
+
+
+_CLASSES = (FORGE_OT_send_to_flame, VIEW3D_PT_forge_sender)
+
+
+def register():
+    for cls in _CLASSES:
+        bpy.utils.register_class(cls)
+
+
+def unregister():
+    for cls in reversed(_CLASSES):
+        bpy.utils.unregister_class(cls)
+
+
+if __name__ == "__main__":
+    register()
