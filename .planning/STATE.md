@@ -2,8 +2,8 @@
 gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
-status: executing
-stopped_at: Phase 3 context gathered
+status: paused
+stopped_at: Phase 3 complete — ready to discuss Phase 4
 last_updated: "2026-04-22T04:59:10.679Z"
 last_activity: 2026-04-22
 progress:
@@ -21,16 +21,16 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 03 — forge-bridge-deploy
+**Current focus:** Phase 04 — e2e-validation-+-docs (not started — awaiting discuss/plan)
 
 ## Current Position
 
 Phase: 4
 Plan: Not started
-Status: Executing Phase 03
+Status: Phase 03 complete — ready to begin Phase 04
 Last activity: 2026-04-22
 
-Progress: [████░░░░░░] 40% (2 of 5 phases complete)
+Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
 ## Performance Metrics
 
