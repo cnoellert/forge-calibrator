@@ -59,7 +59,7 @@ Plans:
   4. Running `install.sh` on a clean machine deploys the forge-bridge launcher alongside the hook so that the next Flame start triggers the bridge automatically
 **Plans:** 2 plans
 Plans:
-- [ ] 03-01-PLAN.md — install.sh plumbing: forge-bridge constants (v1.3.0 pin), env-var reads (FORGE_BRIDGE_REPO / FORGE_BRIDGE_VERSION), source-resolver + --force helpers, --help docstring sync
+- [x] 03-01-PLAN.md — install.sh plumbing: forge-bridge constants (v1.3.0 pin), env-var reads (FORGE_BRIDGE_REPO / FORGE_BRIDGE_VERSION), source-resolver + --force helpers, --help docstring sync
 - [ ] 03-02-PLAN.md — install.sh `> forge-bridge` section before `> Install`: invoke sibling installer, D-15 post-install sanity check, D-10 warn-and-continue on failure per D-09/D-11, Done-section bridge-aware next-steps
 
 ### Phase 4: E2E Validation + Docs
