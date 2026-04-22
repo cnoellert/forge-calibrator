@@ -147,7 +147,45 @@ _RESERVED_STAMP_KEYS = frozenset({
     "forge_bake_source",
     "forge_bake_scale",
     "forge_bake_input_path",
+    "forge_bake_frame_rate",   # Phase 4.1 D-11 (always-stamp invariant)
 })
+
+# Flame project fps labels — mirrors forge_sender/__init__.py _FLAME_FPS_LABELS.
+# Used by _closest_flame_fps_label and _stamp_metadata's D-14 fallback.
+# Values are (label_string, numeric_fps) pairs. Kept in sync by inspection;
+# if forge_sender adds a new rate, add it here too.
+_FLAME_FPS_LABELS = (
+    ("23.976 fps", 23.976),
+    ("24 fps", 24.0),
+    ("25 fps", 25.0),
+    ("29.97 fps", 29.97),
+    ("30 fps", 30.0),
+    ("48 fps", 48.0),
+    ("50 fps", 50.0),
+    ("59.94 fps", 59.94),
+    ("60 fps", 60.0),
+)
+
+
+def _closest_flame_fps_label(fps: float) -> str:
+    """Map a numeric fps to the nearest _FLAME_FPS_LABELS label string.
+
+    Tolerance: abs(fps - label_numeric) < 0.1. If no match within tolerance,
+    returns '<fps> fps' and the caller should emit an extra stderr line noting
+    the miss — this hits forge_sender/__init__.py::_resolve_frame_rate's
+    ladder step 1 fall-through to step 2 cleanly (step 2 re-maps from numeric).
+
+    Args:
+        fps: numeric frames-per-second value (e.g. 24.0, 23.976).
+
+    Returns:
+        A label string from _FLAME_FPS_LABELS or '<fps> fps' on no-match.
+    """
+    for label, numeric in _FLAME_FPS_LABELS:
+        if abs(fps - numeric) < 0.1:
+            return label
+    # No match within tolerance — stamp a raw label and warn at call site.
+    return f"{fps} fps"
 
 
 def _stamp_metadata(
@@ -155,6 +193,7 @@ def _stamp_metadata(
     scale: float,
     source_path: str,
     custom_properties: Optional[dict] = None,
+    frame_rate_label: Optional[str] = None,
 ) -> None:
     """Write round-trip metadata onto the camera's data-block so extract
     can undo the scale and provenance-check the source.
@@ -180,6 +219,15 @@ def _stamp_metadata(
             a silently-miscalibrated camera on extract) or
             ``forge_bake_source`` (used for provenance gating by the
             Blender-side "Send to Flame" addon).
+        frame_rate_label: Flame-project fps label to stamp as
+            ``forge_bake_frame_rate`` (e.g. "24 fps", "23.976 fps").
+            This value is the authoritative source per D-12; the
+            reserved-key guard ensures callers cannot override it via
+            ``custom_properties``. When ``None``, the D-14 fallback
+            path fires: derives a label from ``bpy.context.scene.render.fps
+            / fps_base`` and prints a stderr warning — never silent.
+            See ``forge_sender/__init__.py::_resolve_frame_rate`` step 1
+            for the downstream consumer of this stamp.
     """
     # Apply caller properties first, then overwrite with reserved stamps so
     # the round-trip scale/provenance invariants cannot be clobbered even
@@ -200,6 +248,24 @@ def _stamp_metadata(
     cam_data["forge_bake_source"] = "flame"
     cam_data["forge_bake_scale"] = scale
     cam_data["forge_bake_input_path"] = os.path.abspath(source_path)
+
+    # D-11: always stamp forge_bake_frame_rate — makes the .blend self-describing
+    # for debugging and feeds forge_sender/__init__.py::_resolve_frame_rate step 1.
+    # D-14 fallback: if frame_rate_label is None (Flame-side propagation failed),
+    # derive from Blender scene fps with a loud stderr warning — never silent.
+    if frame_rate_label is not None:
+        cam_data["forge_bake_frame_rate"] = str(frame_rate_label)
+    else:
+        scene_fps = (bpy.context.scene.render.fps
+                     / bpy.context.scene.render.fps_base)
+        derived_label = _closest_flame_fps_label(scene_fps)
+        print(
+            "forge_bake_frame_rate: falling back to Blender scene fps "
+            f"({scene_fps}) — Flame-side propagation failed; stamped "
+            f"{derived_label!r}",
+            file=sys.stderr,
+        )
+        cam_data["forge_bake_frame_rate"] = derived_label
 
 
 # =============================================================================
@@ -251,7 +317,15 @@ def _bake(args: argparse.Namespace) -> None:
     scene.render.resolution_x = int(data["width"])
     scene.render.resolution_y = int(data["height"])
 
-    _stamp_metadata(cam.data, scale, args.in_path, data.get("custom_properties"))
+    # D-13 preferred source: top-level `frame_rate` field on the v5 JSON
+    # (self-describing, set by the Flame hook from the Flame project fps).
+    # D-14 fallback: if absent, _stamp_metadata derives from Blender scene fps
+    # and emits a loud stderr warning — never silently stamp 24.0.
+    json_frame_rate = data.get("frame_rate")
+    frame_rate_label = str(json_frame_rate) if json_frame_rate else None
+
+    _stamp_metadata(cam.data, scale, args.in_path, data.get("custom_properties"),
+                    frame_rate_label=frame_rate_label)
 
     # Ensure the output directory exists before bpy chokes on it.
     out_abs = os.path.abspath(args.out_path)
