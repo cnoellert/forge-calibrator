@@ -57,7 +57,10 @@ Plans:
   2. Quitting Flame leaves no orphan bridge process and no stale port binding — the next Flame boot starts the bridge cleanly
   3. forge-bridge never binds to any interface other than `127.0.0.1` (confirmed by `netstat` or equivalent)
   4. Running `install.sh` on a clean machine deploys the forge-bridge launcher alongside the hook so that the next Flame start triggers the bridge automatically
-**Plans**: TBD
+**Plans:** 2 plans
+Plans:
+- [ ] 03-01-PLAN.md — install.sh plumbing: forge-bridge constants (v1.3.0 pin), env-var reads (FORGE_BRIDGE_REPO / FORGE_BRIDGE_VERSION), source-resolver + --force helpers, --help docstring sync
+- [ ] 03-02-PLAN.md — install.sh `> forge-bridge` section before `> Install`: invoke sibling installer, D-15 post-install sanity check, D-10 warn-and-continue on failure per D-09/D-11, Done-section bridge-aware next-steps
 
 ### Phase 4: E2E Validation + Docs
 **Goal**: The complete right-click→edit→send loop is validated on the production stack, and users have documentation covering what changed, how to install, and how to troubleshoot
@@ -97,5 +100,5 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 |-------|----------------|--------|-----------|
 | 1. Export Polish | 0/? | Not started | - |
 | 2. Blender Addon | 0/? | Not started | - |
-| 3. forge-bridge Deploy | 0/? | Not started | - |
+| 3. forge-bridge Deploy | 0/2 | Not started | - |
 | 4. E2E Validation + Docs | 0/? | Not started | - |
