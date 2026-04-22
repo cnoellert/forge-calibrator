@@ -1435,3 +1435,80 @@ class TestFbxToV5JsonFrameStart:
             f"expected empty frames list when frame_start above all "
             f"offset-adjusted frames; got {result['frames']!r}"
         )
+
+
+# =============================================================================
+# Group 9: fbx_to_v5_json — frame_rate top-level key emit (Plan 04.1-02)
+# =============================================================================
+
+
+class TestFbxToV5JsonFrameRateTopLevel:
+    """Tests for the top-level ``frame_rate`` key emitted by ``fbx_to_v5_json``.
+
+    Plan 04.1-02 item 5 (D-13): the Flame hook propagates the Flame project fps
+    label (e.g. "25 fps") via the v5 JSON schema as a TOP-LEVEL key — not nested
+    under ``custom_properties`` — so downstream consumers (bake_camera.py) can
+    read it without knowing the custom-properties dict shape.
+
+    The ``frame_rate`` parameter already exists on ``fbx_to_v5_json`` for FBX
+    KTime conversion purposes. This group tests that it is ALSO emitted as a
+    top-level payload key (separate from its internal KTime conversion role).
+
+    Tests:
+    - B1: frame_rate="25 fps" lands as a TOP-LEVEL key in both the returned dict
+      and the on-disk JSON (not nested under custom_properties).
+    - B2: the existing default ("23.976 fps") is emitted as a top-level key when
+      the caller uses the default (backward-compatible — v5 JSON has always been
+      self-describing about frame rate).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_b1_explicit_frame_rate_is_top_level_key(self, tmp_path):
+        """B1: frame_rate='25 fps' lands as a top-level 'frame_rate' key,
+        not nested under custom_properties."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            frame_rate="25 fps",
+        )
+        # Top-level key present with correct value.
+        assert "frame_rate" in result, "frame_rate must be a top-level key"
+        assert result["frame_rate"] == "25 fps"
+        # Must NOT be nested under custom_properties.
+        assert "custom_properties" not in result or \
+               "frame_rate" not in result.get("custom_properties", {}), \
+               "frame_rate must NOT be nested under custom_properties"
+        # On-disk JSON must also have the top-level key.
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert "frame_rate" in on_disk
+        assert on_disk["frame_rate"] == "25 fps"
+
+    def test_b2_default_frame_rate_is_top_level_key(self, tmp_path):
+        """B2: omitting frame_rate (default '23.976 fps') still emits a
+        top-level key — the default is truthy so the existing emit path fires.
+        This is intentional: v5 JSON is self-describing about frame rate."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(
+            self._FIXTURE,
+            str(json_path),
+            **self._COMMON_KWARGS,
+            # frame_rate intentionally omitted — uses default "23.976 fps"
+        )
+        assert "frame_rate" in result, (
+            "default frame_rate='23.976 fps' is truthy and must be emitted "
+            "as a top-level key for v5 JSON self-description"
+        )
+        assert result["frame_rate"] == "23.976 fps"
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert on_disk["frame_rate"] == "23.976 fps"
