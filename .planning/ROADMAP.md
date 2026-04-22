@@ -60,7 +60,7 @@ Plans:
 **Plans:** 2 plans
 Plans:
 - [x] 03-01-PLAN.md — install.sh plumbing: forge-bridge constants (v1.3.0 pin), env-var reads (FORGE_BRIDGE_REPO / FORGE_BRIDGE_VERSION), source-resolver + --force helpers, --help docstring sync
-- [ ] 03-02-PLAN.md — install.sh `> forge-bridge` section before `> Install`: invoke sibling installer, D-15 post-install sanity check, D-10 warn-and-continue on failure per D-09/D-11, Done-section bridge-aware next-steps
+- [x] 03-02-PLAN.md — install.sh `> forge-bridge` section before `> Install`: invoke sibling installer, D-15 post-install sanity check, D-10 warn-and-continue on failure per D-09/D-11, Done-section bridge-aware next-steps
 
 ### Phase 4: E2E Validation + Docs
 **Goal**: The complete right-click→edit→send loop is validated on the production stack, and users have documentation covering what changed, how to install, and how to troubleshoot
