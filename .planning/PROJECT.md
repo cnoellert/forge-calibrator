@@ -97,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-19 after initialization (brownfield import at v6.2; seamless-bridge milestone active)*
+*Last updated: 2026-04-22 after Phase 4 (E2E Validation + Docs) — README.md + docs/seamless-bridge.md + tools/smoke-test/seamless-bridge-smoke.sh delivered; DOC-02 closed. DOC-01 runtime closure deferred to after Phase 4.1 empty-camera-bake UX fix (pre-existing Phase 1/2 bug surfaced by smoke test Test 1 on fresh Camera Match solve).*
