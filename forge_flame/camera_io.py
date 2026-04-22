@@ -99,6 +99,8 @@ def export_flame_camera_to_json(
     width: int,
     height: int,
     film_back_mm: Optional[float] = None,
+    frame_rate: Optional[str] = None,
+    custom_properties: Optional[dict] = None,
 ) -> str:
     """Serialize a Flame Action camera node to the v5 JSON contract.
 
@@ -114,6 +116,21 @@ def export_flame_camera_to_json(
         film_back_mm: optional override. If None, we derive it from the
             camera's fov + focal. Pass explicitly if you want to pin a
             specific value (e.g. 36.0 for full-frame parity with Blender).
+        frame_rate: optional Flame-project fps label (e.g. "24 fps",
+            "23.976 fps"). When provided, written as a top-level
+            ``frame_rate`` key on the JSON payload. Consumed by
+            ``tools/blender/bake_camera.py::_bake`` which feeds
+            ``forge_sender/__init__.py::_resolve_frame_rate`` via the
+            ``forge_bake_frame_rate`` Blender custom property.
+            When ``None``, no ``frame_rate`` key is emitted (backward-
+            compatible with pre-v6.3 consumers).
+        custom_properties: optional dict of caller-supplied metadata to
+            stamp into the v5 JSON payload under a top-level
+            ``custom_properties`` key. Values must be JSON-serialisable.
+            See ``tools/blender/bake_camera.py::_stamp_metadata``, which
+            consumes this field on bake. When ``None`` or empty, no
+            ``custom_properties`` key is emitted (backward-compatible
+            with pre-v6.3 consumers).
 
     Returns:
         Absolute path of the written JSON file.
@@ -153,6 +170,11 @@ def export_flame_camera_to_json(
             }
         ],
     }
+
+    if custom_properties:
+        payload["custom_properties"] = dict(custom_properties)
+    if frame_rate:
+        payload["frame_rate"] = str(frame_rate)
 
     out_abs = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
