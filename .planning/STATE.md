@@ -4,8 +4,8 @@ milestone: v6.3
 milestone_name: milestone
 status: executing
 stopped_at: Phase 4 context gathered
-last_updated: "2026-04-22T22:38:58.782Z"
-last_activity: 2026-04-22 -- Phase 4.1 planning complete
+last_updated: "2026-04-22T22:56:15.482Z"
+last_activity: 2026-04-22 -- Phase 04.1 execution started
 progress:
   total_phases: 6
   completed_phases: 4
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 04 — e2e-validation-docs
+**Current focus:** Phase 04.1 — phase-4-polish-items-stereo-rig-filter-empty-camera-ux-fps-s
 
 ## Current Position
 
-Phase: 04.1
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-04-22 -- Phase 4.1 planning complete
+Phase: 04.1 (phase-4-polish-items-stereo-rig-filter-empty-camera-ux-fps-s) — EXECUTING
+Plan: 1 of 3
+Status: Executing Phase 04.1
+Last activity: 2026-04-22 -- Phase 04.1 execution started
 
 Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
