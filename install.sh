@@ -180,7 +180,13 @@ _bridge_rm_force() {
   if (( FORCE )); then
     if [[ -f "${FORGE_BRIDGE_HOOK_PATH}" ]]; then
       run "rm -f \"${FORGE_BRIDGE_HOOK_PATH}\""
-      ok "[forge-bridge] --force: removed existing ${FORGE_BRIDGE_HOOK_PATH}"
+      # Suppress the past-tense "removed" line under dry-run (per WR-03): the
+      # `run` wrapper above only printed what WOULD execute; saying "removed"
+      # here would contradict D-12 ("dry-run prints what would execute and
+      # skips"). Real runs still get the confirmation.
+      if (( ! DRY_RUN )); then
+        ok "[forge-bridge] --force: removed existing ${FORGE_BRIDGE_HOOK_PATH}"
+      fi
     fi
   fi
 }
