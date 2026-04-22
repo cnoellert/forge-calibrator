@@ -45,31 +45,44 @@ import pytest
 # at module level. We do this BEFORE importing camera_match_hook.
 # ---------------------------------------------------------------------------
 
-# Stub `flame` module
+# Stub heavy dependencies that camera_match_hook imports at module level.
+# We track which stubs we install so we can restore sys.modules after the
+# hook module is loaded — preventing stub pollution in other test modules
+# (e.g. test_image_buffer.py needs the real cv2).
+
+_STUBS_TO_INSTALL = {
+    "flame": None,
+    "cv2": MagicMock(),
+    "PySide6": MagicMock(),
+    "PySide6.QtWidgets": MagicMock(),
+    "PySide6.QtCore": MagicMock(),
+    "PySide6.QtGui": MagicMock(),
+    "PySide6.QtOpenGLWidgets": MagicMock(),
+    "forge_flame": MagicMock(),
+    "forge_flame.fbx_ascii": MagicMock(),
+    "forge_flame.fbx_io": MagicMock(),
+    "forge_flame.camera_io": MagicMock(),
+    "forge_flame.blender_bridge": MagicMock(),
+    "forge_flame.adapter": MagicMock(),
+    "forge_flame.wiretap_reader": MagicMock(),
+    "forge_core": MagicMock(),
+    "forge_core.ocio_pipeline": MagicMock(),
+}
+
+# Stub `flame` module specially so it has the right attributes.
 _fake_flame = types.ModuleType("flame")
 _fake_flame.messages = MagicMock()
 _fake_flame.batch = MagicMock()
 _fake_flame.project = MagicMock()
-sys.modules.setdefault("flame", _fake_flame)
+_STUBS_TO_INSTALL["flame"] = _fake_flame
 
-# Stub cv2
-sys.modules.setdefault("cv2", MagicMock())
+# Record which modules already existed before we touch sys.modules.
+_pre_stub_state = {k: sys.modules.get(k) for k in _STUBS_TO_INSTALL}
 
-# Stub PySide6 and all sub-modules
-for _mod in (
-    "PySide6", "PySide6.QtWidgets", "PySide6.QtCore", "PySide6.QtGui",
-    "PySide6.QtOpenGLWidgets",
-):
-    sys.modules.setdefault(_mod, MagicMock())
-
-# Stub forge_flame sub-modules used at the top of camera_match_hook
-for _mod in (
-    "forge_flame", "forge_flame.fbx_ascii", "forge_flame.fbx_io",
-    "forge_flame.camera_io", "forge_flame.blender_bridge",
-    "forge_flame.adapter", "forge_flame.wiretap_reader",
-    "forge_core", "forge_core.ocio_pipeline",
-):
-    sys.modules.setdefault(_mod, MagicMock())
+# Install stubs only for modules not already present.
+for _mod_name, _stub in _STUBS_TO_INSTALL.items():
+    if _mod_name not in sys.modules:
+        sys.modules[_mod_name] = _stub
 
 # Add repo root to path so forge_flame / forge_core imports resolve
 _REPO_ROOT = os.path.join(os.path.dirname(__file__), "..")
@@ -86,6 +99,16 @@ _spec = importlib.util.spec_from_file_location(
 )
 _hook_module = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_hook_module)
+
+# Restore sys.modules: remove stubs we installed so they don't pollute
+# other test modules collected after this file.
+for _mod_name in _STUBS_TO_INSTALL:
+    if _pre_stub_state[_mod_name] is None and _mod_name in sys.modules:
+        # We installed it; remove it.
+        del sys.modules[_mod_name]
+    elif _pre_stub_state[_mod_name] is not None:
+        # It was already there; restore the original.
+        sys.modules[_mod_name] = _pre_stub_state[_mod_name]
 
 
 # ---------------------------------------------------------------------------

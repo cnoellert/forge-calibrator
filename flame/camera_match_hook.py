@@ -1692,6 +1692,146 @@ def _val(x):
     return x.get_value() if hasattr(x, "get_value") else str(x)
 
 
+# Flame project fps labels — mirrored from forge_sender/__init__.py _FLAME_FPS_LABELS
+# and tools/blender/bake_camera.py _FLAME_FPS_LABELS. The stamp written here feeds
+# the forge_sender ladder step 1 (cam.data.get("forge_bake_frame_rate")); it MUST
+# be one of these label strings for step 1 to accept it.
+_FLAME_FPS_LABELS = (
+    ("23.976 fps", 23.976),
+    ("24 fps", 24.0),
+    ("25 fps", 25.0),
+    ("29.97 fps", 29.97),
+    ("30 fps", 30.0),
+    ("48 fps", 48.0),
+    ("50 fps", 50.0),
+    ("59.94 fps", 59.94),
+    ("60 fps", 60.0),
+)
+
+
+def _is_animated_camera(cam) -> bool:
+    """Detect whether a Flame Action camera has keyframes.
+
+    Mechanism: D-03 conservative default (bridge-offline probe deferred).
+    The probe could not be run against live Flame 2026.2.1; the scratch-FBX-count
+    path is the fallback per d03-detect-probe.json rationale:
+
+        action.export_fbx(bake_animation=True) to a temp scratch path,
+        parse via fbx_ascii to count frames. A static camera produces
+        0-1 frames (the pre-roll single keyframe); an animated camera
+        produces >= 2 frames.
+
+    Expensive (does the FBX bake it's trying to avoid as a detection step),
+    but reliable and non-crash-risk. If the mechanism raises, falls back to
+    False (static assumption). The static-assumption fallback is safe: the
+    JSON branch always produces a valid single-frame camera. The reverse —
+    treating a static camera as animated — is the bug this plan closes.
+
+    Falls back to False (static assumption) if the chosen mechanism raises.
+    Lean toward static-on-uncertainty.
+
+    Args:
+        cam: Flame Action camera node (duck-typed — must have .position attr
+             if the duck-type check is used).
+
+    Returns:
+        True if the camera appears to have keyframes, False otherwise.
+    """
+    import sys as _sys
+    try:
+        import tempfile
+        import os
+        from forge_flame import fbx_ascii as _fbx_ascii
+
+        # Access the parent Action node through the camera's container.
+        # cam is a PyActionNode; its parent action is cam.parent (Flame 2026+).
+        # If cam.parent is not available, we cannot do the scratch-FBX probe
+        # without more context — fall back to False (static assumption).
+        action = getattr(cam, "parent", None)
+        if action is None or not hasattr(action, "export_fbx"):
+            return False
+
+        with tempfile.TemporaryDirectory(prefix="forge_detect_") as scratch_dir:
+            scratch_fbx = os.path.join(scratch_dir, "probe.fbx")
+            action.export_fbx(
+                path=scratch_fbx,
+                cameras=[cam],
+                bake_animation=True,
+            )
+            if not os.path.exists(scratch_fbx):
+                return False
+            try:
+                scratch_json = os.path.join(scratch_dir, "probe.json")
+                result = _fbx_ascii.fbx_to_v5_json(
+                    scratch_fbx, scratch_json,
+                    width=0, height=0,
+                )
+                frames = result.get("frames") or []
+                # Static cameras produce 0 or 1 frame (pre-roll only).
+                # Animated cameras produce >= 2 distinct frames.
+                return len(frames) >= 2
+            except Exception:
+                return False
+    except Exception:
+        return False  # safe default — static path is non-destructive
+
+
+def _resolve_flame_project_fps_label() -> str:
+    """Return the Flame project frame rate as a _FLAME_FPS_LABELS string.
+
+    Mechanism: D-12 conservative default (bridge-offline probe deferred).
+    Attempts flame.batch.frame_rate.get_value() first (may be a NoneType
+    slot on Flame 2026.2.1 per Phase 2 D-19); falls back to '24 fps' with
+    a loud stderr warning — never silent.
+
+    D-14 fallback chain:
+        1. flame.batch.frame_rate.get_value() — may be NoneType on 2026.2.1
+        2. '24 fps' + stderr warning (ABSOLUTE LAST RESORT; never silent)
+
+    Returns a label from _FLAME_FPS_LABELS or a raw '<num> fps' string
+    if the source is a numeric with no label match within 0.1 tolerance.
+    """
+    import sys as _sys
+
+    def _numeric_to_label(raw) -> str:
+        """Coerce a raw fps value (label string or numeric) to a label."""
+        raw_str = str(raw).strip()
+        # If it's already a label string, return as-is.
+        for label, _ in _FLAME_FPS_LABELS:
+            if raw_str == label:
+                return label
+        # Try numeric coercion.
+        try:
+            fps_float = float(raw_str)
+        except (ValueError, TypeError):
+            return raw_str  # unknown format; pass through
+        for label, numeric in _FLAME_FPS_LABELS:
+            if abs(fps_float - numeric) < 0.1:
+                return label
+        # No match — stamp a raw label string; forge_sender ladder falls to step 2.
+        return f"{fps_float} fps"
+
+    try:
+        import flame as _flame
+        raw = _flame.batch.frame_rate
+        if raw is not None and hasattr(raw, "get_value"):
+            val = raw.get_value()
+            if val is not None:
+                return _numeric_to_label(val)
+        elif raw is not None and not hasattr(raw, "get_value"):
+            return _numeric_to_label(raw)
+    except Exception:
+        pass
+
+    # D-14: loud fallback, never silent.
+    print(
+        "_resolve_flame_project_fps_label: falling back to '24 fps' — "
+        "no Flame project fps source available",
+        file=_sys.stderr,
+    )
+    return "24 fps"
+
+
 def _find_action_cameras(only_action=None):
     """Return [(action_node, camera_node, label), ...] for solvable cameras.
 
@@ -2103,50 +2243,18 @@ def _export_camera_to_blender(selection):
     n_frames = 0  # populated BEFORE success=True so the finally-block cleanup doesn't race the read
     success = False
     try:
-        # --- FBX bake (unchanged; Perspective filter inside fbx_io) ---
-        try:
-            fbx_io.export_action_cameras_to_fbx(
-                action, fbx_path,
-                cameras=[cam],
-                bake_animation=True,
-            )
-        except Exception as e:
-            flame.messages.show_in_dialog(
-                title="Export Camera to Blender",
-                message=f"Failed to write FBX:\n{e}\n\n"
-                        f"Intermediate files preserved at:\n{temp_dir}",
-                type="error", buttons=["OK"])
-            return
-
-        # --- Frame offset / frame start — preserve Flame batch's
-        # start_frame AND correct for Flame's bake-animation pre-roll
-        # behavior. UAT on 260421-bhg revealed that
-        # action.export_fbx(bake_animation=True) emits an implicit
-        # PRE-ROLL at FBX KTime 0 (the camera's initial state — Flame
-        # holds the value before the first "real" key); the real
-        # per-frame samples live at KTimes 1..N, where KTime k contains
-        # the pose at source frame (start_frame + k - 1). Therefore:
-        #   frame_offset = start_frame - 1
-        #       so KTime 1 -> start_frame, KTime 2 -> start_frame + 1,
-        #       etc. (the real samples land on their correct plate
-        #       frames).
-        #   frame_start  = start_frame
-        #       so the now-offset-shifted KTime 0 (which lands at
-        #       start_frame - 1) gets dropped as pre-roll.
-        # ONE read of start_frame drives both values — do NOT duplicate
-        # the defensive try/except.
+        # --- Frame offset / frame start — read FIRST so both branches share it.
+        # start_frame drives the static branch's `frame=` kwarg AND the
+        # animated branch's frame_offset/frame_start for pre-roll clipping.
+        # ONE read of start_frame drives all three values — do NOT duplicate.
         #
-        # Fallback semantics: frame_offset=0 AND frame_start=None on
-        # error. This reproduces the strict pre-260420-uzv state
-        # (zero-based KTime stream, no clipping). Slightly worse than
-        # the 260420-uzv-only fallback used by 260421-bhg's frame_end
-        # block, but the ONLY fallback that composes cleanly — using
-        # frame_offset=0 AND frame_start=start_frame_int would silently
-        # drop every real frame if the offset path somehow failed.
-        # Paired (0, None) is the safe no-op. NEVER let an unknown
-        # PyAttribute shape crash a working export. ---
+        # Fallback semantics: frame_offset=0, frame_start=None, start_frame_int=1
+        # on error. Paired (0, None) is the safe no-op for the animated branch.
+        # start_frame_int=1 is the conservative default for the static branch.
+        # NEVER let an unknown PyAttribute shape crash a working export. ---
         frame_offset = 0
         frame_start = None
+        start_frame_int = 1  # conservative default for static-branch frame stamp
         try:
             sf = flame.batch.start_frame.get_value()
             # PyAttribute may return int, float, or string depending on
@@ -2175,32 +2283,86 @@ def _export_camera_to_blender(selection):
         except Exception:
             frame_end = None  # silent fallback; None = no clip
 
-        # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
-        # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
-        # names per D-11. Phase 2's "Send to Flame" looks these up against
-        # Flame's Action list, so they MUST match the live Flame names
-        # exactly (sanitization is only for filesystem paths above).
-        try:
-            fbx_ascii.fbx_to_v5_json(
-                fbx_path, json_path,
-                width=width, height=height,
-                film_back_mm=36.0,
-                camera_name=raw_cam_name,
-                frame_offset=frame_offset,
-                frame_start=frame_start,
-                frame_end=frame_end,
-                custom_properties={
-                    "forge_bake_action_name": raw_action_name,
-                    "forge_bake_camera_name": raw_cam_name,
-                },
-            )
-        except Exception as e:
-            flame.messages.show_in_dialog(
-                title="Export Camera to Blender",
-                message=f"Failed to convert FBX to JSON:\n{e}\n\n"
-                        f"Intermediate files preserved at:\n{temp_dir}",
-                type="error", buttons=["OK"])
-            return
+        # --- Phase 4.1 item 5: resolve Flame project fps label (D-11 always-stamp) ---
+        # Must happen before the detect-and-route branch so BOTH branches
+        # can pass fps_label through to their respective JSON writers.
+        fps_label = _resolve_flame_project_fps_label()
+
+        # --- Phase 4.1 item 2: detect-and-route (D-02/D-03) ---
+        # Static cameras skip the FBX bake + fbx_to_v5_json path (which produces
+        # an empty-frames JSON on a static camera — the bug this closes).
+        # Animated cameras keep the existing FBX path unchanged.
+        # Falls back to False (static assumption) on detection failure — safe.
+        is_animated = _is_animated_camera(cam)
+
+        if not is_animated:
+            # ---- STATIC BRANCH: single-frame JSON path ----
+            # Imports camera_io lazily (same lazy-import pattern as fbx_io above).
+            from forge_flame import camera_io
+            try:
+                camera_io.export_flame_camera_to_json(
+                    cam, json_path,
+                    frame=start_frame_int,
+                    width=width, height=height,
+                    film_back_mm=36.0,
+                    frame_rate=fps_label,                   # item 5
+                    custom_properties={                      # item 2 stamp parity
+                        "forge_bake_action_name": raw_action_name,
+                        "forge_bake_camera_name": raw_cam_name,
+                    },
+                )
+            except Exception as e:
+                flame.messages.show_in_dialog(
+                    title="Export Camera to Blender",
+                    message=f"Failed to write static camera JSON:\n{e}\n\n"
+                            f"Intermediate files preserved at:\n{temp_dir}",
+                    type="error", buttons=["OK"])
+                return
+            # Static bake is one frame.
+            n_frames = 1
+        else:
+            # ---- ANIMATED BRANCH: existing FBX bake path (unchanged except fps_label) ----
+            try:
+                fbx_io.export_action_cameras_to_fbx(
+                    action, fbx_path,
+                    cameras=[cam],
+                    bake_animation=True,
+                )
+            except Exception as e:
+                flame.messages.show_in_dialog(
+                    title="Export Camera to Blender",
+                    message=f"Failed to write FBX:\n{e}\n\n"
+                            f"Intermediate files preserved at:\n{temp_dir}",
+                    type="error", buttons=["OK"])
+                return
+
+            # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
+            # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
+            # names per D-11. Phase 2's "Send to Flame" looks these up against
+            # Flame's Action list, so they MUST match the live Flame names
+            # exactly (sanitization is only for filesystem paths above).
+            try:
+                fbx_ascii.fbx_to_v5_json(
+                    fbx_path, json_path,
+                    width=width, height=height,
+                    film_back_mm=36.0,
+                    frame_rate=fps_label,               # item 5 (animated path)
+                    camera_name=raw_cam_name,
+                    frame_offset=frame_offset,
+                    frame_start=frame_start,
+                    frame_end=frame_end,
+                    custom_properties={
+                        "forge_bake_action_name": raw_action_name,
+                        "forge_bake_camera_name": raw_cam_name,
+                    },
+                )
+            except Exception as e:
+                flame.messages.show_in_dialog(
+                    title="Export Camera to Blender",
+                    message=f"Failed to convert FBX to JSON:\n{e}\n\n"
+                            f"Intermediate files preserved at:\n{temp_dir}",
+                    type="error", buttons=["OK"])
+                return
 
         # --- Blender headless bake (unchanged) ---
         try:

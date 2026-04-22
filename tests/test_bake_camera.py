@@ -85,31 +85,69 @@ class _FakeBpy:
                 pass
 
 
+class _FakeMatrix:
+    """Minimal Matrix fake that supports the operations bake_camera.py uses
+    at module level (Rotation, Translation, matmul) without returning None."""
+
+    @staticmethod
+    def Rotation(angle, size, axis):
+        return _FakeMatrix()
+
+    @staticmethod
+    def Translation(v):
+        return _FakeMatrix()
+
+    def __matmul__(self, other):
+        return _FakeMatrix()
+
+    def __rmatmul__(self, other):
+        return _FakeMatrix()
+
+    def transposed(self):
+        return _FakeMatrix()
+
+    def to_quaternion(self):
+        # Returns a fake quaternion with w, x, y, z
+        class _FakeQuat:
+            w = x = y = z = 0.0
+        return _FakeQuat()
+
+
 class _FakeMathutils:
-    class Matrix:
-        @staticmethod
-        def Rotation(angle, size, axis):
-            return None
-        def __matmul__(self, other):
-            return self
-        def __rmatmul__(self, other):
-            return self
-        @staticmethod
-        def Translation(v):
-            return None
+    Matrix = _FakeMatrix
 
 
 # Inject stubs so the top-level `import bpy` and `from mathutils import Matrix`
 # in bake_camera.py succeed outside Blender.
+# We inject ONLY if the real module is absent — and we restore sys.modules
+# after the import so the stubs don't pollute other test modules (particularly
+# test_forge_sender_flame_math.py which uses pytest.importorskip("mathutils")
+# and would get wrong results with a fake).
 _fake_bpy = _FakeBpy()
-sys.modules.setdefault("bpy", _fake_bpy)
-sys.modules.setdefault("mathutils", _FakeMathutils())
+_had_bpy = "bpy" in sys.modules
+_had_mathutils = "mathutils" in sys.modules
+_prev_bpy = sys.modules.get("bpy")
+_prev_mathutils = sys.modules.get("mathutils")
+
+if not _had_bpy:
+    sys.modules["bpy"] = _fake_bpy
+if not _had_mathutils:
+    sys.modules["mathutils"] = _FakeMathutils()
 
 # Now import bake_camera from the tools/blender directory.
 _TOOLS_BLENDER = os.path.join(os.path.dirname(__file__), "..", "tools", "blender")
 sys.path.insert(0, _TOOLS_BLENDER)
 
 import bake_camera  # noqa: E402
+
+# Restore sys.modules to pre-stub state so other tests are not affected.
+# bake_camera is already imported and holds references to the stub objects it
+# used — those references remain valid. Other modules that import mathutils/bpy
+# after this point will either find the real module (if available) or skip.
+if not _had_bpy:
+    del sys.modules["bpy"]
+if not _had_mathutils:
+    del sys.modules["mathutils"]
 
 
 # =============================================================================
