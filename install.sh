@@ -128,12 +128,23 @@ run() {
 #      $HOME/code/forge-bridge/ — first hit wins.
 #   3. Curl fallback against the pinned FORGE_BRIDGE_VERSION tag on GitHub.
 #
-# On success, sets two globals:
-#   FORGE_BRIDGE_SOURCE_KIND  — one of: local, curl
-#   FORGE_BRIDGE_SOURCE_CMD   — the command-string that Plan 03-02's install step
-#                               will pass to `run` (see run() above). For local,
-#                               this is `bash <path>`. For curl, it is the full
-#                               `curl … | bash` pipe.
+# On success, sets three globals (SOURCE_KIND picks which of the invocation
+# forms the install-step call site uses — see the KIND switch at `step
+# "forge-bridge"` below):
+#   FORGE_BRIDGE_SOURCE_KIND   — one of: local, curl
+#   FORGE_BRIDGE_SOURCE_ARGV   — (local only) bash argv array; invoked as
+#                                `"${FORGE_BRIDGE_SOURCE_ARGV[@]}"` so the
+#                                operator-supplied clone path never flows
+#                                through `eval` (per WR-02).
+#   FORGE_BRIDGE_SOURCE_CMD    — human-readable command string for display
+#                                (used by the `[dry-run] would execute: …`
+#                                print). For curl KIND, it is ALSO the
+#                                execution form since curl|bash needs shell
+#                                pipeline semantics; the embedded
+#                                FORGE_BRIDGE_VERSION is validated against a
+#                                strict regex at script start (per WR-01), so
+#                                there is no injection surface through this
+#                                string.
 # Also prints the D-03 info line so the user knows which copy is being deployed.
 # Returns 0 on success (a source is available), 1 if no local clone found AND the
 # host is offline / curl missing (deferred — this function never probes curl; we
@@ -146,6 +157,10 @@ _resolve_forge_bridge_source() {
   if [[ -n "${FORGE_BRIDGE_REPO:-}" ]]; then
     if [[ -f "${FORGE_BRIDGE_REPO}/scripts/install-flame-hook.sh" ]]; then
       FORGE_BRIDGE_SOURCE_KIND="local"
+      # WR-02: operator-supplied path goes into an argv array, NOT an
+      # eval-ed string. The display-CMD is a quoted rendition for the
+      # dry-run "would execute" line only; it is never eval'd.
+      FORGE_BRIDGE_SOURCE_ARGV=(bash "${FORGE_BRIDGE_REPO}/scripts/install-flame-hook.sh")
       FORGE_BRIDGE_SOURCE_CMD="bash \"${FORGE_BRIDGE_REPO}/scripts/install-flame-hook.sh\""
       ok "[forge-bridge] using local clone at ${FORGE_BRIDGE_REPO}"
       # D-06: surface the clone's HEAD so pin-vs-clone drift is visible.
@@ -168,6 +183,11 @@ _resolve_forge_bridge_source() {
       "${HOME}/code/forge-bridge"; do
     if [[ -f "${candidate}/scripts/install-flame-hook.sh" ]]; then
       FORGE_BRIDGE_SOURCE_KIND="local"
+      # WR-02: argv-array form, same rationale as the explicit-override branch.
+      # The hardcoded candidate prefixes are not operator-controlled, but we
+      # keep the eval-free form uniform so the call site has a single invocation
+      # pattern for all "local" KIND cases.
+      FORGE_BRIDGE_SOURCE_ARGV=(bash "${candidate}/scripts/install-flame-hook.sh")
       FORGE_BRIDGE_SOURCE_CMD="bash \"${candidate}/scripts/install-flame-hook.sh\""
       ok "[forge-bridge] using local clone at ${candidate}"
       local head_ref
@@ -180,7 +200,10 @@ _resolve_forge_bridge_source() {
     fi
   done
 
-  # (3) curl fallback
+  # (3) curl fallback. Keeps the string form because curl|bash is a shell
+  # pipeline (argv invocation cannot express it). FORGE_BRIDGE_VERSION is
+  # validated against ^v[0-9]+\.[0-9]+\.[0-9]+(...)$ at script start per
+  # WR-01, so this interpolation is no longer an injection surface.
   FORGE_BRIDGE_SOURCE_KIND="curl"
   FORGE_BRIDGE_SOURCE_CMD="curl -fsSL https://raw.githubusercontent.com/cnoellert/forge-bridge/${FORGE_BRIDGE_VERSION}/scripts/install-flame-hook.sh | FORGE_BRIDGE_VERSION=${FORGE_BRIDGE_VERSION} bash"
   ok "[forge-bridge] fetching ${FORGE_BRIDGE_VERSION} from GitHub"
@@ -337,18 +360,34 @@ else
   # internal failure (curl 404, mkdir permission denied, python3 ast.parse fail)
   # surfaces as a non-zero exit.
   #
-  # The `if eval "..."; then ... else` construct bypasses `set -e` inside the
+  # The `if ...; then ... else` construct bypasses `set -e` inside the
   # conditional, so a non-zero exit from the sibling installer routes to the
   # `else` branch instead of aborting the outer script. No `|| true` + `$?` dance
   # needed. (Note: if the sibling's own ast.parse fails internally, we classify
   # it as "sibling installer exited non-zero" rather than a D-15-specific reason.
   # This is fine — D-10's copy doesn't require the reason to be ast-specific, and
   # the retry guidance the user sees is identical either way.)
-  if eval "$FORGE_BRIDGE_SOURCE_CMD"; then
-    : # sibling installer succeeded — fall through to D-15 sanity check below
+  #
+  # WR-02: switch on FORGE_BRIDGE_SOURCE_KIND so operator-supplied paths never
+  # flow through eval. `local` KIND invokes the argv array directly (the path
+  # is an array element, never re-parsed as shell). `curl` KIND uses eval
+  # because curl|bash is a shell pipeline that argv form cannot express — the
+  # embedded FORGE_BRIDGE_VERSION is validated against a strict semver regex
+  # at script start per WR-01, so the curl string is not an injection surface.
+  if [[ "${FORGE_BRIDGE_SOURCE_KIND}" == "local" ]]; then
+    if "${FORGE_BRIDGE_SOURCE_ARGV[@]}"; then
+      : # sibling installer succeeded — fall through to D-15 sanity check below
+    else
+      BRIDGE_OK=0
+      BRIDGE_FAIL_REASON="sibling installer exited non-zero"
+    fi
   else
-    BRIDGE_OK=0
-    BRIDGE_FAIL_REASON="sibling installer exited non-zero"
+    if eval "$FORGE_BRIDGE_SOURCE_CMD"; then
+      : # sibling installer succeeded — fall through to D-15 sanity check below
+    else
+      BRIDGE_OK=0
+      BRIDGE_FAIL_REASON="sibling installer exited non-zero"
+    fi
   fi
 fi
 
