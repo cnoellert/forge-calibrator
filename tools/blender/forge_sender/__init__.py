@@ -183,9 +183,14 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        # UI-SPEC §Panel Layout Contract: poll enables iff all five
-        # preflight conditions pass. check() returns None on pass.
-        return preflight.check(context) is None
+        # Permissive — poll() always accepts; execute() runs the full
+        # preflight check and reports errors via popup. This lets F3 /
+        # operator-search / direct bpy.ops call exercise the Tier 1
+        # failure popups (see Plan 02-04 Task 3). The Panel draws its
+        # enabled-state directly from preflight.check() and wraps the
+        # button in an explicit `col.enabled = False` block when the
+        # camera isn't Flame-baked — it does NOT rely on poll().
+        return True
 
     def execute(self, context):
         # Belt-and-braces: re-check preflight inside execute() so
@@ -313,10 +318,12 @@ class VIEW3D_PT_forge_sender(bpy.types.Panel):
             row.alert = True
             row.label(text="Not a Flame-baked camera", icon='ERROR')
             layout.separator()
-            # The Send button is still drawn; poll() returns False so
-            # Blender renders it disabled and F3-search / keymap
-            # invocation cannot trigger it either.
-            layout.operator("forge.send_to_flame", icon='EXPORT')
+            # Explicitly disable the Send button in the panel while
+            # keeping the operator itself callable via F3 / search /
+            # bpy.ops (so Plan 02-04 Task 3 can exercise the popups).
+            col = layout.column()
+            col.enabled = False
+            col.operator("forge.send_to_flame", icon='EXPORT')
 
 
 # =============================================================================
