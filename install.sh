@@ -104,6 +104,87 @@ run() {
   fi
 }
 
+# ---- forge-bridge source resolver --------------------------------------------
+# Resolves where the forge-bridge installer lives, in the priority order locked
+# in .planning/phases/03-forge-bridge-deploy/03-CONTEXT.md §D-01:
+#   1. $FORGE_BRIDGE_REPO (explicit path override) — if set AND points at a clone
+#      that contains scripts/install-flame-hook.sh, use it.
+#   2. Sibling-clone auto-detect: ../forge-bridge/, $HOME/Documents/GitHub/forge-bridge/,
+#      $HOME/code/forge-bridge/ — first hit wins.
+#   3. Curl fallback against the pinned FORGE_BRIDGE_VERSION tag on GitHub.
+#
+# On success, sets two globals:
+#   FORGE_BRIDGE_SOURCE_KIND  — one of: local, curl
+#   FORGE_BRIDGE_SOURCE_CMD   — the command-string that Plan 03-02's install step
+#                               will pass to `run` (see run() above). For local,
+#                               this is `bash <path>`. For curl, it is the full
+#                               `curl … | bash` pipe.
+# Also prints the D-03 info line so the user knows which copy is being deployed.
+# Returns 0 on success (a source is available), 1 if no local clone found AND the
+# host is offline / curl missing (deferred — this function never probes curl; we
+# optimistically construct the URL and let Plan 03-02's install step surface the
+# curl failure via D-09/D-10).
+_resolve_forge_bridge_source() {
+  local candidate
+
+  # (1) explicit FORGE_BRIDGE_REPO override
+  if [[ -n "${FORGE_BRIDGE_REPO:-}" ]]; then
+    if [[ -f "${FORGE_BRIDGE_REPO}/scripts/install-flame-hook.sh" ]]; then
+      FORGE_BRIDGE_SOURCE_KIND="local"
+      FORGE_BRIDGE_SOURCE_CMD="bash \"${FORGE_BRIDGE_REPO}/scripts/install-flame-hook.sh\""
+      ok "[forge-bridge] using local clone at ${FORGE_BRIDGE_REPO}"
+      # D-06: surface the clone's HEAD so pin-vs-clone drift is visible.
+      local head_ref
+      if head_ref=$(git -C "${FORGE_BRIDGE_REPO}" describe --tags --always --dirty 2>/dev/null); then
+        ok "[forge-bridge] local clone version: ${head_ref}"
+      else
+        warn "[forge-bridge] local clone version: (git describe failed — clone may be shallow)"
+      fi
+      return 0
+    else
+      warn "[forge-bridge] FORGE_BRIDGE_REPO=${FORGE_BRIDGE_REPO} does not contain scripts/install-flame-hook.sh — falling through to auto-detect"
+    fi
+  fi
+
+  # (2) sibling-clone auto-detect
+  for candidate in \
+      "${REPO_ROOT}/../forge-bridge" \
+      "${HOME}/Documents/GitHub/forge-bridge" \
+      "${HOME}/code/forge-bridge"; do
+    if [[ -f "${candidate}/scripts/install-flame-hook.sh" ]]; then
+      FORGE_BRIDGE_SOURCE_KIND="local"
+      FORGE_BRIDGE_SOURCE_CMD="bash \"${candidate}/scripts/install-flame-hook.sh\""
+      ok "[forge-bridge] using local clone at ${candidate}"
+      local head_ref
+      if head_ref=$(git -C "${candidate}" describe --tags --always --dirty 2>/dev/null); then
+        ok "[forge-bridge] local clone version: ${head_ref}"
+      else
+        warn "[forge-bridge] local clone version: (git describe failed — clone may be shallow)"
+      fi
+      return 0
+    fi
+  done
+
+  # (3) curl fallback
+  FORGE_BRIDGE_SOURCE_KIND="curl"
+  FORGE_BRIDGE_SOURCE_CMD="curl -fsSL https://raw.githubusercontent.com/cnoellert/forge-bridge/${FORGE_BRIDGE_VERSION}/scripts/install-flame-hook.sh | FORGE_BRIDGE_VERSION=${FORGE_BRIDGE_VERSION} bash"
+  ok "[forge-bridge] fetching ${FORGE_BRIDGE_VERSION} from GitHub"
+  return 0
+}
+
+# ---- forge-bridge --force helper ---------------------------------------------
+# Under --force, explicitly delete any previously-installed forge_bridge.py so the
+# reinstall is unambiguous. The sibling installer overwrites via plain `cp` anyway,
+# but this makes --force's intent readable in install.sh itself (per D-13).
+_bridge_rm_force() {
+  if (( FORCE )); then
+    if [[ -f "${FORGE_BRIDGE_HOOK_PATH}" ]]; then
+      run "rm -f \"${FORGE_BRIDGE_HOOK_PATH}\""
+      ok "[forge-bridge] --force: removed existing ${FORGE_BRIDGE_HOOK_PATH}"
+    fi
+  fi
+}
+
 printf "Camera Match installer\n"
 printf "  repo:       %s\n" "$REPO_ROOT"
 printf "  install to: %s\n" "$INSTALL_DIR"
