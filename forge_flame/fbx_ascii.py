@@ -873,6 +873,8 @@ def fbx_to_v5_json(
     }
     if custom_properties:
         payload["custom_properties"] = dict(custom_properties)
+    if frame_rate:
+        payload["frame_rate"] = str(frame_rate)
 
     out_abs = os.path.abspath(out_json_path)
     os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)
