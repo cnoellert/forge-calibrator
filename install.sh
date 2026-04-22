@@ -281,6 +281,91 @@ if (( PREFLIGHT_FAIL )); then
   exit 1
 fi
 
+# ---- forge-bridge install (Phase 3: BRG-01/02/03/04) --------------------------
+# Runs BEFORE the Camera Match install (per D-07) so bridge-install failures
+# surface in terminal output BEFORE "camera_match installed" — clearer failure
+# semantics than the reverse order. If the bridge install fails, we warn and
+# continue: VP-solve + v6.2 static round-trip do not need forge-bridge, so
+# deploying Camera Match alone is still useful. Only v6.3 Send-to-Flame breaks
+# until the bridge is deployed (the Blender addon's Transport Tier popup already
+# covers that runtime failure mode — see .planning/phases/02-blender-addon/).
+#
+# D-14 reminder: this section does NOT try to start Flame or curl 127.0.0.1:9999.
+# BRG-01/BRG-02 live verification is Phase 4's E2E smoke test. Here we only
+# verify the hook FILE lands at FORGE_BRIDGE_HOOK_PATH and parses as Python.
+step "forge-bridge"
+BRIDGE_OK=1
+BRIDGE_FAIL_REASON=""
+
+# D-01/D-03/D-06: resolve source. Always succeeds (either local hit or curl command
+# constructed). Sibling installer not yet invoked.
+_resolve_forge_bridge_source
+
+# D-13: --force ⇒ rm -f the old hook file before invoking the sibling installer.
+_bridge_rm_force
+
+# D-12: dry-run prints what would execute and skips. Note: `run` already handles
+# dry-run for the sibling-installer invocation itself, but we additionally print
+# the [dry-run] would-execute line so the user sees WHICH installer path (local
+# vs curl) would run.
+if (( DRY_RUN )); then
+  printf "    %s[dry-run]%s would execute: %s\n" "$C_DIM" "$C_END" "$FORGE_BRIDGE_SOURCE_CMD"
+else
+  # Invoke the sibling installer. Failure ⇒ mark bridge failed, remember the reason,
+  # but do NOT exit (D-09). The sibling installer uses `set -euo pipefail`, so any
+  # internal failure (curl 404, mkdir permission denied, python3 ast.parse fail)
+  # surfaces as a non-zero exit.
+  #
+  # The `if eval "..."; then ... else` construct bypasses `set -e` inside the
+  # conditional, so a non-zero exit from the sibling installer routes to the
+  # `else` branch instead of aborting the outer script. No `|| true` + `$?` dance
+  # needed. (Note: if the sibling's own ast.parse fails internally, we classify
+  # it as "sibling installer exited non-zero" rather than a D-15-specific reason.
+  # This is fine — D-10's copy doesn't require the reason to be ast-specific, and
+  # the retry guidance the user sees is identical either way.)
+  if eval "$FORGE_BRIDGE_SOURCE_CMD"; then
+    : # sibling installer succeeded — fall through to D-15 sanity check below
+  else
+    BRIDGE_OK=0
+    BRIDGE_FAIL_REASON="sibling installer exited non-zero"
+  fi
+fi
+
+# D-15: post-install sanity check. Skip under --dry-run (nothing was installed).
+# Skip if we already know the bridge failed (no point checking a file we didn't try
+# to install). This is the belt-and-suspenders check: the sibling installer already
+# does its own ast.parse at lines 62-67 of install-flame-hook.sh, but running it
+# again in OUR installer gives us clear ownership of the failure classification.
+if (( ! DRY_RUN )) && (( BRIDGE_OK )); then
+  if [[ ! -f "$FORGE_BRIDGE_HOOK_PATH" ]]; then
+    BRIDGE_OK=0
+    BRIDGE_FAIL_REASON="hook not found at $FORGE_BRIDGE_HOOK_PATH after install"
+  elif ! python3 -c "import ast, sys; ast.parse(open(sys.argv[1]).read())" "$FORGE_BRIDGE_HOOK_PATH" >/dev/null 2>&1; then
+    BRIDGE_OK=0
+    BRIDGE_FAIL_REASON="hook at $FORGE_BRIDGE_HOOK_PATH failed python3 ast.parse sanity check"
+  fi
+fi
+
+# Report outcome. On success, single ok line + fall through to Camera Match install.
+# On failure, emit the D-10 warning VERBATIM as a SINGLE paragraph (NOT two `warn`
+# calls — see plan's <interfaces> block for rationale). BRIDGE_FAIL_REASON fills
+# the ${reason} slot; FORGE_BRIDGE_VERSION fills the retry-hint URL tag.
+if (( DRY_RUN )); then
+  ok "[forge-bridge] dry-run complete — skipped actual install and sanity check"
+elif (( BRIDGE_OK )); then
+  ok "[forge-bridge] installed at $FORGE_BRIDGE_HOOK_PATH"
+  ok "[forge-bridge] next Flame boot will spawn the bridge on http://127.0.0.1:9999 (verification deferred to Phase 4 E2E per D-14)"
+else
+  # D-10: this warning copy is the contractual user-facing message on failure.
+  # Any edit here is a user-visible breaking change — treat as a CONTEXT.md update.
+  # Emitted as a single bare `printf` (not `warn`) to avoid the double `  ! ` prefix
+  # collision between the `warn` helper and the embedded `[WARN]` token, and to
+  # preserve D-10's single-paragraph contract. Writes to stderr to match the
+  # `warn`/`err` convention. Uses `$C_WARN`/`$C_END` so TTY colouring is consistent.
+  printf "  %s[WARN]%s forge-bridge install skipped (%s). VP-solve and v6.2 static round-trip still work. v6.3 Send-to-Flame will fail with \"forge-bridge not reachable at http://127.0.0.1:9999\" until the bridge is deployed. To retry: FORGE_BRIDGE_REPO=<path> ./install.sh   OR   curl -fsSL https://raw.githubusercontent.com/cnoellert/forge-bridge/%s/scripts/install-flame-hook.sh | bash\n" \
+    "$C_WARN" "$C_END" "$BRIDGE_FAIL_REASON" "$FORGE_BRIDGE_VERSION" >&2
+fi
+
 # ---- target dir + existing install -------------------------------------------
 step "Install"
 TARGET_HOOK="$INSTALL_DIR/camera_match.py"
