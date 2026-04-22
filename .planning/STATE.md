@@ -71,11 +71,11 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- Phase 1 supplement: stamp `forge_bake_frame_rate` in `tools/blender/bake_camera.py` (D-19 recovery — sourced from `bpy.context.scene.render.fps / fps_base` at bake time). Low priority: Plan 02-03's addon ladder has fallback #2 covering this case, so this is additive robustness not a blocker.
-- Phase 4 polish: filter `import_fbx_to_action` return list before popup enumeration (drop FBX-internal nodes like `RootNode_Scene5` and stereo-rig siblings).
-- Phase 4 investigation: reproduce the Task 5 Flame crash with fresh batch + clean state; capture the error dialog this time.
-- Phase 4 polish: empty-camera Flame→Blender bake UX (currently fails loud with `no frames in JSON`; should either emit a single-frame static keyframe or surface a clearer message).
-- Optional: address 2 warnings from code review (02-REVIEW.md) — fail loud on stamped-but-unsupported `forge_bake_frame_rate`, add defense-in-depth fps validation in the Flame-side template. Run `/gsd-code-review-fix 02` to auto-apply.
+All "Phase 4 polish" items previously listed here have been bucketed into **Phase 4.1** (inserted 2026-04-22 after Phase 4 discuss-phase). See `.planning/ROADMAP.md` §"Phase 4.1: Phase 4 polish items (INSERTED)" for the canonical list. Phase 4 itself stays scoped to DOC-01 (E2E smoke test) + DOC-02 (user docs) only.
+
+### Roadmap Evolution
+
+- Phase 4.1 inserted after Phase 4 on 2026-04-22: Phase 4 polish items bucket (stereo-rig filter, empty-camera UX, crash repro, code-review warnings, fps stamping). Rationale: Phase 4's discuss-phase locked scope to docs+validation only; pre-existing polish items tagged "Phase 4" in Phase 1-2 summaries needed a home that doesn't bloat Phase 4. Priority set after Phase 4 smoke test surfaces which polish items actually block v6.3 ship.
 
 ### Blockers/Concerns
 

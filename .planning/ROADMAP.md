@@ -71,6 +71,24 @@ Plans:
   2. A user reading the documentation (README section or `docs/seamless-bridge.md`) can install the Blender addon, understand how the forge-bridge autostart works, and follow at least three troubleshooting recipes (bridge not running, addon missing metadata, import failure)
 **Plans**: TBD
 
+### Phase 4.1: Phase 4 polish items (INSERTED)
+
+**Goal:** Bucket for polish items captured during Phases 1-3 that were tagged "Phase 4 polish" in SUMMARY/REVIEW artifacts but don't belong in Phase 4's docs+validation scope. Run the Phase 4 E2E smoke test first; any items it surfaces as blocking for v6.3 ship get prioritized, others ride to v2.
+
+**Polish items already captured (not exhaustive — Phase 4 smoke test may add more):**
+1. Filter `import_fbx_to_action` return list before popup enumeration (drop FBX-internal nodes like `RootNode_Scene5` and stereo-rig siblings) — Phase 2 02-04-SUMMARY follow-up
+2. Empty-camera Flame→Blender bake UX (currently fails loud with "no frames in JSON"; emit single-frame static keyframe or surface clearer message) — Phase 2 follow-up
+3. Reproduce the Task 5 Flame crash with fresh batch + clean state; capture the error dialog — Phase 2 investigation
+4. Address 2 warnings from Phase 2 code review (02-REVIEW.md) — fail-loud on stamped-but-unsupported `forge_bake_frame_rate`, defense-in-depth fps validation in Flame-side template. Auto-fix path: `/gsd-code-review-fix 02`
+5. Phase 1 supplement: stamp `forge_bake_frame_rate` in `tools/blender/bake_camera.py` (D-19 recovery — source from `bpy.context.scene.render.fps / fps_base` at bake time). Additive robustness; Plan 02-03 addon fallback #2 already covers this.
+
+**Requirements**: None (no formal requirement IDs — these are polish / defense-in-depth items). Success criterion is "the smoke-test-surfaced blocking subset is addressed before v6.3 ships; the rest is documented as deferred-to-v2."
+**Depends on:** Phase 4 (needs Phase 4 smoke test results to prioritize; can run in parallel with Phase 4 docs if useful)
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run `/gsd-plan-phase 4.1` after Phase 4 smoke test to break down)
+
 ## Backlog
 
 ### Phase 999.1: Improve multi-camera picker UX (BACKLOG)
