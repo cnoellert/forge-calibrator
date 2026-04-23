@@ -1228,6 +1228,24 @@ def _mutate_template_with_payload(
         _set_property70(fov_node, "d|FieldOfView", "FieldOfView", "", "A",
                         [fov_vals[0]])
 
+    # Update Takes::Take::LocalTime and Takes::Take::ReferenceTime to span
+    # the full animation range. The template hard-codes a single-frame
+    # value (KTime for frame 1 at 23.976 fps). If left unchanged, Flame's
+    # import_fbx clips any keyframe with KTime > LocalTime end — producing
+    # a silent "no keyframes" result for multi-frame cameras on the
+    # Blender->Flame return trip.
+    #
+    # Both fields carry a (start, end) pair where start is always 0
+    # (the FBX convention) and end is the KTime of the last keyframe.
+    last_ktime = times[-1]  # times list was built above from payload frames
+    takes_node = next((n for n in tree if n.name == "Takes"), None)
+    if takes_node is not None:
+        for take in takes_node.find_all("Take"):
+            for child in take.children:
+                if child.name in ("LocalTime", "ReferenceTime"):
+                    # Values are [start_ktime, end_ktime]. Preserve start.
+                    child.values = [child.values[0], last_ktime]
+
 
 def _payload_to_fbx(
     payload,

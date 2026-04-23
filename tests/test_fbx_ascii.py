@@ -1675,3 +1675,188 @@ class TestFlameRotationNegationContract:
             f"rotation); got {got}. If this fails, either the write-side "
             f"negation or the read-side negation has drifted."
         )
+
+
+# =============================================================================
+# Group 12: v5_json_to_fbx — Takes section LocalTime/ReferenceTime update
+# (Blender→Flame animated camera return trip, debug session
+# animated-camera-return-trip-no-keyframes)
+# =============================================================================
+
+
+class TestWriterTakesLocalTime:
+    """The FBX Takes section must reflect the actual animation range so
+    Flame's import_fbx knows the full keyframe extent.
+
+    Root cause: _mutate_template_with_payload rewrote AnimCurve nodes
+    correctly for multi-frame payloads but left the Takes::Take::LocalTime
+    and Takes::Take::ReferenceTime fields at the template's hard-coded
+    single-frame value (KTime for frame 1 at 23.976 fps = 1926347345).
+    Flame's import_fbx clips keyframes outside [0, LocalTime], so any
+    frame > 1 was silently discarded — the camera arrived in Flame as a
+    static single-frame pose.
+
+    Fix: _mutate_template_with_payload must update LocalTime and
+    ReferenceTime to ktime_from_frame(last_frame_number, frame_rate).
+
+    Tests:
+    - A: 10-frame payload at 24 fps — LocalTime/ReferenceTime must equal
+      ktime_from_frame(10, "24 fps").
+    - B: single-frame payload at 24 fps — LocalTime/ReferenceTime must
+      equal ktime_from_frame(1, "24 fps") (regression guard on the
+      single-frame path, which worked before the fix).
+    - C: 3-frame payload at 25 fps — verifies non-24-fps frame rate label
+      is used in the KTime computation (not hard-coded 24 fps).
+    - D: non-zero start frame (frames [5, 10, 20]) — LocalTime must use
+      the LAST frame number, not (last - first) or frame_count.
+    """
+
+    def _payload(self, frame_numbers, *, fps_label="24 fps"):
+        """Build a minimal v5 payload for the given frame numbers."""
+        return {
+            "width": 1920,
+            "height": 1080,
+            "film_back_mm": 36.0,
+            "frames": [
+                {
+                    "frame": f,
+                    "position": [0.0, 0.0, 4000.0],
+                    "rotation_flame_euler": [0.0, 0.0, 0.0],
+                    "focal_mm": 35.0,
+                }
+                for f in frame_numbers
+            ],
+        }
+
+    def _takes_local_time(self, fbx_text):
+        """Return the (start, end) integer pair from Takes::LocalTime."""
+        import re
+        m = re.search(r'Takes:\s*\{.*?LocalTime:\s*(\d+),(\d+)',
+                      fbx_text, re.DOTALL)
+        assert m is not None, (
+            "LocalTime not found in Takes section. "
+            "FBX excerpt (last 500 chars): " + fbx_text[-500:]
+        )
+        return int(m.group(1)), int(m.group(2))
+
+    def _takes_reference_time(self, fbx_text):
+        """Return the (start, end) integer pair from Takes::ReferenceTime."""
+        import re
+        m = re.search(r'Takes:\s*\{.*?ReferenceTime:\s*(\d+),(\d+)',
+                      fbx_text, re.DOTALL)
+        assert m is not None, (
+            "ReferenceTime not found in Takes section. "
+            "FBX excerpt (last 500 chars): " + fbx_text[-500:]
+        )
+        return int(m.group(1)), int(m.group(2))
+
+    def test_a_ten_frame_payload_localtime_matches_last_frame(self, tmp_path):
+        """Test A: 10-frame payload — LocalTime end must be the KTime for
+        frame 10 at 24 fps (19244232500), NOT the template's single-frame
+        value (1926347345 at ~23.976 fps).
+
+        This is the primary regression test for the Blender->Flame no-keyframes
+        bug: Flame clips any keyframe with KTime > LocalTime end, so if this
+        value is wrong, all frames after frame 1 are silently discarded and
+        the camera arrives in Flame as a static single-frame pose."""
+        payload = self._payload(list(range(1, 11)))
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        _, lt_end = self._takes_local_time(fbx_text)
+        expected = ktime_from_frame(10, "24 fps")
+        assert lt_end == expected, (
+            f"Takes LocalTime end must be ktime_from_frame(10, '24 fps') = "
+            f"{expected}; got {lt_end}. This means Flame will clip all "
+            f"keyframes after frame 1 and the camera will have no animation."
+        )
+
+    def test_a_ten_frame_payload_referencetime_matches_last_frame(self, tmp_path):
+        """Test A (mirror): ReferenceTime must equal LocalTime — Flame uses
+        both fields to determine the action import time range."""
+        payload = self._payload(list(range(1, 11)))
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        _, lt_end = self._takes_local_time(fbx_text)
+        _, rt_end = self._takes_reference_time(fbx_text)
+        assert lt_end == rt_end, (
+            f"Takes ReferenceTime end ({rt_end}) must equal LocalTime end "
+            f"({lt_end}). Flame uses both fields for the animation range."
+        )
+
+    def test_b_single_frame_localtime_unchanged(self, tmp_path):
+        """Test B: single-frame payload at 24 fps — LocalTime end must be
+        ktime_from_frame(1, '24 fps') = 1924423250, not the template's
+        23.976-fps value (1926347345).
+
+        This is a regression guard: a static camera should still produce a
+        correct 1-frame FBX, and its KTime must match the caller's frame_rate,
+        not the template's default 23.976 fps."""
+        payload = self._payload([1])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        _, lt_end = self._takes_local_time(fbx_text)
+        expected = ktime_from_frame(1, "24 fps")
+        assert lt_end == expected, (
+            f"Single-frame Takes LocalTime end must be "
+            f"ktime_from_frame(1, '24 fps') = {expected}; got {lt_end}."
+        )
+
+    def test_c_non_24fps_uses_correct_frame_rate(self, tmp_path):
+        """Test C: 3-frame payload at 25 fps — LocalTime end must be
+        ktime_from_frame(3, '25 fps'), NOT the 24-fps value. Verifies
+        the frame_rate kwarg is plumbed into the KTime computation, not
+        hard-coded."""
+        payload = self._payload([1, 2, 3])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="25 fps")
+
+        fbx_text = fbx_out.read_text()
+        _, lt_end = self._takes_local_time(fbx_text)
+        expected = ktime_from_frame(3, "25 fps")
+        wrong_24fps = ktime_from_frame(3, "24 fps")
+        assert lt_end == expected, (
+            f"3-frame at 25 fps: Takes LocalTime end must be "
+            f"ktime_from_frame(3, '25 fps') = {expected}; got {lt_end}. "
+            f"(24 fps value would be {wrong_24fps} — if you see that, the "
+            f"frame_rate kwarg is not reaching the Takes KTime computation.)"
+        )
+
+    def test_d_non_zero_start_frame_uses_last_frame(self, tmp_path):
+        """Test D: frames [5, 10, 20] — LocalTime end must be
+        ktime_from_frame(20, '24 fps'), not ktime_from_frame(15, ...) or
+        ktime_from_frame(3, ...) (frame delta or frame count). Verifies
+        that the ABSOLUTE last frame number is used, not a relative count."""
+        payload = self._payload([5, 10, 20])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        _, lt_end = self._takes_local_time(fbx_text)
+        expected = ktime_from_frame(20, "24 fps")
+        assert lt_end == expected, (
+            f"Frames [5, 10, 20]: Takes LocalTime end must be "
+            f"ktime_from_frame(20, '24 fps') = {expected}; got {lt_end}. "
+            f"The last frame number (20), not frame count (3) or delta "
+            f"(15), must be used."
+        )
