@@ -72,6 +72,33 @@ class TestBuildPayload:
         body = transport.build_payload("{}", frame_rate="23.976 fps")
         assert 'tempfile.mkdtemp(prefix="forge_send_")' in body["code"]
 
+    def test_v5_json_str_to_fbx_called_with_pixel_to_units_1(self):
+        """Pin the unit-scale contract for the Blender→Flame direction.
+
+        forge_sender.flame_math.build_v5_payload emits JSON position in
+        FBX units (it multiplies Blender-world coords by forge_bake_scale
+        to restore the values originally read via fbx_to_v5_json, which
+        emits FBX units per its docstring). v5_json_str_to_fbx's default
+        pixel_to_units=0.1 assumes Flame-PIXEL input and divides by 10
+        to reach FBX units. Using the default on the return trip
+        double-scales: input FBX units get ANOTHER 0.1, Flame's
+        import_fbx applies 10x on the way in, net = 1/10. Observed
+        live on 2026-04-23: position values came back exactly 10x
+        smaller than the original before this fix landed.
+
+        Contract: the _FLAME_SIDE_TEMPLATE MUST pass pixel_to_units=1.0
+        so Lcl Translation is written unchanged, and Flame's
+        unit_to_pixels=10 on import correctly undoes the 10x scale the
+        Flame-side export_fbx applied in the opposite direction."""
+        body = transport.build_payload("{}", frame_rate="23.976 fps")
+        code = body["code"]
+        assert "pixel_to_units=1.0" in code, (
+            "transport.py's _FLAME_SIDE_TEMPLATE must call "
+            "v5_json_str_to_fbx with pixel_to_units=1.0. Dropping this "
+            "kwarg lets the default 0.1 re-apply to data already in FBX "
+            "units, so returned positions are 10x too small."
+        )
+
     def test_zero_match_error_message(self):
         body = transport.build_payload("{}", frame_rate="23.976 fps")
         code = body["code"]
@@ -273,7 +300,7 @@ def _apply_filter(nodes):
 
     class _FakeFbxAscii:
         @staticmethod
-        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):
+        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):
             pass  # no-op
 
     import tempfile as _tempfile
@@ -407,7 +434,7 @@ def _exec_template_with_fakes(
 
     class _FakeFbxAscii:
         @staticmethod
-        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):  # noqa: ARG004
+        def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):  # noqa: ARG004
             # no-op; just create the file so the template doesn't error
             open(fbx_path, "w").write("")  # noqa: WPS515
 
@@ -556,7 +583,7 @@ class TestInstrumentationLogging:
 
         class _FakeFbxAscii2:
             @staticmethod
-            def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate):  # noqa: ARG004
+            def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):  # noqa: ARG004
                 open(fbx_path, "w").write("")  # noqa: WPS515
 
         def _tracking_mkdtemp(*args, **kwargs):

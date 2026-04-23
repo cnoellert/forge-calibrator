@@ -122,8 +122,21 @@ def _forge_send():
     _log("step=start")
     try:
         _log("step=pre_fbx_parse fbx_path=%r" % fbx_path)
+        # pixel_to_units=1.0 — the v5 JSON built by forge_sender.flame_math.
+        # build_v5_payload already expresses position in FBX units (it
+        # multiplied the Blender world-space coords by forge_bake_scale to
+        # restore the FBX-unit values we originally read via fbx_to_v5_json).
+        # v5_json_str_to_fbx's default pixel_to_units=0.1 assumes the caller
+        # is passing Flame-PIXELS and divides by 10 to reach FBX units.
+        # Applying that default here would double-scale: input FBX units
+        # get another 0.1, Flame's import_fbx applies 10x on the way in,
+        # net = 1/10. Positions came back 10x smaller than the original
+        # before this fix. Pass 1.0 so the Lcl Translation written is
+        # exactly the JSON value, and Flame's unit_to_pixels=10 on import
+        # correctly undoes the 10x scale applied on the Flame export side.
         fbx_ascii.v5_json_str_to_fbx(
             v5_json_str, fbx_path, frame_rate=frame_rate,
+            pixel_to_units=1.0,
         )
         _log("step=post_fbx_parse")
 
