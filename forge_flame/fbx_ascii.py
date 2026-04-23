@@ -683,7 +683,7 @@ def _merge_curves(
         return [{
             "frame": frame,
             "position": [sp[0], sp[1], sp[2]],
-            "rotation_flame_euler": [sr[0], sr[1], sr[2]],
+            "rotation_flame_euler": [-sr[0], -sr[1], -sr[2]],
             "focal_mm": focal_mm,
         }]
 
@@ -713,9 +713,9 @@ def _merge_curves(
         px = _sample_at(tx, ktime, cam.static_position[0])
         py = _sample_at(ty, ktime, cam.static_position[1])
         pz = _sample_at(tz, ktime, cam.static_position[2])
-        rx_deg = _sample_at(rx, ktime, cam.static_rotation[0])
-        ry_deg = _sample_at(ry, ktime, cam.static_rotation[1])
-        rz_deg = _sample_at(rz, ktime, cam.static_rotation[2])
+        rx_deg = -_sample_at(rx, ktime, cam.static_rotation[0])
+        ry_deg = -_sample_at(ry, ktime, cam.static_rotation[1])
+        rz_deg = -_sample_at(rz, ktime, cam.static_rotation[2])
         fov_deg = _sample_at(fov, ktime, cam.field_of_view)
         focal_mm = _focal_from_fov_filmback(fov_deg, film_back_mm)
 
@@ -1138,9 +1138,9 @@ def _mutate_template_with_payload(
     ty_vals = [float(kf["position"][1]) * pos_scale for kf in frames]
     tz_vals = [float(kf["position"][2]) * pos_scale for kf in frames]
 
-    rx_vals = [float(kf["rotation_flame_euler"][0]) for kf in frames]
-    ry_vals = [float(kf["rotation_flame_euler"][1]) for kf in frames]
-    rz_vals = [float(kf["rotation_flame_euler"][2]) for kf in frames]
+    rx_vals = [-float(kf["rotation_flame_euler"][0]) for kf in frames]
+    ry_vals = [-float(kf["rotation_flame_euler"][1]) for kf in frames]
+    rz_vals = [-float(kf["rotation_flame_euler"][2]) for kf in frames]
 
     fov_vals: list[float] = []
     for kf in frames:

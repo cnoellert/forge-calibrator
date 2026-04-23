@@ -1512,3 +1512,166 @@ class TestFbxToV5JsonFrameRateTopLevel:
         with open(json_path) as f:
             on_disk = json.load(f)
         assert on_disk["frame_rate"] == "23.976 fps"
+
+
+# =============================================================================
+# Group 11: Flame import_fbx rotation negation contract (Phase 04.1 hotfix)
+# =============================================================================
+
+
+class TestFlameRotationNegationContract:
+    """Flame 2026.2.1's ``import_fbx`` negates all three LclRotation Euler
+    components when storing ``cam.rotation`` — i.e. writing
+    ``LclRotation=(lx, ly, lz)`` produces ``cam.rotation=(-lx, -ly, -lz)``
+    after import. Live-verified 2026-04-22: original cam.rotation
+    (27.3, -24.3, 0.7) round-tripped as (-27.3, 24.3, -0.7) in a pre-fix
+    Send-to-Flame export; user confirmed rotation is correct after the
+    double-negation fix landed on both the write and read paths.
+
+    These tests pin the external FBX contract so a future refactor that
+    removes both negations does not silently re-break the live Flame
+    round-trip. The round-trip tests in ``TestWriter`` only catch a
+    regression if *one* side is removed — if both sides are removed,
+    write→read still cancels to identity even though the live Flame
+    import would be wrong.
+    """
+
+    def _payload_rot(self, rotation):
+        """Single-frame payload with the given rotation_flame_euler."""
+        return {
+            "width": 1920,
+            "height": 1080,
+            "film_back_mm": 16.0,
+            "frames": [{
+                "frame": 0,
+                "position": [0.0, 0.0, 4000.0],
+                "rotation_flame_euler": list(rotation),
+                "focal_mm": 35.0,
+            }],
+        }
+
+    def test_write_emits_negated_lcl_rotation_for_flame_import(self, tmp_path):
+        """Given rotation_flame_euler=(27.3, -24.3, 0.7) (the user's
+        observed failing case from Phase 04.1 verification), the emitted
+        FBX's static LclRotation property must carry (-27.3, 24.3, -0.7).
+        Flame's import_fbx negates during import, so the final cam.rotation
+        matches the input rotation_flame_euler."""
+        payload = self._payload_rot([27.3, -24.3, 0.7])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(json.dumps(payload))
+        fbx_out = tmp_path / "out.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out), camera_name="Cam")
+
+        fbx_text = fbx_out.read_text()
+        # Locate the static Lcl Rotation property line. Format is:
+        #   P: "Lcl Rotation","Lcl Rotation","","A+",<x>,<y>,<z>
+        import re
+        m = re.search(
+            r'P:\s*"Lcl Rotation","Lcl Rotation","","A\+",\s*([\d\.\-eE]+),'
+            r'\s*([\d\.\-eE]+),\s*([\d\.\-eE]+)',
+            fbx_text,
+        )
+        assert m is not None, (
+            "FBX output does not contain a static Lcl Rotation property. "
+            "Excerpt:\n" + fbx_text[:2000]
+        )
+        emitted = [float(m.group(1)), float(m.group(2)), float(m.group(3))]
+        assert emitted == pytest.approx([-27.3, 24.3, -0.7], abs=1e-5), (
+            f"Lcl Rotation must be negated in the FBX so Flame's import_fbx "
+            f"re-negates back to the input. Got {emitted}, expected "
+            f"[-27.3, 24.3, -0.7]."
+        )
+
+    def test_write_emits_negated_anim_curve_rotation_defaults(self, tmp_path):
+        """Same contract on the AnimCurveNode::R d|X,Y,Z Default values —
+        they carry the same static rotation and must also be negated so
+        Flame's AnimationCurve import produces the correct cam.rotation."""
+        payload = self._payload_rot([27.3, -24.3, 0.7])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(json.dumps(payload))
+        fbx_out = tmp_path / "out.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out), camera_name="Cam")
+
+        fbx_text = fbx_out.read_text()
+        # AnimationCurve KeyValueFloat lines carry the per-frame samples.
+        # For a single-frame payload, there is exactly one value per axis.
+        # The curves are connected to AnimCurveNode::R properties d|X,Y,Z.
+        # We inspect the concrete numeric arrays written for each axis.
+        import re
+        # Each rotation curve appears as:
+        #   AnimationCurve: <id>, "AnimCurve::", "" {
+        #       ...
+        #       KeyValueFloat: *1 { a: <val> }
+        #       ...
+        #   }
+        # and is connected via a Connections: OP "Channel" to the
+        # AnimCurveNode::R with sub-channel "d|X"/"d|Y"/"d|Z".
+        #
+        # Rather than untangle the ID graph, we check the weaker but
+        # sufficient invariant: the FBX text contains the three negated
+        # values on a single-frame payload. The positive values must NOT
+        # appear as KeyValueFloat samples.
+        #
+        # (The stronger invariant — value X lands on curve X — is covered
+        # by the round-trip tests in TestWriter.)
+        def _keyvalue_samples(text):
+            return set(re.findall(r'KeyValueFloat:\s*\*\d+\s*\{\s*a:\s*([\-\d\.eE,\s]+)\s*\}', text))
+
+        samples = _keyvalue_samples(fbx_text)
+        flat_values = []
+        for s in samples:
+            for tok in s.split(','):
+                tok = tok.strip()
+                if tok:
+                    try:
+                        flat_values.append(float(tok))
+                    except ValueError:
+                        pass
+        # Negated values must be present.
+        for expected in (-27.3, 24.3, -0.7):
+            assert any(abs(v - expected) < 1e-4 for v in flat_values), (
+                f"Expected KeyValueFloat sample with value {expected} not "
+                f"found in FBX. Samples: {sorted(flat_values)[:20]}..."
+            )
+        # Unnegated values must NOT appear as rotation samples. (27.3 and
+        # 0.7 and -24.3 would indicate the double-negation was removed and
+        # the live Flame round-trip would break.)
+        for forbidden in (27.3, -24.3, 0.7):
+            close_matches = [v for v in flat_values if abs(v - forbidden) < 1e-4]
+            assert not close_matches, (
+                f"Unnegated rotation sample {forbidden} found in FBX — this "
+                f"means the negation on write was removed. The live Flame "
+                f"import_fbx round-trip will break. Samples matching: "
+                f"{close_matches}"
+            )
+
+    def test_read_negates_when_reading_back_flame_export(self, tmp_path):
+        """The read path must also negate — a Flame-emitted FBX has
+        already-negated LclRotation (because Flame's export_fbx applies
+        its own convention), so when our reader extracts cam.rotation we
+        re-negate to recover the user-visible rotation.
+
+        Concretely: build a payload whose emitted FBX has LclRotation=
+        (-27.3, 24.3, -0.7); parse that FBX back with fbx_to_v5_json;
+        assert the returned rotation_flame_euler equals (27.3, -24.3, 0.7).
+        """
+        # Start from the user-visible rotation, write (the writer negates
+        # on our behalf), then read back (the reader negates again).
+        payload = self._payload_rot([27.3, -24.3, 0.7])
+        json_in = tmp_path / "in.json"
+        json_in.write_text(json.dumps(payload))
+        fbx_out = tmp_path / "out.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out), camera_name="Cam")
+
+        data = fbx_to_v5_json(
+            str(fbx_out), str(tmp_path / "back.json"),
+            width=1920, height=1080,
+            camera_name="Cam", film_back_mm=16.0,
+        )
+        assert len(data["frames"]) == 1
+        got = data["frames"][0]["rotation_flame_euler"]
+        assert got == pytest.approx([27.3, -24.3, 0.7], abs=1e-5), (
+            f"Expected round-trip to return (27.3, -24.3, 0.7) (user-visible "
+            f"rotation); got {got}. If this fails, either the write-side "
+            f"negation or the read-side negation has drifted."
+        )
