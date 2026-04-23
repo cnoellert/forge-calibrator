@@ -1716,16 +1716,26 @@ def _is_animated_camera(cam) -> bool:
     The probe could not be run against live Flame 2026.2.1; the scratch-FBX-count
     path is the fallback per d03-detect-probe.json rationale:
 
-        action.export_fbx(bake_animation=True) to a temp scratch path,
-        parse via fbx_ascii to count frames. A static camera produces
-        0-1 frames (the pre-roll single keyframe); an animated camera
-        produces >= 2 frames.
+        Bake a scratch FBX via action.export_fbx(bake_animation=True),
+        parse via fbx_ascii to count frames. A static camera baked with
+        bake_animation=True produces 2 frames (endpoint curve: pre-roll +
+        trailing artifact). An animated camera produces >= 3 frames
+        (pre-roll + at least 2 real keyframes + optional trailing artifact).
+
+    IMPORTANT — correct Flame API call shape: Flame's export_fbx does NOT
+    accept a cameras= kwarg. The correct pattern for exporting a single
+    camera is to set action.selected_nodes first, then call export_fbx with
+    only_selected_nodes=True (matching fbx_io.export_action_cameras_to_fbx).
+    Passing cameras= causes a TypeError in Flame's C-extension, which the
+    outer except block silently catches, always returning False and routing
+    every animated camera through the static single-frame JSON path.
 
     Expensive (does the FBX bake it's trying to avoid as a detection step),
     but reliable and non-crash-risk. If the mechanism raises, falls back to
     False (static assumption). The static-assumption fallback is safe: the
     JSON branch always produces a valid single-frame camera. The reverse —
-    treating a static camera as animated — is the bug this plan closes.
+    treating a static camera as animated — produces redundant-but-correct
+    output (two identical keyframes in the .blend).
 
     Falls back to False (static assumption) if the chosen mechanism raises.
     Lean toward static-on-uncertainty.
@@ -1737,7 +1747,6 @@ def _is_animated_camera(cam) -> bool:
     Returns:
         True if the camera appears to have keyframes, False otherwise.
     """
-    import sys as _sys
     try:
         import tempfile
         import os
@@ -1753,11 +1762,30 @@ def _is_animated_camera(cam) -> bool:
 
         with tempfile.TemporaryDirectory(prefix="forge_detect_") as scratch_dir:
             scratch_fbx = os.path.join(scratch_dir, "probe.fbx")
-            action.export_fbx(
-                path=scratch_fbx,
-                cameras=[cam],
-                bake_animation=True,
-            )
+            # Use the correct Flame export_fbx API: select the camera on the
+            # action first, then export with only_selected_nodes=True.
+            # Flame's C-extension does NOT accept a cameras= kwarg — passing
+            # it causes TypeError, silently caught below, returning False for
+            # every animated camera (the regression this fix closes).
+            # Restore selected_nodes after the probe to avoid side-effects.
+            prior_selection = None
+            try:
+                prior_selection = action.selected_nodes.get_value()
+            except Exception:
+                pass  # attribute may not exist on all Flame versions
+            try:
+                action.selected_nodes.set_value([cam])
+                action.export_fbx(
+                    scratch_fbx,
+                    only_selected_nodes=True,
+                    bake_animation=True,
+                )
+            finally:
+                if prior_selection is not None:
+                    try:
+                        action.selected_nodes.set_value(prior_selection)
+                    except Exception:
+                        pass
             if not os.path.exists(scratch_fbx):
                 return False
             try:
@@ -1767,9 +1795,11 @@ def _is_animated_camera(cam) -> bool:
                     width=0, height=0,
                 )
                 frames = result.get("frames") or []
-                # Static cameras produce 0 or 1 frame (pre-roll only).
-                # Animated cameras produce >= 2 distinct frames.
-                return len(frames) >= 2
+                # A static camera baked with bake_animation=True produces
+                # exactly 2 frames (pre-roll at KTime 0 + trailing artifact).
+                # An animated camera produces >= 3 frames (pre-roll + real
+                # keyframes + trailing).  Threshold: > 2 means truly animated.
+                return len(frames) > 2
             except Exception:
                 return False
     except Exception:

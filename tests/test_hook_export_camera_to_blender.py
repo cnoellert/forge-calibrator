@@ -12,6 +12,9 @@ What we test:
         with frame=, width=, height=, film_back_mm=, frame_rate=, custom_properties=.
   - H5: static branch failure preserves temp_dir and shows the P-5 dialog shape.
   - H6: animated branch passes frame_rate= into fbx_ascii.fbx_to_v5_json.
+  - H7: _is_animated_camera uses the correct action.export_fbx API
+        (only_selected_nodes=True, no cameras= kwarg) so animated cameras
+        are not misclassified as static.
 
 What we DON'T test:
   - Live Flame runtime (all Flame objects are duck-typed fakes).
@@ -32,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import types
@@ -379,3 +383,146 @@ class TestExportHandlerAnimatedFpsLabel:
             f"(one per branch), found {count}. "
             "D-11 requires frame_rate to be stamped in BOTH static and animated branches."
         )
+
+
+# ---------------------------------------------------------------------------
+# H7: _is_animated_camera probe uses the correct action.export_fbx API
+# ---------------------------------------------------------------------------
+
+
+# Path to the animated FBX fixture: a 3-keyframe camera where TX animates
+# from 0 to 100 to 200 across frames 0-2.  Three frames > 2 = True under the
+# probe's corrected threshold; the fixture is stored in tests/fixtures/ so the
+# test runs without a live Flame instance.
+_ANIMATED_FBX_FIXTURE = os.path.join(
+    os.path.dirname(__file__), "fixtures", "forge_fbx_animated.fbx"
+)
+
+
+class _SelectedNodesSetter:
+    """Minimal selected_nodes fake; records the last set_value call."""
+
+    def __init__(self):
+        self.current = []
+
+    def set_value(self, nodes):
+        self.current = list(nodes)
+
+    def get_value(self):
+        return self.current
+
+
+class _StrictFakeAction:
+    """Strict fake for a Flame Action node.
+
+    Mimics Flame's C-extension: export_fbx accepts only the kwargs that
+    Flame's real API exposes (only_selected_nodes, bake_animation,
+    pixel_to_units, frame_rate, export_axes).  No cameras= kwarg.
+
+    When called with the correct signature it copies the animated FBX fixture
+    to the requested path so the probe can parse it.
+    """
+
+    def __init__(self, fbx_fixture_path: str):
+        self._fbx_fixture = fbx_fixture_path
+        self.selected_nodes = _SelectedNodesSetter()
+        self.export_fbx_calls: list[dict] = []
+
+    def export_fbx(
+        self,
+        path: str,
+        *,
+        only_selected_nodes: bool = False,
+        bake_animation: bool = False,
+        pixel_to_units: float = 0.1,
+        frame_rate: str = "23.976 fps",
+        export_axes: bool = True,
+    ) -> bool:
+        """Accept only the real Flame export_fbx kwargs.  Reject extras."""
+        self.export_fbx_calls.append({
+            "path": path,
+            "only_selected_nodes": only_selected_nodes,
+            "bake_animation": bake_animation,
+        })
+        shutil.copy(self._fbx_fixture, path)
+        return True
+
+
+class TestIsAnimatedCameraProbeApiContract:
+    """H7: _is_animated_camera must call action.export_fbx with the correct
+    Flame API signature (only_selected_nodes=True, NO cameras= kwarg).
+
+    Root-cause regression test: the original implementation passed
+    ``cameras=[cam]`` as a keyword argument to ``action.export_fbx``.
+    Flame's C-extension rejects unknown kwargs with TypeError, which is
+    silently caught by the outer ``except Exception: return False`` guard,
+    causing every animated camera to be misclassified as static and routed
+    through the single-frame static-JSON path.  The result: animated cameras
+    exported to Blender produce a .blend with only 1 frame of animation.
+
+    This test provides a strict fake action (no cameras= kwarg accepted) that
+    writes the forge_fbx_baked.fbx fixture — which has 2 keyframes — when
+    called with the correct API.  After the fix, the probe uses the correct
+    call, parses 2 frames, and returns True.  Before the fix, the wrong call
+    raises TypeError, is caught, and returns False.
+    """
+
+    def test_h7_animated_camera_returns_true(self):
+        """_is_animated_camera must return True for a camera whose probe FBX
+        yields >= 2 frames, when the action.export_fbx API is called correctly.
+
+        This test will FAIL RED if the probe passes cameras=[cam] to
+        action.export_fbx (wrong Flame API — causes TypeError → False).
+        It will PASS GREEN once the probe uses only_selected_nodes=True
+        with selected_nodes.set_value([cam]) before the call.
+        """
+        if not os.path.exists(_ANIMATED_FBX_FIXTURE):
+            pytest.skip(f"Animated FBX fixture missing: {_ANIMATED_FBX_FIXTURE}")
+
+        action = _StrictFakeAction(_ANIMATED_FBX_FIXTURE)
+        cam = _FakeCam()
+        cam.parent = action
+
+        result = _hook_module._is_animated_camera(cam)
+
+        assert result is True, (
+            "_is_animated_camera returned False for a camera whose parent "
+            "action.export_fbx wrote a 2-frame FBX fixture. "
+            "This means the probe raised an exception (likely TypeError from "
+            "passing cameras=[cam] to action.export_fbx — Flame's API does "
+            "not accept that kwarg) and fell back to the static assumption. "
+            f"export_fbx call log: {action.export_fbx_calls}"
+        )
+
+    def test_h7_probe_does_not_pass_cameras_kwarg(self):
+        """The probe must not pass cameras= to action.export_fbx.
+
+        Verify that when action.export_fbx IS called, it is called WITHOUT
+        a cameras= kwarg.  The call recorder on _StrictFakeAction would have
+        raised TypeError if cameras= were passed, so if we see any recorded
+        calls, they were correct-API calls.
+        """
+        if not os.path.exists(_ANIMATED_FBX_FIXTURE):
+            pytest.skip(f"Animated FBX fixture missing: {_ANIMATED_FBX_FIXTURE}")
+
+        action = _StrictFakeAction(_ANIMATED_FBX_FIXTURE)
+        cam = _FakeCam()
+        cam.parent = action
+
+        _hook_module._is_animated_camera(cam)
+
+        # If the probe called export_fbx with cameras=, _StrictFakeAction would
+        # have raised TypeError (no **kwargs) → caught → export_fbx_calls is
+        # empty.  After fix: at least one successful call, proving correct API.
+        assert len(action.export_fbx_calls) >= 1, (
+            "action.export_fbx was never successfully called by the probe. "
+            "The probe likely passed cameras=[cam] which raised TypeError "
+            "(Flame's real API does not accept cameras=) and was silently "
+            "caught, misclassifying the camera as static. "
+            "Fix: use action.selected_nodes.set_value([cam]) then "
+            "action.export_fbx(path, only_selected_nodes=True, bake_animation=True)."
+        )
+        for call in action.export_fbx_calls:
+            assert "cameras" not in call, (
+                f"Probe must not pass cameras= to action.export_fbx; got {call}"
+            )
