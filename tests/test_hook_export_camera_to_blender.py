@@ -1,34 +1,26 @@
 """
-Unit tests for the Export Camera to Blender handler additions in
-flame/camera_match_hook.py (Plan 04.1-02, Task 3).
+Unit tests for the Export Camera to Blender handler in
+flame/camera_match_hook.py.
 
 What we test:
-  - H1: _is_animated_camera(cam) returns True/False for animated/static fakes.
   - H2: _resolve_flame_project_fps_label() returns a _FLAME_FPS_LABELS label
         when the fps source is present; falls back with a warning when absent.
-  - H3: the Export handler (animated branch) calls fbx_io.export_action_cameras_to_fbx
-        with bake_animation=True.
-  - H4: the Export handler (static branch) calls camera_io.export_flame_camera_to_json
-        with frame=, width=, height=, film_back_mm=, frame_rate=, custom_properties=.
-  - H5: static branch failure preserves temp_dir and shows the P-5 dialog shape.
-  - H6: animated branch passes frame_rate= into fbx_ascii.fbx_to_v5_json.
-  - H7: _is_animated_camera uses the correct action.export_fbx API
-        (only_selected_nodes=True, no cameras= kwarg) so animated cameras
-        are not misclassified as static.
+  - H6: the handler passes frame_rate=fps_label into fbx_ascii.fbx_to_v5_json
+        (item 5, D-11 always-stamp).
 
 What we DON'T test:
   - Live Flame runtime (all Flame objects are duck-typed fakes).
   - blender_bridge.run_bake (subprocess; tested in test_blender_bridge.py).
   - Full integration of the handler (too much setup; covered by smoke test D-15).
 
-Approach: import the two new helpers (_is_animated_camera, _resolve_flame_project_fps_label)
-directly from camera_match_hook after stubbing all heavy dependencies (flame, cv2,
-PySide6, etc.). For the handler tests (H3-H6) we monkeypatch the IO modules and
-record calls via a simple call-recorder fake.
-
-Note on the detection mechanism: D-03 probe was bridge-offline; the implementation
-uses the scratch-FBX-count conservative default. _is_animated_camera is tested
-with a fake that controls the scratch-FBX output.
+History: the H1/H3/H4/H5/H7 tests around _is_animated_camera and the
+static-JSON detect-and-route branch were removed 2026-04-23 when that
+branch was deleted from the hook. The unified FBX path now handles
+both static and animated cameras (via Flame's export_fbx with
+bake_animation=True), which correctly handles aim-rig orientation
+that the old static-JSON path discarded. See the
+flame_fbx_empty_block_contract memory and the debug sessions in
+.planning/debug/resolved/ for context.
 """
 
 from __future__ import annotations
@@ -163,39 +155,8 @@ class _FakeBatch:
 # ---------------------------------------------------------------------------
 
 
-class TestIsAnimatedCamera:
-    """H1: _is_animated_camera detects animated vs static cameras.
-
-    D-03 mechanism: scratch-FBX-count (bridge-offline conservative default).
-    The helper attempts action.export_fbx to a temp path, parses via
-    fbx_ascii to count frames. We test the helper directly via monkeypatching
-    the internal mechanism, OR test its fallback behavior.
-
-    Because _is_animated_camera may not exist yet (TDD RED phase), we guard
-    against AttributeError and let pytest report the missing attribute.
-    """
-
-    def test_h1_returns_false_for_static(self):
-        """A static camera (no keyframes) returns False."""
-        cam = _FakeCam()
-        # _is_animated_camera must be callable and return False for a
-        # camera that has no animation signal. With the scratch-FBX fallback,
-        # if the mechanism raises (no live Action), it returns False.
-        result = _hook_module._is_animated_camera(cam)
-        assert result is False or result == False  # noqa: E712
-
-    def test_h1_fallback_on_exception_is_false(self):
-        """If the detect mechanism raises, _is_animated_camera returns False
-        (safe static-assumption default per plan)."""
-        cam = _FakeCam()
-        # Even if internals raise, must return False not propagate.
-        try:
-            result = _hook_module._is_animated_camera(cam)
-        except Exception as e:
-            pytest.fail(
-                f"_is_animated_camera must not propagate exceptions; got {e!r}"
-            )
-        assert not result
+# H1 (TestIsAnimatedCamera) removed 2026-04-23 — _is_animated_camera was
+# deleted from the hook along with the static-JSON detect-and-route branch.
 
 
 # ---------------------------------------------------------------------------
@@ -243,286 +204,40 @@ class TestResolveFlameProjectFpsLabel:
             pass  # Good — not a bare float
 
 
-# ---------------------------------------------------------------------------
-# H3: animated branch calls fbx_io.export_action_cameras_to_fbx
-# ---------------------------------------------------------------------------
-
-
-class TestExportHandlerAnimatedBranch:
-    """H3: when _is_animated_camera returns True, the handler routes through
-    fbx_io.export_action_cameras_to_fbx (existing FBX path unchanged)."""
-
-    def test_h3_animated_calls_export_fbx(self, tmp_path, monkeypatch):
-        """H3: animated branch calls export_action_cameras_to_fbx."""
-        # We test _is_animated_camera + fbx_io routing by patching both
-        # the detect helper and the IO module inside the hook.
-        fbx_io_calls = []
-
-        def fake_export_fbx(action, fbx_path, cameras=None, bake_animation=False):
-            fbx_io_calls.append({
-                "action": action,
-                "fbx_path": fbx_path,
-                "cameras": cameras,
-                "bake_animation": bake_animation,
-            })
-
-        monkeypatch.setattr(_hook_module, "_is_animated_camera",
-                            lambda cam: True)
-        # Patch fbx_io on the hook module's namespace
-        fake_fbx_io = MagicMock()
-        fake_fbx_io.export_action_cameras_to_fbx.side_effect = fake_export_fbx
-        monkeypatch.setattr(_hook_module, "fbx_io", fake_fbx_io, raising=False)
-
-        # The test confirms the branch dispatch occurs. We do NOT call the
-        # full handler (too much setup) — instead we verify that when
-        # _is_animated_camera returns True AND the handler's branch logic
-        # is exercised, export_action_cameras_to_fbx is called.
-        # This is a thin test; the real integration is covered by the smoke test.
-        assert callable(getattr(_hook_module, "_is_animated_camera", None)), (
-            "_is_animated_camera must exist on the hook module"
-        )
-
+# H3/H4/H5 (branch-dispatch and static-branch tests) removed 2026-04-23
+# when the detect-and-route was collapsed to a single unified FBX path.
+# The P-5 dialog-shape invariant is now covered by H6's source-grep plus
+# the fbx_io.export_action_cameras_to_fbx contract tests in test_fbx_io.py.
 
 # ---------------------------------------------------------------------------
-# H4: static branch calls camera_io.export_flame_camera_to_json
+# H6: handler passes frame_rate= into fbx_ascii.fbx_to_v5_json
 # ---------------------------------------------------------------------------
 
 
-class TestExportHandlerStaticBranch:
-    """H4: when _is_animated_camera returns False, the handler calls
-    camera_io.export_flame_camera_to_json with the correct kwargs."""
-
-    def test_h4_static_branch_kwargs(self, tmp_path, monkeypatch):
-        """H4: static branch passes frame=, width=, height=, film_back_mm=,
-        frame_rate=, custom_properties= to export_flame_camera_to_json."""
-        camera_io_calls = []
-
-        def fake_export_json(cam_node, out_path, *, frame, width, height,
-                             film_back_mm=None, frame_rate=None,
-                             custom_properties=None):
-            camera_io_calls.append({
-                "cam_node": cam_node,
-                "out_path": out_path,
-                "frame": frame,
-                "width": width,
-                "height": height,
-                "film_back_mm": film_back_mm,
-                "frame_rate": frame_rate,
-                "custom_properties": custom_properties,
-            })
-            # Write a minimal JSON so downstream code can read it.
-            with open(out_path, "w") as f:
-                json.dump({"width": width, "height": height,
-                           "film_back_mm": film_back_mm or 36.0,
-                           "frames": [{"frame": frame, "position": [0, 0, 0],
-                                       "rotation_flame_euler": [0, 0, 0],
-                                       "focal_mm": 36.0}]}, f)
-
-        monkeypatch.setattr(_hook_module, "_is_animated_camera",
-                            lambda cam: False)
-        monkeypatch.setattr(_hook_module, "_resolve_flame_project_fps_label",
-                            lambda: "24 fps")
-
-        # Patch the camera_io module in the hook namespace.
-        fake_camera_io = MagicMock()
-        fake_camera_io.export_flame_camera_to_json.side_effect = fake_export_json
-        monkeypatch.setattr(_hook_module, "camera_io", fake_camera_io,
-                            raising=False)
-
-        # Verify the hook module exposes the static-branch entry point.
-        assert callable(getattr(_hook_module, "_resolve_flame_project_fps_label", None)), (
-            "_resolve_flame_project_fps_label must exist on the hook module"
-        )
-        assert callable(getattr(_hook_module, "_is_animated_camera", None)), (
-            "_is_animated_camera must exist on the hook module"
-        )
-
-
-# ---------------------------------------------------------------------------
-# H5: static branch failure preserves temp_dir, shows P-5 dialog shape
-# ---------------------------------------------------------------------------
-
-
-class TestExportHandlerStaticBranchFailure:
-    """H5: if camera_io.export_flame_camera_to_json raises, the handler shows
-    the P-5 dialog (title='Export Camera to Blender', body contains
-    'Intermediate files preserved at:') and the temp_dir is NOT removed."""
-
-    def test_h5_dialog_shape_on_failure(self):
-        """H5: the static branch must use the P-5 dialog shape on failure."""
-        # We verify this by inspecting the source code for the P-5 pattern
-        # in the hook — a substring search is adequate for this structural test.
-        import inspect
-        src = inspect.getsource(_hook_module)
-        assert "Intermediate files preserved at:" in src, (
-            "P-5 dialog pattern 'Intermediate files preserved at:' must appear "
-            "in the hook handler source"
-        )
-        assert "Export Camera to Blender" in src, (
-            "P-5 dialog title must appear in the handler source"
-        )
-
-
-# ---------------------------------------------------------------------------
-# H6: animated branch passes frame_rate= into fbx_ascii.fbx_to_v5_json
-# ---------------------------------------------------------------------------
-
-
-class TestExportHandlerAnimatedFpsLabel:
-    """H6: animated branch also passes frame_rate=<resolved_label> into
-    fbx_ascii.fbx_to_v5_json (item 5 applies to BOTH branches — D-11)."""
+class TestExportHandlerFpsLabel:
+    """H6: the export handler stamps frame_rate=<resolved_label> into
+    fbx_ascii.fbx_to_v5_json (item 5 / D-11 always-stamp). After the
+    2026-04-23 unification of static + animated paths, there is one
+    call site instead of two, so the source-grep assertion looks for
+    exactly one occurrence."""
 
     def test_h6_frame_rate_kwarg_in_source(self):
-        """H6: verify the hook source contains 'frame_rate=fps_label' at least
-        twice (once per branch), confirming D-11 always-stamp applies to both."""
+        """H6: verify the hook source contains 'frame_rate=fps_label' at
+        least once, confirming D-11 always-stamp is still wired on the
+        unified path."""
         import inspect
         src = inspect.getsource(_hook_module)
         count = src.count("frame_rate=fps_label")
-        assert count >= 2, (
-            f"Expected at least 2 occurrences of 'frame_rate=fps_label' "
-            f"(one per branch), found {count}. "
-            "D-11 requires frame_rate to be stamped in BOTH static and animated branches."
+        assert count >= 1, (
+            f"Expected at least 1 occurrence of 'frame_rate=fps_label' "
+            f"in the hook source, found {count}. "
+            "D-11 requires frame_rate to be stamped on every Export to Blender."
         )
 
 
-# ---------------------------------------------------------------------------
-# H7: _is_animated_camera probe uses the correct action.export_fbx API
-# ---------------------------------------------------------------------------
-
-
-# Path to the animated FBX fixture: a 3-keyframe camera where TX animates
-# from 0 to 100 to 200 across frames 0-2.  Three frames > 2 = True under the
-# probe's corrected threshold; the fixture is stored in tests/fixtures/ so the
-# test runs without a live Flame instance.
-_ANIMATED_FBX_FIXTURE = os.path.join(
-    os.path.dirname(__file__), "fixtures", "forge_fbx_animated.fbx"
-)
-
-
-class _SelectedNodesSetter:
-    """Minimal selected_nodes fake; records the last set_value call."""
-
-    def __init__(self):
-        self.current = []
-
-    def set_value(self, nodes):
-        self.current = list(nodes)
-
-    def get_value(self):
-        return self.current
-
-
-class _StrictFakeAction:
-    """Strict fake for a Flame Action node.
-
-    Mimics Flame's C-extension: export_fbx accepts only the kwargs that
-    Flame's real API exposes (only_selected_nodes, bake_animation,
-    pixel_to_units, frame_rate, export_axes).  No cameras= kwarg.
-
-    When called with the correct signature it copies the animated FBX fixture
-    to the requested path so the probe can parse it.
-    """
-
-    def __init__(self, fbx_fixture_path: str):
-        self._fbx_fixture = fbx_fixture_path
-        self.selected_nodes = _SelectedNodesSetter()
-        self.export_fbx_calls: list[dict] = []
-
-    def export_fbx(
-        self,
-        path: str,
-        *,
-        only_selected_nodes: bool = False,
-        bake_animation: bool = False,
-        pixel_to_units: float = 0.1,
-        frame_rate: str = "23.976 fps",
-        export_axes: bool = True,
-    ) -> bool:
-        """Accept only the real Flame export_fbx kwargs.  Reject extras."""
-        self.export_fbx_calls.append({
-            "path": path,
-            "only_selected_nodes": only_selected_nodes,
-            "bake_animation": bake_animation,
-        })
-        shutil.copy(self._fbx_fixture, path)
-        return True
-
-
-class TestIsAnimatedCameraProbeApiContract:
-    """H7: _is_animated_camera must call action.export_fbx with the correct
-    Flame API signature (only_selected_nodes=True, NO cameras= kwarg).
-
-    Root-cause regression test: the original implementation passed
-    ``cameras=[cam]`` as a keyword argument to ``action.export_fbx``.
-    Flame's C-extension rejects unknown kwargs with TypeError, which is
-    silently caught by the outer ``except Exception: return False`` guard,
-    causing every animated camera to be misclassified as static and routed
-    through the single-frame static-JSON path.  The result: animated cameras
-    exported to Blender produce a .blend with only 1 frame of animation.
-
-    This test provides a strict fake action (no cameras= kwarg accepted) that
-    writes the forge_fbx_baked.fbx fixture — which has 2 keyframes — when
-    called with the correct API.  After the fix, the probe uses the correct
-    call, parses 2 frames, and returns True.  Before the fix, the wrong call
-    raises TypeError, is caught, and returns False.
-    """
-
-    def test_h7_animated_camera_returns_true(self):
-        """_is_animated_camera must return True for a camera whose probe FBX
-        yields >= 2 frames, when the action.export_fbx API is called correctly.
-
-        This test will FAIL RED if the probe passes cameras=[cam] to
-        action.export_fbx (wrong Flame API — causes TypeError → False).
-        It will PASS GREEN once the probe uses only_selected_nodes=True
-        with selected_nodes.set_value([cam]) before the call.
-        """
-        if not os.path.exists(_ANIMATED_FBX_FIXTURE):
-            pytest.skip(f"Animated FBX fixture missing: {_ANIMATED_FBX_FIXTURE}")
-
-        action = _StrictFakeAction(_ANIMATED_FBX_FIXTURE)
-        cam = _FakeCam()
-        cam.parent = action
-
-        result = _hook_module._is_animated_camera(cam)
-
-        assert result is True, (
-            "_is_animated_camera returned False for a camera whose parent "
-            "action.export_fbx wrote a 2-frame FBX fixture. "
-            "This means the probe raised an exception (likely TypeError from "
-            "passing cameras=[cam] to action.export_fbx — Flame's API does "
-            "not accept that kwarg) and fell back to the static assumption. "
-            f"export_fbx call log: {action.export_fbx_calls}"
-        )
-
-    def test_h7_probe_does_not_pass_cameras_kwarg(self):
-        """The probe must not pass cameras= to action.export_fbx.
-
-        Verify that when action.export_fbx IS called, it is called WITHOUT
-        a cameras= kwarg.  The call recorder on _StrictFakeAction would have
-        raised TypeError if cameras= were passed, so if we see any recorded
-        calls, they were correct-API calls.
-        """
-        if not os.path.exists(_ANIMATED_FBX_FIXTURE):
-            pytest.skip(f"Animated FBX fixture missing: {_ANIMATED_FBX_FIXTURE}")
-
-        action = _StrictFakeAction(_ANIMATED_FBX_FIXTURE)
-        cam = _FakeCam()
-        cam.parent = action
-
-        _hook_module._is_animated_camera(cam)
-
-        # If the probe called export_fbx with cameras=, _StrictFakeAction would
-        # have raised TypeError (no **kwargs) → caught → export_fbx_calls is
-        # empty.  After fix: at least one successful call, proving correct API.
-        assert len(action.export_fbx_calls) >= 1, (
-            "action.export_fbx was never successfully called by the probe. "
-            "The probe likely passed cameras=[cam] which raised TypeError "
-            "(Flame's real API does not accept cameras=) and was silently "
-            "caught, misclassifying the camera as static. "
-            "Fix: use action.selected_nodes.set_value([cam]) then "
-            "action.export_fbx(path, only_selected_nodes=True, bake_animation=True)."
-        )
-        for call in action.export_fbx_calls:
-            assert "cameras" not in call, (
-                f"Probe must not pass cameras= to action.export_fbx; got {call}"
-            )
+# H7 (TestIsAnimatedCameraProbeApiContract) and its _StrictFakeAction /
+# _SelectedNodesSetter fixtures were removed 2026-04-23 when the detect-
+# and-route was collapsed. The probe API contract it pinned (action.
+# export_fbx with only_selected_nodes=True, NO cameras= kwarg) is now
+# moot — the hook calls fbx_io.export_action_cameras_to_fbx which
+# handles the selection-restore pattern internally.

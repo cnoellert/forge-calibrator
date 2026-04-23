@@ -1709,101 +1709,13 @@ _FLAME_FPS_LABELS = (
 )
 
 
-def _is_animated_camera(cam) -> bool:
-    """Detect whether a Flame Action camera has keyframes.
-
-    Mechanism: D-03 conservative default (bridge-offline probe deferred).
-    The probe could not be run against live Flame 2026.2.1; the scratch-FBX-count
-    path is the fallback per d03-detect-probe.json rationale:
-
-        Bake a scratch FBX via action.export_fbx(bake_animation=True),
-        parse via fbx_ascii to count frames. A static camera baked with
-        bake_animation=True produces 2 frames (endpoint curve: pre-roll +
-        trailing artifact). An animated camera produces >= 3 frames
-        (pre-roll + at least 2 real keyframes + optional trailing artifact).
-
-    IMPORTANT — correct Flame API call shape: Flame's export_fbx does NOT
-    accept a cameras= kwarg. The correct pattern for exporting a single
-    camera is to set action.selected_nodes first, then call export_fbx with
-    only_selected_nodes=True (matching fbx_io.export_action_cameras_to_fbx).
-    Passing cameras= causes a TypeError in Flame's C-extension, which the
-    outer except block silently catches, always returning False and routing
-    every animated camera through the static single-frame JSON path.
-
-    Expensive (does the FBX bake it's trying to avoid as a detection step),
-    but reliable and non-crash-risk. If the mechanism raises, falls back to
-    False (static assumption). The static-assumption fallback is safe: the
-    JSON branch always produces a valid single-frame camera. The reverse —
-    treating a static camera as animated — produces redundant-but-correct
-    output (two identical keyframes in the .blend).
-
-    Falls back to False (static assumption) if the chosen mechanism raises.
-    Lean toward static-on-uncertainty.
-
-    Args:
-        cam: Flame Action camera node (duck-typed — must have .position attr
-             if the duck-type check is used).
-
-    Returns:
-        True if the camera appears to have keyframes, False otherwise.
-    """
-    try:
-        import tempfile
-        import os
-        from forge_flame import fbx_ascii as _fbx_ascii
-
-        # Access the parent Action node through the camera's container.
-        # cam is a PyActionNode; its parent action is cam.parent (Flame 2026+).
-        # If cam.parent is not available, we cannot do the scratch-FBX probe
-        # without more context — fall back to False (static assumption).
-        action = getattr(cam, "parent", None)
-        if action is None or not hasattr(action, "export_fbx"):
-            return False
-
-        with tempfile.TemporaryDirectory(prefix="forge_detect_") as scratch_dir:
-            scratch_fbx = os.path.join(scratch_dir, "probe.fbx")
-            # Use the correct Flame export_fbx API: select the camera on the
-            # action first, then export with only_selected_nodes=True.
-            # Flame's C-extension does NOT accept a cameras= kwarg — passing
-            # it causes TypeError, silently caught below, returning False for
-            # every animated camera (the regression this fix closes).
-            # Restore selected_nodes after the probe to avoid side-effects.
-            prior_selection = None
-            try:
-                prior_selection = action.selected_nodes.get_value()
-            except Exception:
-                pass  # attribute may not exist on all Flame versions
-            try:
-                action.selected_nodes.set_value([cam])
-                action.export_fbx(
-                    scratch_fbx,
-                    only_selected_nodes=True,
-                    bake_animation=True,
-                )
-            finally:
-                if prior_selection is not None:
-                    try:
-                        action.selected_nodes.set_value(prior_selection)
-                    except Exception:
-                        pass
-            if not os.path.exists(scratch_fbx):
-                return False
-            try:
-                scratch_json = os.path.join(scratch_dir, "probe.json")
-                result = _fbx_ascii.fbx_to_v5_json(
-                    scratch_fbx, scratch_json,
-                    width=0, height=0,
-                )
-                frames = result.get("frames") or []
-                # A static camera baked with bake_animation=True produces
-                # exactly 2 frames (pre-roll at KTime 0 + trailing artifact).
-                # An animated camera produces >= 3 frames (pre-roll + real
-                # keyframes + trailing).  Threshold: > 2 means truly animated.
-                return len(frames) > 2
-            except Exception:
-                return False
-    except Exception:
-        return False  # safe default — static path is non-destructive
+# _is_animated_camera was removed 2026-04-23 along with the detect-and-route
+# static-JSON branch. Both static and animated cameras now route through
+# Flame's native export_fbx(bake_animation=True) which correctly handles
+# aim-rig orientation (aim+up+roll → Euler) that the old static-JSON path
+# discarded. See memory/flame_fbx_empty_block_contract.md + the debug
+# sessions in .planning/debug/resolved/ for the hotfix chain that made
+# the unified path reliable.
 
 
 def _resolve_flame_project_fps_label() -> str:
@@ -2318,96 +2230,65 @@ def _export_camera_to_blender(selection):
         # can pass fps_label through to their respective JSON writers.
         fps_label = _resolve_flame_project_fps_label()
 
-        # --- Phase 4.1 item 2: detect-and-route (D-02/D-03) ---
-        # Static cameras skip the FBX bake + fbx_to_v5_json path (which produces
-        # an empty-frames JSON on a static camera — the bug this closes).
-        # Animated cameras keep the existing FBX path unchanged.
-        # Falls back to False (static assumption) on detection failure — safe.
-        is_animated = _is_animated_camera(cam)
+        # Unified FBX path — static and animated cameras both route
+        # through Flame's native export_fbx(bake_animation=True). The
+        # static-JSON fast path added in plan 04.1-02 has been removed
+        # because: (a) the "no frames in JSON" bug it worked around is
+        # now fixed at root (empty-block emit, Takes LocalTime,
+        # GlobalSettings TimeSpanStop, expanded KeyAttr), (b) Flame's
+        # export_fbx handles aim-rig cameras natively (baking aim+up+
+        # roll into Euler rotation), which the static-JSON path did NOT
+        # — it discarded aim/roll and produced an orientation-wrong
+        # returned camera; (c) the detect-and-route was the source of
+        # two debug sessions' worth of misclassification bugs.
+        try:
+            fbx_io.export_action_cameras_to_fbx(
+                action, fbx_path,
+                cameras=[cam],
+                bake_animation=True,
+            )
+        except Exception as e:
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"Failed to write FBX:\n{e}\n\n"
+                        f"Intermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
 
-        if not is_animated:
-            # ---- STATIC BRANCH: single-frame JSON path ----
-            # Imports camera_io lazily (same lazy-import pattern as fbx_io above).
-            from forge_flame import camera_io
-            try:
-                # film_back_mm=None — let camera_io derive from Flame's
-                # own (fov, focal). Pinning 36.0 was the old full-frame
-                # parity shortcut; it breaks the Blender→Flame return
-                # trip because the round-trip then stamps 36mm onto the
-                # original (typically 16mm Super-16) camera. The
-                # downstream pipeline preserves whatever we emit here
-                # through bake_camera.sensor_height + flame_math extract,
-                # so the honest value is what we want.
-                camera_io.export_flame_camera_to_json(
-                    cam, json_path,
-                    frame=start_frame_int,
-                    width=width, height=height,
-                    film_back_mm=None,
-                    frame_rate=fps_label,                   # item 5
-                    custom_properties={                      # item 2 stamp parity
-                        "forge_bake_action_name": raw_action_name,
-                        "forge_bake_camera_name": raw_cam_name,
-                    },
-                )
-            except Exception as e:
-                flame.messages.show_in_dialog(
-                    title="Export Camera to Blender",
-                    message=f"Failed to write static camera JSON:\n{e}\n\n"
-                            f"Intermediate files preserved at:\n{temp_dir}",
-                    type="error", buttons=["OK"])
-                return
-            # Static bake is one frame.
-            n_frames = 1
-        else:
-            # ---- ANIMATED BRANCH: existing FBX bake path (unchanged except fps_label) ----
-            try:
-                fbx_io.export_action_cameras_to_fbx(
-                    action, fbx_path,
-                    cameras=[cam],
-                    bake_animation=True,
-                )
-            except Exception as e:
-                flame.messages.show_in_dialog(
-                    title="Export Camera to Blender",
-                    message=f"Failed to write FBX:\n{e}\n\n"
-                            f"Intermediate files preserved at:\n{temp_dir}",
-                    type="error", buttons=["OK"])
-                return
-
-            # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
-            # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
-            # names per D-11. Phase 2's "Send to Flame" looks these up against
-            # Flame's Action list, so they MUST match the live Flame names
-            # exactly (sanitization is only for filesystem paths above).
-            try:
-                # film_back_mm=None — let fbx_to_v5_json derive from the
-                # FBX's FilmHeight property (Flame's own export writes
-                # the camera's true filmback here; typically 16mm
-                # Super-16). Pinning 36.0 was the old full-frame parity
-                # shortcut; it breaks the Blender→Flame return trip
-                # because the round-trip then stamps 36mm onto the
-                # original camera.
-                fbx_ascii.fbx_to_v5_json(
-                    fbx_path, json_path,
-                    width=width, height=height,
-                    film_back_mm=None,
-                    frame_rate=fps_label,               # item 5 (animated path)
-                    camera_name=raw_cam_name,
-                    frame_offset=frame_offset,
-                    frame_start=frame_start,
-                    frame_end=frame_end,
-                    custom_properties={
-                        "forge_bake_action_name": raw_action_name,
-                        "forge_bake_camera_name": raw_cam_name,
-                    },
-                )
-            except Exception as e:
-                flame.messages.show_in_dialog(
-                    title="Export Camera to Blender",
-                    message=f"Failed to convert FBX to JSON:\n{e}\n\n"
-                            f"Intermediate files preserved at:\n{temp_dir}",
-                    type="error", buttons=["OK"])
-                return
+        # --- FBX -> v5 JSON with custom_properties stamp (Plan 02) ---
+        # NOTE: raw_action_name / raw_cam_name are the UNSANITIZED Flame
+        # names per D-11. Phase 2's "Send to Flame" looks these up against
+        # Flame's Action list, so they MUST match the live Flame names
+        # exactly (sanitization is only for filesystem paths above).
+        try:
+            # film_back_mm=None — let fbx_to_v5_json derive from the
+            # FBX's FilmHeight property (Flame's own export writes
+            # the camera's true filmback here; typically 16mm
+            # Super-16). Pinning 36.0 was the old full-frame parity
+            # shortcut; it breaks the Blender→Flame return trip
+            # because the round-trip then stamps 36mm onto the
+            # original camera.
+            fbx_ascii.fbx_to_v5_json(
+                fbx_path, json_path,
+                width=width, height=height,
+                film_back_mm=None,
+                frame_rate=fps_label,
+                camera_name=raw_cam_name,
+                frame_offset=frame_offset,
+                frame_start=frame_start,
+                frame_end=frame_end,
+                custom_properties={
+                    "forge_bake_action_name": raw_action_name,
+                    "forge_bake_camera_name": raw_cam_name,
+                },
+            )
+        except Exception as e:
+            flame.messages.show_in_dialog(
+                title="Export Camera to Blender",
+                message=f"Failed to convert FBX to JSON:\n{e}\n\n"
+                        f"Intermediate files preserved at:\n{temp_dir}",
+                type="error", buttons=["OK"])
+            return
 
         # --- Blender headless bake (unchanged) ---
         try:
