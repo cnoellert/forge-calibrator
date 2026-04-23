@@ -203,12 +203,20 @@ class FBXNode:
                   The actual array values live in ``values`` (flattened
                   from the ``a:`` child).
     ``children`` — nested FBXNodes if a ``{ ... }`` block followed.
+    ``is_block``  — True when the source text had explicit ``{ }``,
+                  even if the block was empty. Flame's ``import_fbx``
+                  requires ``{ }`` on certain object-instance nodes
+                  (AnimationStack, AnimationLayer, References, etc.)
+                  even when they carry no children. Dropping the braces
+                  on round-trip silently breaks animation imports — the
+                  stack doesn't register, so curves never activate.
     """
 
     name: str
     values: list[Any] = field(default_factory=list)
     array_len: Optional[int] = None
     children: list["FBXNode"] = field(default_factory=list)
+    is_block: bool = False
 
     # -------------------------------------------------------------------------
     # Tree-query convenience — these keep extraction code compact.
@@ -300,7 +308,9 @@ def _parse(tokens: list[tuple[str, Any]]) -> list[FBXNode]:
         values, array_len = parse_values()
 
         children: list[FBXNode] = []
+        saw_lbrace = False
         if peek() is not None and peek()[0] == _T_LBRACE:
+            saw_lbrace = True
             idx_save = idx  # noqa: F841 — kept for debugger
             consume(_T_LBRACE)
             while peek() is not None and peek()[0] != _T_RBRACE:
@@ -320,7 +330,7 @@ def _parse(tokens: list[tuple[str, Any]]) -> list[FBXNode]:
                 children = [c for c in children if c.name != "a"]
 
         return FBXNode(name=name, values=values, array_len=array_len,
-                       children=children)
+                       children=children, is_block=saw_lbrace)
 
     nodes: list[FBXNode] = []
     while idx < len(tokens):
@@ -935,7 +945,13 @@ def _emit_node(node: FBXNode, lines: list[str], indent: int) -> None:
     # Value list (comma-separated, no brackets).
     values_str = ",".join(_format_value(v) for v in node.values)
 
-    if node.children:
+    # Emit as block form when children exist OR when the source had an
+    # explicit ``{ }`` (is_block=True). This preserves empty-block
+    # object-instance nodes like ``AnimationStack: <id>,... { }`` that
+    # Flame's ``import_fbx`` requires in their exact shape — omitting
+    # the braces silently breaks animation imports because the stack
+    # doesn't register and its curves never activate.
+    if node.children or node.is_block:
         if values_str:
             lines.append(f"{ind}{node.name}: {values_str} {{")
         else:
@@ -1020,11 +1036,40 @@ def _replace_or_append_child(node: FBXNode, name: str, new_child: FBXNode) -> No
 def _anim_curve_node_with_data(curve_id: int, default_value: float,
                                times: list[int], values: list[float]) -> FBXNode:
     """Build an AnimationCurve FBXNode with the given keyframe arrays,
-    matching the structure Flame emits (KeyVer 4009, Cubic|TangeantAuto
-    magic flags, etc.)."""
+    matching the EXPANDED structure Flame 2026.2.1 emits and requires on
+    import.
+
+    Flame's ``action.import_fbx`` rejects the compact KeyAttr encoding
+    (single shared flag with RefCount=N) that the FBX spec permits —
+    only the expanded per-key form triggers keyframe creation on the
+    imported camera. Live probe 2026-04-23 confirmed: a well-formed
+    FBX using the compact form imports with cam.rotation/position
+    correctly set to the FIRST key's value but zero keyframes, as if
+    every key after the first were silently discarded. Re-exporting
+    the imported camera produces an FBX with zero KeyValueFloat
+    entries. See .planning/debug/resolved/fbx-compact-keyattr-rejected.md.
+
+    Flame's own export uses:
+      - KeyAttrFlags: *N  (N entries, value 8456 = Cubic|TangentAuto)
+      - KeyAttrDataFloat: *(4*N)  (one 4-tuple per key)
+      - KeyAttrRefCount: *N  (N ones)
+    """
     n = len(times)
     if n != len(values):
         raise ValueError(f"curve times/values length mismatch: {n} vs {len(values)}")
+
+    # Flame's per-key attribute flag. 8456 = 0x2108 =
+    # Cubic|TangentAuto|GenericTimeIndependent. Mirrors the value emitted
+    # by Flame 2026.2.1's action.export_fbx(bake_animation=True).
+    FLAME_KEYATTR_FLAG = 8456
+    # Flame's per-key tangent data (4 floats per key, all identical for
+    # default auto-tangent keys). 218434821 encodes the standard Flame
+    # tangent configuration; zeros are the other three slots.
+    FLAME_TANGENT_QUAD = [0, 0, 218434821, 0]
+
+    flags = [FLAME_KEYATTR_FLAG] * n
+    tangent_data = FLAME_TANGENT_QUAD * n
+    ref_counts = [1] * n
 
     return FBXNode(
         name="AnimationCurve",
@@ -1036,17 +1081,17 @@ def _anim_curve_node_with_data(curve_id: int, default_value: float,
                     array_len=n),
             FBXNode(name="KeyValueFloat", values=[float(v) for v in values],
                     array_len=n),
-            # Magic interpolation flags. 50340104 is the composite flag
-            # for Cubic|TangeantAuto|GenericTimeIndependent|
-            # WeightedRight|WeightedNextLeft, matching Flame's default
-            # curve emission.
-            FBXNode(name="KeyAttrFlags", values=[50340104], array_len=1),
-            # Tangent data — zero auto-tangents.
-            FBXNode(name="KeyAttrDataFloat", values=[0, 0, 218434821, 0],
-                    array_len=4),
-            # RefCount = number of keys that share this single flag
-            # record (i.e., all of them).
-            FBXNode(name="KeyAttrRefCount", values=[n], array_len=1),
+            # Per-key flag entries — one per keyframe. Flame's importer
+            # requires this expanded form; the compact form (*1 with
+            # RefCount=N) silently drops all keys.
+            FBXNode(name="KeyAttrFlags", values=flags, array_len=n),
+            # Per-key tangent data — 4 floats per key (expanded).
+            FBXNode(name="KeyAttrDataFloat", values=tangent_data,
+                    array_len=n * 4),
+            # Per-key reference count. Each entry "1" means the
+            # corresponding flag/data slot covers exactly one key —
+            # the expanded form Flame's importer expects.
+            FBXNode(name="KeyAttrRefCount", values=ref_counts, array_len=n),
         ],
     )
 

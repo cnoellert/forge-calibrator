@@ -2026,3 +2026,88 @@ class TestWriterGlobalSettingsTimeSpan:
                 f"Takes LocalTime end ({lt_end}). They must agree so Flame "
                 f"clips at the same boundary from both fields."
             )
+
+
+# =============================================================================
+# Group 12: Empty-block preservation through parse → emit round-trip
+# =============================================================================
+
+
+class TestEmptyBlockPreservation:
+    """Flame's ``import_fbx`` requires certain object-instance nodes to be
+    emitted as ``{ }`` blocks even when empty. ``AnimationStack: <id>,
+    "AnimStack::Take 001", "" { }`` must retain its braces on round-trip
+    — otherwise the stack doesn't register, the AnimationLayer doesn't
+    attach to it, and curves connected to the layer never activate. The
+    imported camera ends up with zero keyframes despite a well-formed
+    AnimCurve graph.
+
+    Live-verified via forge-bridge probe against Flame 2026.2.1 on
+    2026-04-23: dropping `{ }` on the AnimationStack silently drops every
+    keyframe in every connected curve. Fix: FBXNode.is_block flag is set
+    by the parser when `{ }` is present (even if empty) and respected by
+    the emitter.
+    """
+
+    def test_parse_emit_preserves_empty_animstack_block(self):
+        """Round-trip an empty AnimationStack through parse → emit and
+        assert the braces survive."""
+        from forge_flame.fbx_ascii import parse_fbx_ascii, emit_fbx_ascii
+        source = (
+            'Objects:  {\n'
+            '\tAnimationStack: 105553153852432, "AnimStack::Take 001", "" {\n'
+            '\t}\n'
+            '}\n'
+        )
+        tree = parse_fbx_ascii(source)
+        emitted = emit_fbx_ascii(tree)
+        assert 'AnimationStack: 105553153852432,"AnimStack::Take 001","" {' in emitted, (
+            f"Empty AnimationStack lost its opening brace. Emitted:\n{emitted}"
+        )
+        assert 'AnimationStack: 105553153852432,"AnimStack::Take 001",""\n' not in emitted, (
+            f"Empty AnimationStack collapsed to bare form. Emitted:\n{emitted}"
+        )
+
+    def test_parse_emit_preserves_empty_references_block(self):
+        """Same contract for the top-level ``References:  { }`` block."""
+        from forge_flame.fbx_ascii import parse_fbx_ascii, emit_fbx_ascii
+        source = 'References:  {\n}\n'
+        tree = parse_fbx_ascii(source)
+        assert tree[0].name == "References"
+        assert tree[0].is_block is True, (
+            "Parser must mark References as a block node since the "
+            "source had `{ }`. Instead is_block=False."
+        )
+        emitted = emit_fbx_ascii(tree)
+        assert "References:" in emitted and "{" in emitted and "}" in emitted
+        assert emitted.strip() != "References:", (
+            f"Empty References collapsed to bare. Emitted:\n{emitted}"
+        )
+
+    def test_writer_output_has_braced_animstack(self, tmp_path):
+        """End-to-end: v5_json_to_fbx output must emit AnimationStack as
+        `{ }`-braced. Pinning test for the Blender→Flame animated-camera
+        keyframe regression."""
+        from forge_flame.fbx_ascii import v5_json_to_fbx
+        payload = {
+            "width": 1920, "height": 1080, "film_back_mm": 16.0,
+            "frames": [
+                {"frame": 1, "position": [100.0, 0.0, 5000.0], "rotation_flame_euler": [10, 0, 0], "focal_mm": 35.0},
+                {"frame": 2, "position": [200.0, 0.0, 5000.0], "rotation_flame_euler": [20, 0, 0], "focal_mm": 35.0},
+                {"frame": 3, "position": [300.0, 0.0, 5000.0], "rotation_flame_euler": [30, 0, 0], "focal_mm": 35.0},
+            ],
+        }
+        import json
+        json_in = tmp_path / "in.json"
+        json_in.write_text(json.dumps(payload))
+        fbx_out = tmp_path / "out.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out), camera_name="Cam")
+
+        text = fbx_out.read_text()
+        import re
+        m = re.search(r'(\n\s*AnimationStack:[^\n]*\{\s*\n\s*\})', text)
+        assert m is not None, (
+            "AnimationStack not emitted as `{ }`-braced empty block. "
+            "Flame's import_fbx will drop all keyframes. Excerpt:\n"
+            + text[text.find("AnimationStack:"):text.find("AnimationStack:") + 200]
+        )
