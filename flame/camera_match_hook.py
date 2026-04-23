@@ -2330,11 +2330,19 @@ def _export_camera_to_blender(selection):
             # Imports camera_io lazily (same lazy-import pattern as fbx_io above).
             from forge_flame import camera_io
             try:
+                # film_back_mm=None — let camera_io derive from Flame's
+                # own (fov, focal). Pinning 36.0 was the old full-frame
+                # parity shortcut; it breaks the Blender→Flame return
+                # trip because the round-trip then stamps 36mm onto the
+                # original (typically 16mm Super-16) camera. The
+                # downstream pipeline preserves whatever we emit here
+                # through bake_camera.sensor_height + flame_math extract,
+                # so the honest value is what we want.
                 camera_io.export_flame_camera_to_json(
                     cam, json_path,
                     frame=start_frame_int,
                     width=width, height=height,
-                    film_back_mm=36.0,
+                    film_back_mm=None,
                     frame_rate=fps_label,                   # item 5
                     custom_properties={                      # item 2 stamp parity
                         "forge_bake_action_name": raw_action_name,
@@ -2372,10 +2380,17 @@ def _export_camera_to_blender(selection):
             # Flame's Action list, so they MUST match the live Flame names
             # exactly (sanitization is only for filesystem paths above).
             try:
+                # film_back_mm=None — let fbx_to_v5_json derive from the
+                # FBX's FilmHeight property (Flame's own export writes
+                # the camera's true filmback here; typically 16mm
+                # Super-16). Pinning 36.0 was the old full-frame parity
+                # shortcut; it breaks the Blender→Flame return trip
+                # because the round-trip then stamps 36mm onto the
+                # original camera.
                 fbx_ascii.fbx_to_v5_json(
                     fbx_path, json_path,
                     width=width, height=height,
-                    film_back_mm=36.0,
+                    film_back_mm=None,
                     frame_rate=fps_label,               # item 5 (animated path)
                     camera_name=raw_cam_name,
                     frame_offset=frame_offset,
