@@ -114,6 +114,21 @@ Plans:
 **Plans:**
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
+### Phase 999.2: Blender→Flame filmback preservation (BACKLOG)
+
+**Goal:** Preserve Flame's original film-back width through the Send-to-Flame roundtrip so the focal-length number the artist sees in Flame matches what they solved, not Blender's 36mm default sensor.
+
+**Context:** Observed by user 2026-04-22 after the Phase 04.1 rotation hotfix landed. A solved Camera Match camera with `focal=27.9mm, filmback≈16mm, FOV=32.01°` round-tripped as `focal=12.8mm, filmback=36mm, FOV=109.17°`. **FOV is preserved** (the camera sees the same thing — geometric fidelity is intact per the tool's core value), but the focal/filmback pair drifts because Blender stamps its default 36mm Full Frame sensor on export, and on return trip Flame reconstructs `focal = filmback / (2·tan(fov/2))` against that 36mm number. Net: the displayed focal differs from what the artist set, which is confusing even though the composite will still glue correctly to the plate.
+
+**Approach:** On the Flame→Blender side (`tools/blender/bake_camera.py`), stamp the source Flame camera's `filmback_mm` as a `bpy` custom property (reuse the existing `custom_properties` kwarg plumbed in 04.1-02, and hook into `_RESERVED_STAMP_KEYS`). On the Blender→Flame side (`tools/blender/extract_camera.py` + `tools/blender/forge_sender/transport.py`), read that stamp back and propagate it into the v5 JSON's `film_back_mm` field that `fbx_ascii._mutate_template_with_payload` already consumes. If the stamp is missing (camera wasn't baked by us — e.g. artist-authored Blender cam), fall back to Blender's scene sensor width with a stderr warning (mirrors D-14 fallback pattern).
+
+**Acceptance:** Round-tripped camera preserves original Flame filmback within 0.1mm; focal-length number displayed on the returned Flame camera matches the original within 0.1mm; FOV continues to match (regression guard for the current working state).
+
+**Requirements:** TBD
+
+**Plans:**
+- [ ] TBD (promote with /gsd-review-backlog when ready)
+
 ## Progress
 
 **Execution Order:**
