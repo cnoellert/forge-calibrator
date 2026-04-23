@@ -1860,3 +1860,169 @@ class TestWriterTakesLocalTime:
             f"The last frame number (20), not frame count (3) or delta "
             f"(15), must be used."
         )
+
+
+class TestWriterGlobalSettingsTimeSpan:
+    """GlobalSettings::TimeSpanStop must be updated to cover the full
+    animation range emitted by _mutate_template_with_payload.
+
+    Root cause: the template hard-codes TimeSpanStop = 46186158000
+    (= frame 24 at 24 fps). Flame uses TimeSpanStop as a secondary clip
+    boundary alongside Takes::LocalTime. For VFX-style shot ranges
+    (e.g. frames 1001–1024 at 24 fps) every keyframe KTime exceeds
+    46186158000, so ALL keyframes are silently dropped and the camera
+    arrives in Flame with no animation — even after the Takes::LocalTime
+    fix (commit 45fb7fd) correctly spans LocalTime to the last keyframe.
+
+    Fix: _mutate_template_with_payload must also update
+    GlobalSettings::TimeSpanStop = ktime_from_frame(last_frame, frame_rate).
+
+    Tests:
+    - E: VFX-range frames 1001–1024 at 24 fps — TimeSpanStop must equal
+      ktime_from_frame(1024, "24 fps") (the critical case: every keyframe
+      KTime > template's 46186158000, so without this fix all keys drop).
+    - F: standard frames 1–10 at 24 fps — TimeSpanStop must equal
+      ktime_from_frame(10, "24 fps"), not stay at the template default.
+    - G: non-24-fps rate (25 fps, frames 1–5) — TimeSpanStop must use the
+      correct frame_rate KTime, not a hard-coded 24-fps value.
+    - H: TimeSpanStop >= Takes::LocalTime (parity check: both must agree on
+      the animation end boundary, no off-by-one between the two fields).
+    """
+
+    def _payload(self, frame_numbers, *, fps_label="24 fps"):
+        """Build a minimal v5 payload for the given frame numbers."""
+        return {
+            "width": 1920,
+            "height": 1080,
+            "film_back_mm": 36.0,
+            "frames": [
+                {
+                    "frame": f,
+                    "position": [0.0, 0.0, 4000.0],
+                    "rotation_flame_euler": [0.0, 0.0, 0.0],
+                    "focal_mm": 35.0,
+                }
+                for f in frame_numbers
+            ],
+        }
+
+    def _global_settings_timespan_stop(self, fbx_text):
+        """Return the integer TimeSpanStop from GlobalSettings::Properties70."""
+        import re
+        m = re.search(
+            r'GlobalSettings:\s*\{.*?TimeSpanStop.*?"",\s*(\d+)',
+            fbx_text, re.DOTALL,
+        )
+        assert m is not None, (
+            "TimeSpanStop not found in GlobalSettings. "
+            "FBX excerpt (first 800 chars): " + fbx_text[:800]
+        )
+        return int(m.group(1))
+
+    def _takes_local_time_end(self, fbx_text):
+        """Return the end KTime from Takes::Take::LocalTime."""
+        import re
+        m = re.search(r'Takes:\s*\{.*?LocalTime:\s*\d+,(\d+)',
+                      fbx_text, re.DOTALL)
+        assert m is not None, "LocalTime not found"
+        return int(m.group(1))
+
+    def test_e_vfx_range_frames_timespan_covers_last_ktime(self, tmp_path):
+        """Test E: frames 1001–1024 at 24 fps — TimeSpanStop must equal
+        ktime_from_frame(1024, '24 fps') = 1970609408000.
+
+        This is the primary regression test for the second no-keyframes bug:
+        the template's TimeSpanStop is 46186158000 (= frame 24 at 24 fps).
+        Every keyframe in a 1001–1024 shot has KTime > 46186158000, so
+        without this fix Flame clips every keyframe and the camera has no
+        animation despite Takes::LocalTime being correct."""
+        payload = self._payload(list(range(1001, 1025)))
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        ts_stop = self._global_settings_timespan_stop(fbx_text)
+        expected = ktime_from_frame(1024, "24 fps")
+        template_default = 46186158000
+        assert ts_stop == expected, (
+            f"VFX frames 1001–1024: GlobalSettings TimeSpanStop must be "
+            f"ktime_from_frame(1024, '24 fps') = {expected}; got {ts_stop}. "
+            f"Template default {template_default} is frame 24 at 24 fps — "
+            f"every keyframe KTime in this range exceeds it, so Flame "
+            f"silently clips all of them, leaving no animation on the camera."
+        )
+
+    def test_f_standard_range_timespan_updated(self, tmp_path):
+        """Test F: frames 1–10 at 24 fps — TimeSpanStop must equal
+        ktime_from_frame(10, '24 fps') = 19244232500, not stay at the
+        template's 46186158000.
+
+        Regression guard: even for short shots within the template's
+        original 24-frame default, the writer must stamp the actual last
+        keyframe's KTime (not leave the template default in place)."""
+        payload = self._payload(list(range(1, 11)))
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="24 fps")
+
+        fbx_text = fbx_out.read_text()
+        ts_stop = self._global_settings_timespan_stop(fbx_text)
+        expected = ktime_from_frame(10, "24 fps")
+        assert ts_stop == expected, (
+            f"Frames 1–10 at 24 fps: GlobalSettings TimeSpanStop must be "
+            f"ktime_from_frame(10, '24 fps') = {expected}; got {ts_stop}."
+        )
+
+    def test_g_non_24fps_timespan_uses_correct_rate(self, tmp_path):
+        """Test G: frames 1–5 at 25 fps — TimeSpanStop must equal
+        ktime_from_frame(5, '25 fps'), NOT the 24-fps value. Verifies
+        the frame_rate kwarg is plumbed into the TimeSpanStop computation."""
+        payload = self._payload(list(range(1, 6)))
+        json_in = tmp_path / "in.json"
+        json_in.write_text(__import__('json').dumps(payload))
+        fbx_out = tmp_path / "cam.fbx"
+        v5_json_to_fbx(str(json_in), str(fbx_out),
+                       camera_name="Cam", frame_rate="25 fps")
+
+        fbx_text = fbx_out.read_text()
+        ts_stop = self._global_settings_timespan_stop(fbx_text)
+        expected = ktime_from_frame(5, "25 fps")
+        wrong_24fps = ktime_from_frame(5, "24 fps")
+        assert ts_stop == expected, (
+            f"Frames 1–5 at 25 fps: GlobalSettings TimeSpanStop must be "
+            f"ktime_from_frame(5, '25 fps') = {expected}; got {ts_stop}. "
+            f"(24 fps value would be {wrong_24fps} — frame_rate kwarg not "
+            f"reaching the TimeSpanStop computation.)"
+        )
+
+    def test_h_timespan_stop_equals_localtime_end(self, tmp_path):
+        """Test H: GlobalSettings TimeSpanStop must equal Takes::LocalTime
+        end for all payloads — parity check ensuring both fields agree on
+        the animation boundary. If they diverge, Flame clips at whichever
+        value is smaller, silently discarding keyframes."""
+        for frame_list, rate in [
+            (list(range(1, 11)), "24 fps"),
+            (list(range(1001, 1025)), "24 fps"),
+            ([1, 50, 100], "25 fps"),
+        ]:
+            payload = self._payload(frame_list, fps_label=rate)
+            json_in = tmp_path / f"in_{frame_list[0]}_{frame_list[-1]}.json"
+            json_in.write_text(__import__('json').dumps(payload))
+            fbx_out = tmp_path / f"cam_{frame_list[0]}_{frame_list[-1]}.fbx"
+            v5_json_to_fbx(str(json_in), str(fbx_out),
+                           camera_name="Cam", frame_rate=rate)
+
+            fbx_text = fbx_out.read_text()
+            ts_stop = self._global_settings_timespan_stop(fbx_text)
+            lt_end = self._takes_local_time_end(fbx_text)
+            assert ts_stop == lt_end, (
+                f"Frames {frame_list[0]}–{frame_list[-1]} at {rate}: "
+                f"GlobalSettings TimeSpanStop ({ts_stop}) must equal "
+                f"Takes LocalTime end ({lt_end}). They must agree so Flame "
+                f"clips at the same boundary from both fields."
+            )

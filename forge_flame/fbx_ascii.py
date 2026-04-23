@@ -1068,6 +1068,8 @@ def _mutate_template_with_payload(
     - Replaces the seven AnimationCurve nodes wholesale (preserving
       their object IDs and Connections) with keyframe arrays derived
       from ``payload['frames']``.
+    - Updates Takes::Take::LocalTime/ReferenceTime and
+      GlobalSettings::TimeSpanStop to span the full animation range.
     """
     # Find the Objects block.
     objects = next((n for n in tree if n.name == "Objects"), None)
@@ -1228,15 +1230,22 @@ def _mutate_template_with_payload(
         _set_property70(fov_node, "d|FieldOfView", "FieldOfView", "", "A",
                         [fov_vals[0]])
 
-    # Update Takes::Take::LocalTime and Takes::Take::ReferenceTime to span
-    # the full animation range. The template hard-codes a single-frame
-    # value (KTime for frame 1 at 23.976 fps). If left unchanged, Flame's
-    # import_fbx clips any keyframe with KTime > LocalTime end — producing
-    # a silent "no keyframes" result for multi-frame cameras on the
-    # Blender->Flame return trip.
+    # Update Takes::Take::LocalTime / ReferenceTime AND
+    # GlobalSettings::TimeSpanStop to span the full animation range.
     #
-    # Both fields carry a (start, end) pair where start is always 0
-    # (the FBX convention) and end is the KTime of the last keyframe.
+    # Takes::LocalTime/ReferenceTime: the template hard-codes a single-frame
+    # value (KTime for frame 1 at 23.976 fps). Flame's import_fbx clips any
+    # keyframe with KTime > LocalTime end, so this must equal the KTime of
+    # the last keyframe.
+    #
+    # GlobalSettings::TimeSpanStop: the template hard-codes 46186158000
+    # (= frame 24 at 24 fps). For VFX-style shot ranges (e.g. frames
+    # 1001–1024) ALL keyframe KTimes exceed this value. Flame uses
+    # TimeSpanStop as a secondary clip boundary in addition to LocalTime:
+    # keyframes with KTime > TimeSpanStop are silently dropped. Leaving it
+    # stale causes every keyframe to be lost for shots beyond frame 24 at
+    # 24 fps (the Blender→Flame round-trip arrives in Flame with no keys).
+    # Setting it to last_ktime ensures it always covers the full payload.
     last_ktime = times[-1]  # times list was built above from payload frames
     takes_node = next((n for n in tree if n.name == "Takes"), None)
     if takes_node is not None:
@@ -1245,6 +1254,10 @@ def _mutate_template_with_payload(
                 if child.name in ("LocalTime", "ReferenceTime"):
                     # Values are [start_ktime, end_ktime]. Preserve start.
                     child.values = [child.values[0], last_ktime]
+    global_settings = next((n for n in tree if n.name == "GlobalSettings"), None)
+    if global_settings is not None:
+        _set_property70(global_settings, "TimeSpanStop", "KTime", "Time", "",
+                        [last_ktime])
 
 
 def _payload_to_fbx(
