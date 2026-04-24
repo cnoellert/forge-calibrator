@@ -1508,7 +1508,6 @@ def _open_camera_match(clip):
                 # Camera transform — solver now returns the full world position,
                 # computed so that world origin projects to the origin control
                 # pixel at a fixed distance along the view ray.
-                cam.target_mode.set_value(False)
                 pos = result["position"]
                 cam.position.set_value((float(pos[0]), float(pos[1]), float(pos[2])))
                 cam.rotation.set_value(result["rotation"])
@@ -1575,7 +1574,6 @@ def _open_camera_match(clip):
                     "fov": cam.fov.get_value(),
                     "focal": cam.focal.get_value(),
                     "film_type": cam.film_type.get_value(),
-                    "target_mode": cam.target_mode.get_value(),
                     "action_name": _val(action.name) if action else None,
                     "created_new_action": created_new_action,
                     "intended": {
