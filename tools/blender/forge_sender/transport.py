@@ -121,6 +121,20 @@ def _forge_send():
     success = False
     _log("step=start")
     try:
+        # WR-02 defense-in-depth (02-REVIEW.md): fail loud if the
+        # resolved frame_rate is not in _FPS_FROM_FRAME_RATE rather
+        # than letting v5_json_str_to_fbx silently fall back to 24 fps
+        # (which violates the Core Value of fps fidelity end-to-end).
+        # The addon-side _resolve_frame_rate ladder already guards
+        # this, but the two label sets (_FLAME_FPS_LABELS and
+        # _FPS_FROM_FRAME_RATE) are currently duplicated (IN-02) — if
+        # they ever drift, this check catches the mismatch before any
+        # FBX gets written with the wrong KTime basis.
+        if frame_rate not in fbx_ascii._FPS_FROM_FRAME_RATE:
+            raise RuntimeError(
+                "Unknown Flame frame rate: %r -- expected one of %s"
+                % (frame_rate, sorted(fbx_ascii._FPS_FROM_FRAME_RATE))
+            )
         _log("step=pre_fbx_parse fbx_path=%r" % fbx_path)
         # pixel_to_units=1.0 — the v5 JSON built by forge_sender.flame_math.
         # build_v5_payload already expresses position in FBX units (it

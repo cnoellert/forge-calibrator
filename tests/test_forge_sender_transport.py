@@ -138,6 +138,23 @@ class TestBuildPayload:
         with pytest.raises(TypeError):
             transport.build_payload("{}", frame_rate=24.0)
 
+    def test_template_guards_frame_rate_against_fps_map(self):
+        # WR-02 (02-REVIEW.md): defense-in-depth. The Flame-side
+        # template MUST reject an unknown frame_rate before calling
+        # v5_json_str_to_fbx (which silently falls back to 24 fps on
+        # unknown keys — violates the Core Value of fps fidelity
+        # end-to-end). This grep anchor catches accidental removal of
+        # the guard during future template refactors.
+        template = transport._FLAME_SIDE_TEMPLATE
+        assert "fbx_ascii._FPS_FROM_FRAME_RATE" in template, (
+            "Template must reference fbx_ascii._FPS_FROM_FRAME_RATE for "
+            "the WR-02 fail-loud frame-rate guard."
+        )
+        assert "Unknown Flame frame rate" in template, (
+            "Template must raise RuntimeError with the 'Unknown Flame "
+            "frame rate' message when the guard trips."
+        )
+
 
 class TestSend:
     def test_calls_requests_post_with_json_kwarg(self, monkeypatch):
@@ -299,6 +316,13 @@ def _apply_filter(nodes):
             return nodes
 
     class _FakeFbxAscii:
+        # WR-02 (02-REVIEW.md): the _FLAME_SIDE_TEMPLATE guards
+        # `frame_rate not in fbx_ascii._FPS_FROM_FRAME_RATE` before
+        # calling v5_json_str_to_fbx. The tests below use "24 fps"
+        # verbatim via frame_rate_repr=repr("24 fps"); providing just
+        # that key on the fake is enough to exercise the happy path.
+        _FPS_FROM_FRAME_RATE = {"24 fps": 24.0}
+
         @staticmethod
         def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):
             pass  # no-op
@@ -433,6 +457,11 @@ def _exec_template_with_fakes(
             return [cam]
 
     class _FakeFbxAscii:
+        # WR-02 (02-REVIEW.md): template guards frame_rate against
+        # fbx_ascii._FPS_FROM_FRAME_RATE. All instrumentation fixtures
+        # use "24 fps"; providing that key unblocks the happy path.
+        _FPS_FROM_FRAME_RATE = {"24 fps": 24.0}
+
         @staticmethod
         def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):  # noqa: ARG004
             # no-op; just create the file so the template doesn't error
@@ -582,6 +611,11 @@ class TestInstrumentationLogging:
                 return [cam]
 
         class _FakeFbxAscii2:
+            # WR-02 (02-REVIEW.md): template guards frame_rate against
+            # fbx_ascii._FPS_FROM_FRAME_RATE. This rmtree-cleanup
+            # fixture uses "24 fps"; provide that key only.
+            _FPS_FROM_FRAME_RATE = {"24 fps": 24.0}
+
             @staticmethod
             def v5_json_str_to_fbx(v5_json_str, fbx_path, *, frame_rate, pixel_to_units=0.1):  # noqa: ARG004
                 open(fbx_path, "w").write("")  # noqa: WPS515
