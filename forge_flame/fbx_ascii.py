@@ -799,6 +799,16 @@ def _merge_curves(
     after the offset so the comparison is against the user-facing plate
     frame number.
     """
+    # Local import — aim-rig branch only. Keeps fbx_ascii module-scope
+    # numpy-free so other consumers (e.g. the FBX writer) do not pay
+    # the numpy import cost unless the reader is actually invoked.
+    # Imported up-front (not conditionally) to keep the static_fallback
+    # and per-frame branches below straightforward.
+    from forge_core.math.rotations import (  # noqa: E402 — intentional local import
+        rotation_matrix_from_look_at,
+        compute_flame_euler_zyx,
+    )
+
     tx = _read_curve(cam.t_curve_ids.get("X"), root)
     ty = _read_curve(cam.t_curve_ids.get("Y"), root)
     tz = _read_curve(cam.t_curve_ids.get("Z"), root)
@@ -807,8 +817,44 @@ def _merge_curves(
     rz = _read_curve(cam.r_curve_ids.get("Z"), root)
     fov = _read_curve(cam.fov_curve_id, root)
 
+    # Aim-rig mode detection (Phase 4.2, D-02/D-08). The branch fires
+    # when the camera was bound by a LookAtProperty connection AND its
+    # Lcl Rotation curves are either absent or identically zero — Flame
+    # emits zero rotation on aim-rig cameras; the orientation lives in
+    # aim/up/roll. If for some reason an FBX carries BOTH a non-zero
+    # Lcl Rotation curve AND an aim Null, prefer the explicit rotation
+    # curve (matches the user's principle "transform is what matters").
+    is_aim_rig = cam.aim_null_id is not None
+    if is_aim_rig:
+        for c in (rx, ry, rz):
+            if any(abs(v) > 1e-9 for v in c.values):
+                is_aim_rig = False
+                break
+
+    if is_aim_rig:
+        # Aim-rig animation curves. Any of these may be empty (static
+        # channel); _sample_at falls back to the Properties70 static.
+        aim_tx = _read_curve(cam.aim_t_curve_ids.get("X"), root)
+        aim_ty = _read_curve(cam.aim_t_curve_ids.get("Y"), root)
+        aim_tz = _read_curve(cam.aim_t_curve_ids.get("Z"), root)
+        up_cx  = _read_curve(cam.up_curve_ids.get("X"), root)
+        up_cy  = _read_curve(cam.up_curve_ids.get("Y"), root)
+        up_cz  = _read_curve(cam.up_curve_ids.get("Z"), root)
+        roll_c = _read_curve(cam.roll_curve_id, root)
+    else:
+        aim_tx = aim_ty = aim_tz = _CurveSamples.empty()
+        up_cx  = up_cy  = up_cz  = _CurveSamples.empty()
+        roll_c = _CurveSamples.empty()
+
     # Static fallback: none of the curves had any keys.
-    any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
+    if is_aim_rig:
+        any_keyed = any(c.times for c in (
+            tx, ty, tz, rx, ry, rz, fov,
+            aim_tx, aim_ty, aim_tz, up_cx, up_cy, up_cz, roll_c,
+        ))
+    else:
+        any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
+
     if not any_keyed:
         frame = frame_offset
         # Clip AFTER the offset so the comparison is against the
@@ -824,20 +870,47 @@ def _merge_curves(
         if frame_end is not None and frame > frame_end:
             return []
         sp = cam.static_position
-        sr = cam.static_rotation
         film_back_mm = _inches_to_mm(cam.film_height_inches)
         focal_mm = _focal_from_fov_filmback(cam.field_of_view, film_back_mm)
+
+        if is_aim_rig:
+            # Aim-rig static: resolve orientation from Properties70
+            # values. Flame stores Roll with the same sign-flip
+            # convention as Lcl Rotation (FBX positive → Flame-probe
+            # negative), so negate before feeding the look-at helper —
+            # matches the free-rig branch's `-_sample_at(rx, ...)`
+            # negation below. Plan 01's ValueError with 'aim-rig
+            # resolve:' prefix on degenerate input propagates (no
+            # try/except).
+            R = rotation_matrix_from_look_at(
+                position=sp,
+                aim=cam.static_aim_position,
+                up=cam.static_up_vector,
+                roll_deg=-cam.static_roll,
+            )
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+        else:
+            sr = cam.static_rotation
+            # Existing free-rig sign-flip.
+            rx_deg, ry_deg, rz_deg = -sr[0], -sr[1], -sr[2]
+
         return [{
             "frame": frame,
             "position": [sp[0], sp[1], sp[2]],
-            "rotation_flame_euler": [-sr[0], -sr[1], -sr[2]],
+            "rotation_flame_euler": [rx_deg, ry_deg, rz_deg],
             "focal_mm": focal_mm,
         }]
 
-    # Collect unique KeyTimes across all seven curves.
+    # Collect unique KeyTimes across all curves (include aim-rig if active).
     all_times: set[int] = set()
-    for c in (tx, ty, tz, rx, ry, rz, fov):
-        all_times.update(c.times)
+    if is_aim_rig:
+        for c in (tx, ty, tz, fov,
+                  aim_tx, aim_ty, aim_tz,
+                  up_cx, up_cy, up_cz, roll_c):
+            all_times.update(c.times)
+    else:
+        for c in (tx, ty, tz, rx, ry, rz, fov):
+            all_times.update(c.times)
     sorted_times = sorted(all_times)
 
     film_back_mm = _inches_to_mm(cam.film_height_inches)
@@ -860,11 +933,34 @@ def _merge_curves(
         px = _sample_at(tx, ktime, cam.static_position[0])
         py = _sample_at(ty, ktime, cam.static_position[1])
         pz = _sample_at(tz, ktime, cam.static_position[2])
-        rx_deg = -_sample_at(rx, ktime, cam.static_rotation[0])
-        ry_deg = -_sample_at(ry, ktime, cam.static_rotation[1])
-        rz_deg = -_sample_at(rz, ktime, cam.static_rotation[2])
         fov_deg = _sample_at(fov, ktime, cam.field_of_view)
         focal_mm = _focal_from_fov_filmback(fov_deg, film_back_mm)
+
+        if is_aim_rig:
+            # Per-frame aim-rig composition. Sampled values fall back
+            # to the Properties70 static when the animation curve is
+            # absent (mirror of _sample_at default-fallback for position).
+            # Roll sign-flipped (FBX→Flame-probe convention) — same as
+            # the static-fallback branch above.
+            aim_x = _sample_at(aim_tx, ktime, cam.static_aim_position[0])
+            aim_y = _sample_at(aim_ty, ktime, cam.static_aim_position[1])
+            aim_z = _sample_at(aim_tz, ktime, cam.static_aim_position[2])
+            up_x  = _sample_at(up_cx,  ktime, cam.static_up_vector[0])
+            up_y  = _sample_at(up_cy,  ktime, cam.static_up_vector[1])
+            up_z  = _sample_at(up_cz,  ktime, cam.static_up_vector[2])
+            roll  = _sample_at(roll_c, ktime, cam.static_roll)
+            # Propagates Plan 01's ValueError on degenerate input.
+            R = rotation_matrix_from_look_at(
+                position=(px, py, pz),
+                aim=(aim_x, aim_y, aim_z),
+                up=(up_x, up_y, up_z),
+                roll_deg=-roll,
+            )
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+        else:
+            rx_deg = -_sample_at(rx, ktime, cam.static_rotation[0])
+            ry_deg = -_sample_at(ry, ktime, cam.static_rotation[1])
+            rz_deg = -_sample_at(rz, ktime, cam.static_rotation[2])
 
         out.append({
             "frame": frame,
