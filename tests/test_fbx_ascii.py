@@ -62,11 +62,10 @@ AIMRIG_FIXTURE = "forge_fbx_aimrig.fbx"
 CAMERA1_POSITION_SCALED = (0.0, 5.7774681, 211.3305420)
 CAMERA1_AIM_SCALED = (0.0355065, 5.7133656, 209.3318848)
 CAMERA1_UP = (0.0, 30.0, 0.0)          # world-space up reference — unscaled
-# Live-probe roll sign — this IS Flame's rendered aim-rig roll direction
-# (the FBX stores +1.252521 sign-flipped on export; the parser negates
-# before feeding the look-at helper). Verified 2026-04-24 via forge-bridge
-# probe of the live aim-rig Camera1.
-CAMERA1_ROLL = -1.252521
+# Roll fed to the helper is the FBX-stored sign (+1.252521). HUMAN-UAT proved
+# the earlier live-probe sign (-1.252521) did not match Flame's rendered
+# aim-rig roll; the parser now passes Roll through as-stored.
+CAMERA1_ROLL_FBX = 1.252521
 CAMERA1_FOCAL_MM = 35.331177
 
 
@@ -544,20 +543,21 @@ class TestAimRigFixture:
 
     def test_rotation_matches_plan01_known_answer(self, fbx_path, tmp_path):
         # D-07 case 1 full-integration gate. Derive the expected Euler
-        # by calling rotation_matrix_from_look_at + compute_flame_euler_xyz
+        # by calling rotation_matrix_from_look_at + compute_flame_euler_zyx
         # on the Camera1 inputs (FBX-scaled position + aim, unscaled up,
-        # live-probe roll sign — which the parser's aim-rig branch feeds
-        # via `roll_deg=-cam.static_roll`). Stays aligned with the helper.
+        # FBX-stored roll sign). Keeps the fixture end-to-end test aligned
+        # with the helper — whatever Euler the helper produces for these
+        # inputs is what the parser must emit.
         from forge_core.math.rotations import (  # noqa: E402
-            rotation_matrix_from_look_at, compute_flame_euler_xyz,
+            rotation_matrix_from_look_at, compute_flame_euler_zyx,
         )
         expected_R = rotation_matrix_from_look_at(
             position=CAMERA1_POSITION_SCALED,
             aim=CAMERA1_AIM_SCALED,
             up=CAMERA1_UP,
-            roll_deg=CAMERA1_ROLL,
+            roll_deg=CAMERA1_ROLL_FBX,
         )
-        expected_rx, expected_ry, expected_rz = compute_flame_euler_xyz(expected_R)
+        expected_rx, expected_ry, expected_rz = compute_flame_euler_zyx(expected_R)
 
         out = tmp_path / "aimrig.json"
         fbx_to_v5_json(str(fbx_path), str(out),
