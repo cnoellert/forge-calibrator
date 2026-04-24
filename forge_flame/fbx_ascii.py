@@ -874,19 +874,19 @@ def _merge_curves(
         focal_mm = _focal_from_fov_filmback(cam.field_of_view, film_back_mm)
 
         if is_aim_rig:
-            # Aim-rig static: resolve orientation from Properties70
-            # values. Flame stores Roll with the same sign-flip
-            # convention as Lcl Rotation (FBX positive → Flame-probe
-            # negative), so negate before feeding the look-at helper —
-            # matches the free-rig branch's `-_sample_at(rx, ...)`
-            # negation below. Plan 01's ValueError with 'aim-rig
-            # resolve:' prefix on degenerate input propagates (no
-            # try/except).
+            # Aim-rig static: resolve orientation from Properties70.
+            # Roll is fed through as-stored — the FBX `Roll` property
+            # matches Flame's rendered aim-rig roll direction (verified
+            # against a viewport manual-match on Camera1). The earlier
+            # parser-layer negation was derived from a live-probe readout
+            # that did not reflect the renderer. Plan 01's
+            # ValueError with 'aim-rig resolve:' prefix on degenerate
+            # input propagates (no try/except).
             R = rotation_matrix_from_look_at(
                 position=sp,
                 aim=cam.static_aim_position,
                 up=cam.static_up_vector,
-                roll_deg=-cam.static_roll,
+                roll_deg=cam.static_roll,
             )
             rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
         else:
@@ -940,8 +940,8 @@ def _merge_curves(
             # Per-frame aim-rig composition. Sampled values fall back
             # to the Properties70 static when the animation curve is
             # absent (mirror of _sample_at default-fallback for position).
-            # Roll sign-flipped (FBX→Flame-probe convention) — same as
-            # the static-fallback branch above.
+            # Roll fed as-stored — see static-fallback branch above for
+            # the Flame-viewport-verified sign rationale.
             aim_x = _sample_at(aim_tx, ktime, cam.static_aim_position[0])
             aim_y = _sample_at(aim_ty, ktime, cam.static_aim_position[1])
             aim_z = _sample_at(aim_tz, ktime, cam.static_aim_position[2])
@@ -954,7 +954,7 @@ def _merge_curves(
                 position=(px, py, pz),
                 aim=(aim_x, aim_y, aim_z),
                 up=(up_x, up_y, up_z),
-                roll_deg=-roll,
+                roll_deg=roll,
             )
             rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
         else:

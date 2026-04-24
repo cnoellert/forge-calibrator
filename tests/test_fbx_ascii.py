@@ -62,7 +62,10 @@ AIMRIG_FIXTURE = "forge_fbx_aimrig.fbx"
 CAMERA1_POSITION_SCALED = (0.0, 5.7774681, 211.3305420)
 CAMERA1_AIM_SCALED = (0.0355065, 5.7133656, 209.3318848)
 CAMERA1_UP = (0.0, 30.0, 0.0)          # world-space up reference — unscaled
-CAMERA1_ROLL_FLAME_PROBE = -1.252521   # Flame-probe sign (FBX stores +1.25)
+# Roll fed to the helper is the FBX-stored sign (+1.252521). HUMAN-UAT proved
+# the earlier live-probe sign (-1.252521) did not match Flame's rendered
+# aim-rig roll; the parser now passes Roll through as-stored.
+CAMERA1_ROLL_FBX = 1.252521
 CAMERA1_FOCAL_MM = 35.331177
 
 
@@ -541,11 +544,10 @@ class TestAimRigFixture:
     def test_rotation_matches_plan01_known_answer(self, fbx_path, tmp_path):
         # D-07 case 1 full-integration gate. Derive the expected Euler
         # by calling rotation_matrix_from_look_at + compute_flame_euler_zyx
-        # on the Camera1 inputs — this ensures the test stays consistent
-        # if Plan 01's helper is ever rebuilt. The input values mirror
-        # what the FBX parser ultimately feeds the resolver (FBX-scaled
-        # position + aim, unscaled up; roll sign-flipped from FBX's
-        # +1.25 to Flame-probe's -1.25).
+        # on the Camera1 inputs (FBX-scaled position + aim, unscaled up,
+        # FBX-stored roll sign). Keeps the fixture end-to-end test aligned
+        # with the helper — whatever Euler the helper produces for these
+        # inputs is what the parser must emit.
         from forge_core.math.rotations import (  # noqa: E402
             rotation_matrix_from_look_at, compute_flame_euler_zyx,
         )
@@ -553,7 +555,7 @@ class TestAimRigFixture:
             position=CAMERA1_POSITION_SCALED,
             aim=CAMERA1_AIM_SCALED,
             up=CAMERA1_UP,
-            roll_deg=CAMERA1_ROLL_FLAME_PROBE,
+            roll_deg=CAMERA1_ROLL_FBX,
         )
         expected_rx, expected_ry, expected_rz = compute_flame_euler_zyx(expected_R)
 

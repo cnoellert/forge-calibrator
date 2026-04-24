@@ -29,14 +29,16 @@ from forge_core.math.rotations import (  # noqa: E402
 )
 
 
-# Camera1 live-probe values (CONTEXT.md §specifics, captured 2026-04-23 from
-# user's action9 Camera1 via forge-bridge). These are the D-07 known-answer
-# fixture — verify rz dominates (position→aim nearly aligned with world -Z)
-# and capture the full Euler triple for Plan 03's FBX integration test.
+# Camera1 values captured from the user's action9 fixture (2026-04-23). The
+# roll value is the FBX-stored sign (+1.252521) — verified against a Flame
+# viewport manual-match on Camera1 after the 04.2 HUMAN-UAT discovered that
+# forge-bridge's live-probe readout (-1.252521) did NOT reflect Flame's
+# rendered aim-rig roll direction. See the static-fallback branch comment in
+# forge_flame/fbx_ascii.py for the parser-side mirror of this fix.
 CAMERA1_POSITION = (0.0, 57.774681, 2113.305420)
 CAMERA1_AIM      = (0.355065, 57.133656, 2093.318848)
 CAMERA1_UP       = (0.0, 30.0, 0.0)
-CAMERA1_ROLL_DEG = -1.252521
+CAMERA1_ROLL_DEG = 1.252521
 
 
 class TestLookAtMatrix:
