@@ -111,8 +111,8 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
-- [ ] 04.2-01-PLAN.md — Add `rotation_matrix_from_look_at` helper to `forge_core/math/rotations.py` + `tests/test_rotations.py` (Wave 1; D-06, D-07 case-2 gate, D-15 fail-loud)
-- [ ] 04.2-02-PLAN.md — Fix D-10 latent `target_mode.set_value(False)` bugs in `flame/camera_match_hook.py:1511+1578` and `forge_flame/camera_io.py:234` (Wave 1; independent of 01 and 03)
+- [x] 04.2-01-PLAN.md — Add `rotation_matrix_from_look_at` helper to `forge_core/math/rotations.py` + `tests/test_rotations.py` (Wave 1; D-06, D-07 case-2 gate, D-15 fail-loud)
+- [x] 04.2-02-PLAN.md — Fix D-10 latent `target_mode.set_value(False)` bugs in `flame/camera_match_hook.py:1511+1578` and `forge_flame/camera_io.py:234` (Wave 1; independent of 01 and 03)
 - [ ] 04.2-03-PLAN.md — Aim-rig branch in `forge_flame/fbx_ascii.py` (_extract_cameras + _merge_curves) + `tests/fixtures/forge_fbx_aimrig.fbx` + `TestAimRigFixture` / `TestAimRigFailLoud` in `tests/test_fbx_ascii.py` (Wave 2; depends on 01; D-07 case-1 integration gate)
 
 ## Backlog
