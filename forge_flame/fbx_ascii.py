@@ -31,6 +31,20 @@ parser (~200 LOC). The writer is template-shaped emission: it doesn't
 try to reproduce FBX's Definitions templates from first principles, it
 emits the exact subset Flame's own export writes (verified via
 ``/tmp/forge_fbx_baked.fbx`` from the v6.2 probing session).
+
+As of 2026-04-24 (Phase 4.2), this module also resolves Aim/Target-rig
+camera orientation. Flame's ``action.export_fbx`` emits aim-rig cameras
+with zero Lcl Rotation and encodes orientation as (a) a LookAtProperty
+``C: "OP", <null_id>, <cam_id>, "LookAtProperty"`` connection to an
+aim Null, (b) the camera's UpVector + Roll Properties70, and (c)
+optional AnimCurveNodes on any of those three (per-frame aim, up,
+roll). The parser resolves these into a per-frame cam-to-world matrix
+via ``forge_core.math.rotations.rotation_matrix_from_look_at`` and
+decomposes to Flame's ZYX Euler — the resulting ``rotation_flame_euler``
+in the v5 JSON is identical in shape to what a free-rig camera
+produces, so downstream consumers (Blender bake, 2VP parity tests)
+stay unchanged. See memory/flame_bridge.md for the live-probe history
+that motivated this parser-layer fix.
 """
 
 from __future__ import annotations
@@ -444,6 +458,17 @@ class _CameraExtract:
     t_curve_ids: dict[str, int] = field(default_factory=dict)  # {"X": curve_id, ...}
     r_curve_ids: dict[str, int] = field(default_factory=dict)
     fov_curve_id: Optional[int] = None
+    # Aim-rig fields (Phase 4.2, D-08). All default to empty / None; only
+    # populated when the camera is bound by a LookAtProperty connection
+    # to an aim Null. When any of these is non-default, _merge_curves
+    # takes the aim-rig branch instead of reading rx/ry/rz curves.
+    aim_null_id: Optional[int] = None
+    static_aim_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+    aim_t_curve_ids: dict[str, int] = field(default_factory=dict)
+    static_up_vector: Tuple[float, float, float] = (0.0, 1.0, 0.0)
+    up_curve_ids: dict[str, int] = field(default_factory=dict)  # Properties70 "UpVector" AnimCurveNode d|X/d|Y/d|Z
+    static_roll: float = 0.0
+    roll_curve_id: Optional[int] = None
 
 
 def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
@@ -459,6 +484,14 @@ def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
         # Header shape: Model: ID, "Model::Name", "Camera"
         if len(m.values) >= 3 and m.values[2] == "Camera":
             camera_models[_object_id(m)] = m
+
+    # Aim-rig detection (Phase 4.2, D-02): scan Null Models so we can
+    # resolve LookAtProperty connection sources. Duck-typing on
+    # ``values[2] == "Null"`` mirrors the camera scan shape above.
+    null_models: dict[int, FBXNode] = {}
+    for m in _iter_objects(root, "Model"):
+        if len(m.values) >= 3 and m.values[2] == "Null":
+            null_models[_object_id(m)] = m
 
     camera_node_attrs: dict[int, FBXNode] = {}
     for na in _iter_objects(root, "NodeAttribute"):
@@ -498,6 +531,23 @@ def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
         if src in anim_curves and dst in anim_nodes:
             curve_links[src] = (dst, chan)
 
+    # Map camera Model ID -> aim Null Model ID (LookAtProperty connections).
+    # FBX shape: C: "OP", <null_id>, <cam_id>, "LookAtProperty"
+    # (Phase 4.2, D-02/D-14.) A LookAtProperty edge whose source does not
+    # resolve to a known Null is a structural bug — fail loud rather than
+    # silently drop the aim-rig semantic.
+    cam_to_aim_null: dict[int, int] = {}
+    for kind, src, dst, chan in edges:
+        if kind == "OP" and chan == "LookAtProperty":
+            if src in null_models and dst in camera_models:
+                cam_to_aim_null[dst] = src
+            elif dst in camera_models and src not in null_models:
+                raise ValueError(
+                    f"aim-rig resolve: LookAtProperty connection references "
+                    f"unknown Null id {src!r} for camera "
+                    f"{_object_name(camera_models[dst])!r}"
+                )
+
     results: list[_CameraExtract] = []
     for model_id, model in camera_models.items():
         name = _object_name(model)
@@ -534,6 +584,86 @@ def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
         if p and len(p) >= 3:
             rot = (_as_float(p[0]), _as_float(p[1]), _as_float(p[2]))
 
+        # Aim-rig detection and field population (Phase 4.2, D-02/D-08).
+        # When the camera is bound by a LookAtProperty connection to an aim
+        # Null, resolve the aim target's position, the camera's UpVector /
+        # Roll Properties70, and any animation curves for those channels.
+        # Flame emits UpVector / Roll on BOTH the NodeAttribute (primary —
+        # this is where ``action.export_fbx`` writes live-probe values)
+        # AND the Model (inherited from the FBX template). AnimCurveNodes
+        # for UpVector / Roll are connected to the NodeAttribute in the
+        # Camera1 live probe (lines 642-643 of the fixture); the code
+        # tolerates either target.
+        aim_null_id = cam_to_aim_null.get(model_id)
+        static_aim_position: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        aim_t_curve_ids: dict[str, int] = {}
+        static_up_vector: Tuple[float, float, float] = (0.0, 1.0, 0.0)
+        up_curve_ids: dict[str, int] = {}
+        static_roll: float = 0.0
+        roll_curve_id: Optional[int] = None
+
+        if aim_null_id is not None:
+            aim_null = null_models[aim_null_id]
+            # Static aim position from the aim Null's Lcl Translation.
+            # Same inline _get_property70 + _as_float pattern as the
+            # camera's own Lcl Translation read above.
+            p = _get_property70(aim_null, "Lcl Translation")
+            if p and len(p) >= 3:
+                static_aim_position = (
+                    _as_float(p[0]), _as_float(p[1]), _as_float(p[2])
+                )
+
+            # Animated aim: find AnimCurveNodes linked to the aim Null's
+            # Lcl Translation via the existing anim_links dispatch, then
+            # walk curve_links to bucket d|X / d|Y / d|Z curves.
+            for anim_node_id, (target_id, channel) in anim_links.items():
+                if target_id == aim_null_id and channel == "Lcl Translation":
+                    for curve_id, (owner_anim_id, sub_chan) in curve_links.items():
+                        if owner_anim_id == anim_node_id and sub_chan in ("d|X", "d|Y", "d|Z"):
+                            aim_t_curve_ids[sub_chan[-1]] = curve_id
+
+            # Static up from Properties70 "UpVector" — NodeAttribute first
+            # (authoritative for live-probe values), then Model (template
+            # default). Later assignment wins; we check NA first then
+            # overwrite with Model only if Model has a non-template value.
+            if na is not None:
+                p = _get_property70(na, "UpVector")
+                if p and len(p) >= 3:
+                    static_up_vector = (_as_float(p[0]), _as_float(p[1]), _as_float(p[2]))
+            p = _get_property70(model, "UpVector")
+            if p and len(p) >= 3:
+                static_up_vector = (_as_float(p[0]), _as_float(p[1]), _as_float(p[2]))
+
+            # Animated up: AnimCurveNodes linked with channel "UpVector"
+            # — check BOTH the camera Model and the NodeAttribute as
+            # possible targets (Flame's live export attaches to the NA).
+            for anim_node_id, (target_id, channel) in anim_links.items():
+                if channel == "UpVector" and target_id in (model_id, na_id):
+                    for curve_id, (owner_anim_id, sub_chan) in curve_links.items():
+                        if owner_anim_id == anim_node_id and sub_chan in ("d|X", "d|Y", "d|Z"):
+                            up_curve_ids[sub_chan[-1]] = curve_id
+
+            # Static roll from Properties70 "Roll" (default 0.0). Same
+            # NA-first-then-Model precedence as UpVector.
+            if na is not None:
+                p = _get_property70(na, "Roll")
+                if p:
+                    static_roll = _as_float(p[0])
+            p = _get_property70(model, "Roll")
+            if p:
+                static_roll = _as_float(p[0])
+
+            # Animated roll: AnimCurveNode linked with channel "Roll".
+            # Scalar channel — pick the first AnimCurve bound to the node.
+            # Check BOTH model_id and na_id as possible targets.
+            for anim_node_id, (target_id, channel) in anim_links.items():
+                if channel == "Roll" and target_id in (model_id, na_id):
+                    for curve_id, (owner_anim_id, sub_chan) in curve_links.items():
+                        if owner_anim_id == anim_node_id:
+                            roll_curve_id = curve_id
+                            break
+                    break
+
         cam = _CameraExtract(
             name=name,
             model_id=model_id,
@@ -543,6 +673,13 @@ def _extract_cameras(root: list[FBXNode]) -> list[_CameraExtract]:
             film_height_inches=film_h,
             static_position=pos,
             static_rotation=rot,
+            aim_null_id=aim_null_id,
+            static_aim_position=static_aim_position,
+            aim_t_curve_ids=aim_t_curve_ids,
+            static_up_vector=static_up_vector,
+            up_curve_ids=up_curve_ids,
+            static_roll=static_roll,
+            roll_curve_id=roll_curve_id,
         )
 
         # Find the animation-curve-nodes attached to this Model (T, R) and
