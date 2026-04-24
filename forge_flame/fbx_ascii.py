@@ -806,7 +806,7 @@ def _merge_curves(
     # and per-frame branches below straightforward.
     from forge_core.math.rotations import (  # noqa: E402 — intentional local import
         rotation_matrix_from_look_at,
-        compute_flame_euler_zyx,
+        compute_flame_euler_xyz,
     )
 
     tx = _read_curve(cam.t_curve_ids.get("X"), root)
@@ -874,21 +874,21 @@ def _merge_curves(
         focal_mm = _focal_from_fov_filmback(cam.field_of_view, film_back_mm)
 
         if is_aim_rig:
-            # Aim-rig static: resolve orientation from Properties70.
-            # Roll is fed through as-stored — the FBX `Roll` property
-            # matches Flame's rendered aim-rig roll direction (verified
-            # against a viewport manual-match on Camera1). The earlier
-            # parser-layer negation was derived from a live-probe readout
-            # that did not reflect the renderer. Plan 01's
-            # ValueError with 'aim-rig resolve:' prefix on degenerate
+            # Aim-rig static: resolve orientation from Properties70. Roll is
+            # sign-flipped before feeding the helper — FBX stores Roll positive
+            # (+1.25 on Camera1) but Flame's renderer uses the live-probe sign
+            # (-1.25). Verified 2026-04-24 against a forge-bridge probe of the
+            # live aim-rig Camera1, with `compute_flame_euler_xyz` decoding to
+            # Flame's actual 'Rot XYZ' convention (R = Rz(-rz)·Ry(-ry)·Rx(-rx)).
+            # Plan 01's ValueError with 'aim-rig resolve:' prefix on degenerate
             # input propagates (no try/except).
             R = rotation_matrix_from_look_at(
                 position=sp,
                 aim=cam.static_aim_position,
                 up=cam.static_up_vector,
-                roll_deg=cam.static_roll,
+                roll_deg=-cam.static_roll,
             )
-            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_xyz(R)
         else:
             sr = cam.static_rotation
             # Existing free-rig sign-flip.
@@ -940,8 +940,7 @@ def _merge_curves(
             # Per-frame aim-rig composition. Sampled values fall back
             # to the Properties70 static when the animation curve is
             # absent (mirror of _sample_at default-fallback for position).
-            # Roll fed as-stored — see static-fallback branch above for
-            # the Flame-viewport-verified sign rationale.
+            # Roll is sign-flipped (see static-fallback branch above).
             aim_x = _sample_at(aim_tx, ktime, cam.static_aim_position[0])
             aim_y = _sample_at(aim_ty, ktime, cam.static_aim_position[1])
             aim_z = _sample_at(aim_tz, ktime, cam.static_aim_position[2])
@@ -954,9 +953,9 @@ def _merge_curves(
                 position=(px, py, pz),
                 aim=(aim_x, aim_y, aim_z),
                 up=(up_x, up_y, up_z),
-                roll_deg=roll,
+                roll_deg=-roll,
             )
-            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_xyz(R)
         else:
             rx_deg = -_sample_at(rx, ktime, cam.static_rotation[0])
             ry_deg = -_sample_at(ry, ktime, cam.static_rotation[1])
