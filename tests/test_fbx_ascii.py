@@ -53,6 +53,18 @@ from forge_flame.fbx_ascii import (  # noqa: E402
 
 FIXTURE_DIR = os.path.join(os.path.dirname(__file__), "fixtures")
 
+# Phase 4.2 aim-rig fixture. Byte-identical copy of the Camera1 live
+# probe at .planning/phases/04.2-.../04.2-aimrig-probe-camera1.fbx,
+# captured from Flame 2026.2.1 action9.
+AIMRIG_FIXTURE = "forge_fbx_aimrig.fbx"
+# Camera1 live-probe values at pixel_to_units=0.1 (FBX-scaled). Source:
+# CONTEXT.md §specifics + fixture lines 367-378.
+CAMERA1_POSITION_SCALED = (0.0, 5.7774681, 211.3305420)
+CAMERA1_AIM_SCALED = (0.0355065, 5.7133656, 209.3318848)
+CAMERA1_UP = (0.0, 30.0, 0.0)          # world-space up reference — unscaled
+CAMERA1_ROLL_FLAME_PROBE = -1.252521   # Flame-probe sign (FBX stores +1.25)
+CAMERA1_FOCAL_MM = 35.331177
+
 
 # =============================================================================
 # Group 1: Tokenizer
@@ -459,6 +471,188 @@ class TestPublicAPI:
         assert all(set(f.keys()) >= {"frame", "position",
                                      "rotation_flame_euler", "focal_mm"}
                    for f in data["frames"])
+
+
+# =============================================================================
+# Group 5b: Aim/Target-rig fixture + D-14 fail-loud (Phase 4.2)
+# =============================================================================
+
+
+class TestAimRigFixture:
+    """Aim/Target-rig camera orientation round-trip (Phase 4.2).
+
+    Fixture is a live FBX from Flame 2026.2.1 ``action.export_fbx(
+    bake_animation=True, pixel_to_units=0.1)`` on the user's Camera1
+    (action9, 2026-04-23). Camera1 has rotation=(0,0,0) in Flame and
+    expresses orientation via aim=(0.355, 57.13, 2093.32),
+    up=(0, 30, 0), roll=-1.25° (Flame probe sign; FBX stores +1.25).
+    The parser must resolve these into a non-zero
+    ``rotation_flame_euler`` — if the assertion fails with triple
+    (0, 0, 0), the aim-rig branch in ``_merge_curves`` is not firing.
+
+    Source probe preserved at
+    ``.planning/phases/04.2-aim-target-rig-camera-orientation-round-trip/
+    04.2-aimrig-probe-camera1.fbx`` (byte-identical copy of
+    ``tests/fixtures/forge_fbx_aimrig.fbx``)."""
+
+    @pytest.fixture
+    def fbx_path(self):
+        p = os.path.join(FIXTURE_DIR, AIMRIG_FIXTURE)
+        if not os.path.exists(p):
+            pytest.skip(f"missing fixture: {p}")
+        return p
+
+    def test_parses_without_error(self, fbx_path, tmp_path):
+        out = tmp_path / "aimrig.json"
+        fbx_to_v5_json(str(fbx_path), str(out),
+                       width=1920, height=1080, camera_name="Camera1")
+        assert out.exists()
+
+    def test_position_matches_live_probe(self, fbx_path, tmp_path):
+        out = tmp_path / "aimrig.json"
+        fbx_to_v5_json(str(fbx_path), str(out),
+                       width=1920, height=1080, camera_name="Camera1")
+        data = json.loads(out.read_text())
+        f0 = data["frames"][0]
+        # Live probe Camera1 position: (0, 57.774681, 2113.305420).
+        # FBX stores at pixel_to_units=0.1 → (0, 5.7774681, 211.330542).
+        assert f0["position"][0] == pytest.approx(CAMERA1_POSITION_SCALED[0], abs=1e-4)
+        assert f0["position"][1] == pytest.approx(CAMERA1_POSITION_SCALED[1], abs=1e-4)
+        assert f0["position"][2] == pytest.approx(CAMERA1_POSITION_SCALED[2], abs=1e-4)
+
+    def test_rotation_is_non_zero(self, fbx_path, tmp_path):
+        # The core proof the aim-rig branch fires: old parser emits
+        # (0, 0, 0); new parser emits the look-at-resolved Euler.
+        out = tmp_path / "aimrig.json"
+        fbx_to_v5_json(str(fbx_path), str(out),
+                       width=1920, height=1080, camera_name="Camera1")
+        data = json.loads(out.read_text())
+        r = data["frames"][0]["rotation_flame_euler"]
+        # Any one of rx, ry, rz should be clearly non-zero. Camera1's
+        # aim is nearly along world -Z from position with small Y
+        # offset, so ry picks up a few degrees. Assert magnitude > 0.1°
+        # on the sum — a weak bound that still cleanly distinguishes
+        # the aim-rig branch firing from the old zero-emit bug.
+        assert abs(r[0]) + abs(r[1]) + abs(r[2]) > 0.1, (
+            f"rotation_flame_euler is (near) zero: {r} — aim-rig branch "
+            f"in _merge_curves is not firing on the fixture"
+        )
+
+    def test_rotation_matches_plan01_known_answer(self, fbx_path, tmp_path):
+        # D-07 case 1 full-integration gate. Derive the expected Euler
+        # by calling rotation_matrix_from_look_at + compute_flame_euler_zyx
+        # on the Camera1 inputs — this ensures the test stays consistent
+        # if Plan 01's helper is ever rebuilt. The input values mirror
+        # what the FBX parser ultimately feeds the resolver (FBX-scaled
+        # position + aim, unscaled up; roll sign-flipped from FBX's
+        # +1.25 to Flame-probe's -1.25).
+        from forge_core.math.rotations import (  # noqa: E402
+            rotation_matrix_from_look_at, compute_flame_euler_zyx,
+        )
+        expected_R = rotation_matrix_from_look_at(
+            position=CAMERA1_POSITION_SCALED,
+            aim=CAMERA1_AIM_SCALED,
+            up=CAMERA1_UP,
+            roll_deg=CAMERA1_ROLL_FLAME_PROBE,
+        )
+        expected_rx, expected_ry, expected_rz = compute_flame_euler_zyx(expected_R)
+
+        out = tmp_path / "aimrig.json"
+        fbx_to_v5_json(str(fbx_path), str(out),
+                       width=1920, height=1080, camera_name="Camera1")
+        data = json.loads(out.read_text())
+        r = data["frames"][0]["rotation_flame_euler"]
+        # atol=1e-3 accommodates small rounding drift between the FBX's
+        # numeric representation of aim/up/roll and the exact live-probe
+        # values expected_R is computed from. ROADMAP acceptance is 0.1°
+        # round-trip-through-Blender; this unit-test tolerance of 1e-3°
+        # is ~100x tighter so any real regression surfaces cleanly.
+        assert r[0] == pytest.approx(expected_rx, abs=1e-3)
+        assert r[1] == pytest.approx(expected_ry, abs=1e-3)
+        assert r[2] == pytest.approx(expected_rz, abs=1e-3)
+
+    def test_focal_preserved(self, fbx_path, tmp_path):
+        # The aim-rig branch must not break the existing focal pipeline.
+        out = tmp_path / "aimrig.json"
+        fbx_to_v5_json(str(fbx_path), str(out),
+                       width=1920, height=1080, camera_name="Camera1")
+        data = json.loads(out.read_text())
+        # Live probe Camera1 focal ≈ 35.331177 mm. Derived from
+        # FilmHeight=0.629999995231628 in (16.0mm) and FOV=25.5197°;
+        # tolerance 0.05 covers NodeAttribute-FilmHeight precision.
+        assert data["frames"][0]["focal_mm"] == pytest.approx(
+            CAMERA1_FOCAL_MM, abs=0.05
+        )
+
+
+class TestAimRigFailLoud:
+    """D-14/D-15 fail-loud contract on degenerate aim-rig input."""
+
+    def _minimal_aim_rig_camera(self, aim=(0.0, 0.0, -100.0),
+                                up=(0.0, 1.0, 0.0), roll=0.0):
+        """Construct an in-memory _CameraExtract with aim-rig fields
+        populated and no keyframe curves. Lets us exercise
+        ``_merge_curves`` static-fallback aim-rig path directly without
+        a fixture."""
+        from forge_flame.fbx_ascii import _CameraExtract  # noqa: E402
+        return _CameraExtract(
+            name="test",
+            model_id=1,
+            node_attr_id=0,
+            field_of_view=40.0,
+            film_width_inches=0.944,
+            film_height_inches=0.629,
+            static_position=(0.0, 0.0, 0.0),
+            static_rotation=(0.0, 0.0, 0.0),
+            aim_null_id=2,
+            static_aim_position=aim,
+            static_up_vector=up,
+            static_roll=roll,
+        )
+
+    def test_fails_loud_on_forward_degenerate(self):
+        # aim == position → forward vector has zero length.
+        from forge_flame.fbx_ascii import _merge_curves  # noqa: E402
+        cam = self._minimal_aim_rig_camera(aim=(0.0, 0.0, 0.0))
+        with pytest.raises(ValueError, match=r"aim-rig resolve.*forward"):
+            _merge_curves(cam, root=[], frame_rate="24 fps")
+
+    def test_fails_loud_on_up_parallel_to_view(self):
+        # up parallel to (aim - position) → cross product zero-length.
+        from forge_flame.fbx_ascii import _merge_curves  # noqa: E402
+        cam = self._minimal_aim_rig_camera(
+            aim=(0.0, 0.0, -100.0),
+            up=(0.0, 0.0, -1.0),  # parallel to forward
+        )
+        with pytest.raises(ValueError, match=r"aim-rig resolve.*up.*parallel"):
+            _merge_curves(cam, root=[], frame_rate="24 fps")
+
+    def test_fails_loud_on_dangling_lookat_connection(self):
+        # _extract_cameras raises when a LookAtProperty edge references
+        # an unknown Null ID. Construct a minimal FBX tree: one camera
+        # Model, no Null Models, one "OP"/"LookAtProperty" connection.
+        from forge_flame.fbx_ascii import _extract_cameras  # noqa: E402
+
+        cam_model = FBXNode(
+            name="Model",
+            values=[1001, "Model::Camera1", "Camera"],
+            children=[
+                FBXNode(name="Version", values=[232], children=[]),
+                FBXNode(name="Properties70", values=[], children=[]),
+            ],
+        )
+        objects = FBXNode(name="Objects", values=[], children=[cam_model])
+        # LookAtProperty connection with unknown Null id 9999.
+        connection = FBXNode(
+            name="C",
+            values=["OP", 9999, 1001, "LookAtProperty"],
+            children=[],
+        )
+        connections = FBXNode(name="Connections", values=[], children=[connection])
+        root = [objects, connections]
+
+        with pytest.raises(ValueError, match=r"aim-rig resolve.*LookAtProperty.*unknown Null"):
+            _extract_cameras(root)
 
 
 # =============================================================================
