@@ -94,6 +94,27 @@ Plans:
 - [x] 04.1-02-PLAN.md — Items 2+5 (GA-2/GA-5): detect-and-route in Export Camera to Blender + forge_bake_frame_rate stamp in bake_camera.py
 - [x] 04.1-03-PLAN.md — Item 3 (GA-4) Task 5 crash instrumentation in _FLAME_SIDE_TEMPLATE + N=5 live repro attempt
 
+### Phase 4.2: Aim/Target-rig camera orientation round-trip
+
+**Goal:** Aim/Target-rig cameras must round-trip through Blender with their orientation preserved. Today they lose it — Flame's `action.export_fbx(bake_animation=True)` writes `rotation=(0,0,0)` for every frame on aim-rig cameras, discarding the aim+up+roll that defines the camera's real orientation, and the returned camera ends up as a Free-rig camera with rotation=0 (looking straight down -Z regardless of where the original was pointing).
+
+**Scope (REQUIRED per user 2026-04-23 — not backlog):** Aim-rig cameras are a first-class supported workflow. The v6.3 ship must handle them.
+
+**Context:** Observed live 2026-04-23 during phase 04.1 closing UAT. Camera1 on the user's batch had aim=(0.35, 57.13, 2093.32), up=(0, 30, 0), roll=-1.25°, rotation=(0, 0, 0). Round-trip through Blender returned a camera at the correct position with correct focal/FOV/filmback but pointing the wrong direction (aim=(0, 0, 0) default, looking at origin). Every other core-value invariant from phase 04.1 holds — rotation math, frame preservation, unit scaling, filmback — this is purely about aim/up/roll semantics.
+
+**Approach (locked per 04.2-CONTEXT.md D-01/D-02):** Read the aim-rig semantics out of the FBX Flame already writes, and resolve them to Euler rotation inside the FBX→JSON converter (`forge_flame/fbx_ascii.py`). No Flame-side rig-toggle, no pre-export state mutation, no Blender-side constraint machinery. Approach A (toggle `cam.target_mode=False`) was REJECTED per D-03 — Flame 2026.2.1 PyCoNode has no `target_mode` attribute (confirmed via 39-element live-probe `cam.attributes` scan).
+
+**Acceptance:** Export an Aim/Target-rig camera from Flame → open the .blend in Blender → the Blender camera points at the same world-space target as the Flame original. Send back to Flame → the returned camera's rendered orientation matches the original's to within 0.1° on all three Euler axes.
+
+**Requirements:** None (no mapped REQ-IDs; ROADMAP phase goal + acceptance criterion are the must-haves source per 04.2-CONTEXT.md).
+
+**Plans:** 3 plans
+
+Plans:
+- [ ] 04.2-01-PLAN.md — Add `rotation_matrix_from_look_at` helper to `forge_core/math/rotations.py` + `tests/test_rotations.py` (Wave 1; D-06, D-07 case-2 gate, D-15 fail-loud)
+- [ ] 04.2-02-PLAN.md — Fix D-10 latent `target_mode.set_value(False)` bugs in `flame/camera_match_hook.py:1511+1578` and `forge_flame/camera_io.py:234` (Wave 1; independent of 01 and 03)
+- [ ] 04.2-03-PLAN.md — Aim-rig branch in `forge_flame/fbx_ascii.py` (_extract_cameras + _merge_curves) + `tests/fixtures/forge_fbx_aimrig.fbx` + `TestAimRigFixture` / `TestAimRigFailLoud` in `tests/test_fbx_ascii.py` (Wave 2; depends on 01; D-07 case-1 integration gate)
+
 ## Backlog
 
 ### Phase 999.1: Improve multi-camera picker UX (BACKLOG)
@@ -114,20 +135,9 @@ Plans:
 **Plans:**
 - [ ] TBD (promote with /gsd-review-backlog when ready)
 
-### Phase 999.2: Blender→Flame filmback preservation (BACKLOG)
+### Phase 999.2: Blender→Flame filmback preservation (RESOLVED in 04.1)
 
-**Goal:** Preserve Flame's original film-back width through the Send-to-Flame roundtrip so the focal-length number the artist sees in Flame matches what they solved, not Blender's 36mm default sensor.
-
-**Context:** Observed by user 2026-04-22 after the Phase 04.1 rotation hotfix landed. A solved Camera Match camera with `focal=27.9mm, filmback≈16mm, FOV=32.01°` round-tripped as `focal=12.8mm, filmback=36mm, FOV=109.17°`. **FOV is preserved** (the camera sees the same thing — geometric fidelity is intact per the tool's core value), but the focal/filmback pair drifts because Blender stamps its default 36mm Full Frame sensor on export, and on return trip Flame reconstructs `focal = filmback / (2·tan(fov/2))` against that 36mm number. Net: the displayed focal differs from what the artist set, which is confusing even though the composite will still glue correctly to the plate.
-
-**Approach:** On the Flame→Blender side (`tools/blender/bake_camera.py`), stamp the source Flame camera's `filmback_mm` as a `bpy` custom property (reuse the existing `custom_properties` kwarg plumbed in 04.1-02, and hook into `_RESERVED_STAMP_KEYS`). On the Blender→Flame side (`tools/blender/extract_camera.py` + `tools/blender/forge_sender/transport.py`), read that stamp back and propagate it into the v5 JSON's `film_back_mm` field that `fbx_ascii._mutate_template_with_payload` already consumes. If the stamp is missing (camera wasn't baked by us — e.g. artist-authored Blender cam), fall back to Blender's scene sensor width with a stderr warning (mirrors D-14 fallback pattern).
-
-**Acceptance:** Round-tripped camera preserves original Flame filmback within 0.1mm; focal-length number displayed on the returned Flame camera matches the original within 0.1mm; FOV continues to match (regression guard for the current working state).
-
-**Requirements:** TBD
-
-**Plans:**
-- [ ] TBD (promote with /gsd-review-backlog when ready)
+**Resolved 2026-04-23 in phase 04.1 via commit `228387a`.** The hook was hardcoding `film_back_mm=36.0` in both the static-JSON and FBX call sites, throwing away Flame's true filmback at the moment of export. Both sites now pass `film_back_mm=None`, letting the downstream functions derive the real filmback from Flame's own `(fov, focal)` or the FBX `FilmHeight` property. Round-trip verified: focal + FOV + filmback all match the original.
 
 ## Progress
 
