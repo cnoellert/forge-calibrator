@@ -106,15 +106,23 @@ def _resolve_frame_rate(cam, context) -> (Optional[str], Optional[str]):
     ``(None, error_message)`` if the ladder exhausts without
     resolving a supported Flame frame-rate label."""
     # Ladder step 1: stamped custom prop on camera data (authoritative).
+    # WR-01 fix (02-REVIEW.md): when the stamp is present we FAIL LOUD on
+    # any unsupported label rather than silently falling through to the
+    # scene fps. The D-19 ladder documents step 1 as authoritative when
+    # stamped; silently substituting a different frame rate violates the
+    # Core Value of fidelity end-to-end (a stamp of "12 fps" or a stray
+    # IDPropertyArray coerced to "[24]" must surface as an error, not a
+    # quiet swap to whatever the scene happens to be set to).
     stamped = cam.data.get("forge_bake_frame_rate")
     if stamped:
         label = str(stamped)
-        # Accept the stamp verbatim if it's one of the supported labels;
-        # otherwise fall through to step 2 so we don't feed an unknown
-        # string into v5_json_str_to_fbx (which silently falls back to
-        # 24 fps on unknown keys — violates Core Value fidelity).
-        if label in {x[0] for x in _FLAME_FPS_LABELS}:
+        supported = {x[0] for x in _FLAME_FPS_LABELS}
+        if label in supported:
             return (label, None)
+        err = (f"Send to Flame: cam.data['forge_bake_frame_rate'] "
+               f"= {label!r} is not a supported Flame label. "
+               f"Expected one of: {', '.join(sorted(supported))}.")
+        return (None, err)
     # Ladder step 2: Blender scene fps / fps_base.
     render = context.scene.render
     try:
