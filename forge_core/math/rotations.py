@@ -157,8 +157,14 @@ def rotation_matrix_from_look_at(
     # Apply roll about the forward axis to right and up_cam.
     # Rodrigues' rotation: v' = v*cos(t) + (k x v)*sin(t) + k*(k.v)*(1-cos(t))
     # with k = forward and (k.right) = (k.up_cam) = 0, so the third term drops.
-    # Sign convention locked by D-07 verification against Camera1 live probe.
-    theta = np.radians(float(roll_deg))
+    # Sign: Flame's Roll property is the clockwise roll as seen looking
+    # down -forward (through the lens), which corresponds to rotating
+    # right/up_cam about -forward — equivalently, about +forward by
+    # -roll_deg. Sign verified against Camera1 live probe 2026-04-23:
+    # position=(0, 57.77, 2113.31), aim=(0.36, 57.13, 2093.32),
+    # up=(0, 30, 0), roll=-1.252521° must produce rz≈-1.25° (not +1.25°)
+    # after compute_flame_euler_zyx decomposition.
+    theta = np.radians(-float(roll_deg))
     ct, st = np.cos(theta), np.sin(theta)
     right_rolled = right * ct + np.cross(forward, right) * st
     up_rolled    = up_cam * ct + np.cross(forward, up_cam) * st
