@@ -472,7 +472,17 @@ _sync_dir() {
 }
 _sync_dir "$SOURCE_FORGE_CORE"       "$FORGE_CORE_DEST"       "forge_core"
 _sync_dir "$SOURCE_FORGE_FLAME"      "$FORGE_FLAME_DEST"      "forge_flame"
-_sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
+
+# tools/blender is a mixed source tree: the two subprocess scripts below live on
+# Flame's Python path (forge_flame.blender_bridge resolves them here). Anything
+# else — most notably forge_sender/ which top-imports bpy — breaks Flame's hook
+# loader with ModuleNotFoundError and disables the hook. Explicit allowlist.
+step "tools/blender (subprocess scripts only)"
+run "mkdir -p \"$BLENDER_SCRIPTS_DEST\""
+run "find \"$BLENDER_SCRIPTS_DEST\" -mindepth 1 -maxdepth 1 ! -name bake_camera.py ! -name extract_camera.py -exec rm -rf {} + 2>/dev/null || true"
+run "cp -a \"$SOURCE_BLENDER_SCRIPTS/bake_camera.py\"    \"$BLENDER_SCRIPTS_DEST/bake_camera.py\""
+run "cp -a \"$SOURCE_BLENDER_SCRIPTS/extract_camera.py\" \"$BLENDER_SCRIPTS_DEST/extract_camera.py\""
+ok "installed tools/blender scripts: bake_camera.py, extract_camera.py"
 
 # nuke pycache so Flame doesn't serve stale bytecode
 if [[ -d "$TARGET_PYCACHE" ]]; then
