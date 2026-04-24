@@ -28,8 +28,11 @@ Scripts (in order of preference):
      bake_camera.py + extract_camera.py)
   2. Dev checkout: ../tools/blender/ relative to this file (works when
      forge_flame/ lives at the repo root)
-  3. Install location: /opt/Autodesk/shared/python/tools/blender/ (where the
-     installer should drop them per PASSOFF.md v6 open item #3)
+  3. Install location: /opt/Autodesk/shared/forge_blender_scripts/ — a path
+     DELIBERATELY OUTSIDE /opt/Autodesk/shared/python/. These files top-import
+     bpy/mathutils and are not importable from Flame's Python 3.11; placing
+     them on Flame's hook scan path trips the loader with ModuleNotFoundError
+     and disables the hook (surfaced live during phase 04.2 HUMAN-UAT).
 """
 
 from __future__ import annotations
@@ -56,10 +59,12 @@ _DEFAULT_BLENDER_BINS = {
     ],
 }
 
-# Installed location for the bake/extract scripts — the installer (PASSOFF
-# open item #3) will populate this. Kept as a module constant so tests can
+# Installed location for the bake/extract scripts — the installer populates
+# this. DELIBERATELY outside /opt/Autodesk/shared/python/ because the scripts
+# top-import bpy/mathutils; placing them on Flame's hook scan path would trip
+# its loader with ModuleNotFoundError. Kept as a module constant so tests can
 # mock it without monkey-patching os.path calls.
-_INSTALL_SCRIPT_DIR = "/opt/Autodesk/shared/python/tools/blender"
+_INSTALL_SCRIPT_DIR = "/opt/Autodesk/shared/forge_blender_scripts"
 
 
 # =============================================================================

@@ -42,10 +42,13 @@ INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # importable alongside camera_match at runtime.
 FORGE_CORE_DEST="/opt/Autodesk/shared/python/forge_core"
 FORGE_FLAME_DEST="/opt/Autodesk/shared/python/forge_flame"
-# tools/blender/ ships as a sibling too — forge_flame.blender_bridge resolves
-# scripts to this path at runtime (see _script_candidates there) so the Flame
-# batch hook can shell out to bake_camera.py / extract_camera.py.
-BLENDER_SCRIPTS_DEST="/opt/Autodesk/shared/python/tools/blender"
+# tools/blender/ ships OUTSIDE /opt/Autodesk/shared/python/ deliberately —
+# these scripts top-import bpy/mathutils, which fails under Flame's hook
+# loader (the hook path is /opt/Autodesk/shared/python/). forge_flame
+# .blender_bridge resolves scripts to this path at runtime (see
+# _script_candidates there) so the Flame batch hook can shell out to
+# bake_camera.py / extract_camera.py via `blender --background --python`.
+BLENDER_SCRIPTS_DEST="/opt/Autodesk/shared/forge_blender_scripts"
 FORGE_ENV="${FORGE_ENV:-$HOME/miniconda3/envs/forge}"
 WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
@@ -472,17 +475,10 @@ _sync_dir() {
 }
 _sync_dir "$SOURCE_FORGE_CORE"       "$FORGE_CORE_DEST"       "forge_core"
 _sync_dir "$SOURCE_FORGE_FLAME"      "$FORGE_FLAME_DEST"      "forge_flame"
-
-# tools/blender is a mixed source tree: the two subprocess scripts below live on
-# Flame's Python path (forge_flame.blender_bridge resolves them here). Anything
-# else — most notably forge_sender/ which top-imports bpy — breaks Flame's hook
-# loader with ModuleNotFoundError and disables the hook. Explicit allowlist.
-step "tools/blender (subprocess scripts only)"
-run "mkdir -p \"$BLENDER_SCRIPTS_DEST\""
-run "find \"$BLENDER_SCRIPTS_DEST\" -mindepth 1 -maxdepth 1 ! -name bake_camera.py ! -name extract_camera.py -exec rm -rf {} + 2>/dev/null || true"
-run "cp -a \"$SOURCE_BLENDER_SCRIPTS/bake_camera.py\"    \"$BLENDER_SCRIPTS_DEST/bake_camera.py\""
-run "cp -a \"$SOURCE_BLENDER_SCRIPTS/extract_camera.py\" \"$BLENDER_SCRIPTS_DEST/extract_camera.py\""
-ok "installed tools/blender scripts: bake_camera.py, extract_camera.py"
+# tools/blender ships to /opt/Autodesk/shared/forge_blender_scripts/ — OUTSIDE
+# Flame's hook scan path (/opt/Autodesk/shared/python/). Safe to sync the whole
+# tree (bake, extract, forge_sender/) because Flame never imports from here.
+_sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
 
 # nuke pycache so Flame doesn't serve stale bytecode
 if [[ -d "$TARGET_PYCACHE" ]]; then

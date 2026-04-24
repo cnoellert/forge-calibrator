@@ -135,7 +135,7 @@ class TestScriptCandidates:
     def test_install_location_always_last(self, tmp_path, monkeypatch):
         monkeypatch.setenv("FORGE_BLENDER_SCRIPTS", str(tmp_path))
         candidates = _script_candidates("extract_camera.py")
-        assert candidates[-1].startswith("/opt/Autodesk/shared/python/tools/blender/")
+        assert candidates[-1].startswith("/opt/Autodesk/shared/forge_blender_scripts/")
 
 
 class TestResolveScripts:
