@@ -231,7 +231,6 @@ def import_json_to_flame_camera(
     pos = kf["position"]
     rot = kf["rotation_flame_euler"]
 
-    cam_node.target_mode.set_value(False)
     cam_node.position.set_value((float(pos[0]), float(pos[1]), float(pos[2])))
     cam_node.rotation.set_value((float(rot[0]), float(rot[1]), float(rot[2])))
     cam_node.fov.set_value(float(vfov_deg))
