@@ -26,11 +26,18 @@ Scale handling:
   bake), extract defaults to 1.0 and prints a warning. --scale on the
   CLI overrides both stamped and default.
 
-Math mirrors forge_core.math.rotations.compute_flame_euler_zyx using
-mathutils instead of numpy, for the same ship-standalone reasons as
-bake. tests/test_blender_roundtrip.py validates the numpy reference;
-this file's parallel implementation is guarded by a round-trip sanity
-test (run bake then extract against sample_camera.json; diff JSONs).
+Math mirrors forge_core.math.rotations.compute_flame_euler_xyz
+(Phase 04.3, XYZ-signflip aim-rig convention: R = Rz(-rz)·Ry(-ry)·Rx(-rx),
+same Z·Y·X product as the Free-rig path with rz also sign-negated)
+via forge_sender/flame_math._rot3_to_flame_euler_deg, using mathutils
+instead of numpy for the same ship-standalone reasons as bake.
+tests/test_blender_roundtrip.py validates the Free-rig numpy reference
+(which still uses the older Z·Y·X with only rx/ry negated convention
+for symmetric pass-through); the aim-rig parallel implementation is
+guarded by tests/test_forge_sender_flame_math.py and
+tests/test_fbx_ascii.py::TestAimRigFixture. A round-trip sanity test
+is also available (run bake then extract against sample_camera.json;
+diff JSONs).
 
 Round-trip self-test from the repo root:
 
