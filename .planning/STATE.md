@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
 status: executing
-stopped_at: Phase 4.2 context gathered
-last_updated: "2026-04-24T16:42:23.729Z"
-last_activity: 2026-04-24 -- Phase 04.2 execution started
+stopped_at: Phase 04.3 Task 1 spike PAUSED — Branch B with rz delta = 2.504° (> 0.05° threshold); awaiting user direction on three options in 04.3-SPIKE.md
+last_updated: "2026-04-25T05:53:09.887Z"
+last_activity: 2026-04-25 -- Phase 04.3 execution started
 progress:
-  total_phases: 8
-  completed_phases: 5
-  total_plans: 18
-  completed_plans: 15
-  percent: 83
+  total_phases: 9
+  completed_phases: 6
+  total_plans: 19
+  completed_plans: 18
+  percent: 95
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 04.2 — aim-target-rig-camera-orientation-round-trip
+**Current focus:** Phase 04.3 — aim-rig-euler-convention-fix-adopt-xyz-sign-flip-end-to-end
 
 ## Current Position
 
-Phase: 04.2 (aim-target-rig-camera-orientation-round-trip) — EXECUTING
-Plan: 1 of 3
-Status: Executing Phase 04.2
-Last activity: 2026-04-24 -- Phase 04.2 execution started
+Phase: 04.3 (aim-rig-euler-convention-fix-adopt-xyz-sign-flip-end-to-end) — EXECUTING
+Plan: 1 of 1
+Status: Executing Phase 04.3
+Last activity: 2026-04-25 -- Phase 04.3 execution started
 
 Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
@@ -77,12 +77,14 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 ### Roadmap Evolution
 
 - Phase 4.1 inserted after Phase 4 on 2026-04-22: Phase 4 polish items bucket (stereo-rig filter, empty-camera UX, crash repro, code-review warnings, fps stamping). Rationale: Phase 4's discuss-phase locked scope to docs+validation only; pre-existing polish items tagged "Phase 4" in Phase 1-2 summaries needed a home that doesn't bloat Phase 4. Priority set after Phase 4 smoke test surfaces which polish items actually block v6.3 ship.
+- Phase 4.3 inserted after Phase 4 on 2026-04-24: Aim-rig Euler convention fix — adopt XYZ-sign-flip end-to-end (URGENT). Rationale: diagnostic trace (`/tmp/forge_pipeline_trace.py`) proved Phase 4.2's aim-rig math emits an Euler convention (ZYX-with-X,Y-negated) that is NOT equivalent to Flame's UI-rotation convention (XYZ-with-X,Y-sign-flip = Rxyz(-rx,-ry,rz) per FBX Lcl + Ry(+90°) PostRotation formula). Current pipeline shows 0.069 forward-vector mismatch on Default camera, growing to 0.38 for mixed rotations; this is the "visible CG registration slip" the user reported. Scoped fix would break the compose/decompose self-inverse pair, so full fix required: coordinated change across `forge_core/math/rotations.py`, `tools/blender/bake_camera.py`, `tools/blender/forge_sender/flame_math.py`, `tools/blender/extract_camera.py` plus test updates. Anchor A non-circular test added: given R_lcl for UI (27.324, -24.298, 0.736), `compute_flame_euler_zyx(R_lcl)` must return that triple to float precision.
 
 ### Blockers/Concerns
 
 - `flame/camera_match_hook.py` is a 2100-LOC monolith; menu handler changes require a full Flame restart to take effect (not a blocker for shipping but slows iteration)
 - forge-bridge is a separate repo; this milestone integrates it as a production dependency without owning its internals — coordinate on the auto-start interface contract before Phase 3 execution
 - Phase 1 must resolve how `resolution` is read from the Action node (PyAttribute shape for Action.resolution not confirmed in existing tests — probe needed)
+- Phase 04.3 Task 1 spike returned Branch B with max |delta| > 0.05° on rz axis (2.504°). Plan's symbolic _xyz derivation does not reproduce CONTEXT.md hand-decomposed (1.814°, 1.058°, 1.252°) from look-at output. Executor PAUSED before Task 2 — see 04.3-SPIKE.md for three remediation options.
 
 ### Quick Tasks Completed
 
@@ -102,6 +104,6 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 
 ## Session Continuity
 
-Last session: 2026-04-24T01:15:57.296Z
-Stopped at: Phase 4.2 context gathered
-Resume file: .planning/phases/04.2-aim-target-rig-camera-orientation-round-trip/04.2-CONTEXT.md
+Last session: 2026-04-25T05:53:09.884Z
+Stopped at: Phase 04.3 Task 1 spike PAUSED — Branch B with rz delta = 2.504° (> 0.05° threshold); awaiting user direction on three options in 04.3-SPIKE.md
+Resume file: None
