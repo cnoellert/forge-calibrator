@@ -30,9 +30,8 @@ import pytest
 
 # Math imports (always available).
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from forge_flame.adapter import (  # noqa: E402
-    compute_flame_euler_zyx,
-    flame_euler_to_cam_rot,
+from forge_core.math.rotations import (  # noqa: E402
+    flame_euler_xyz_to_cam_rot,
 )
 
 # Gate on Blender's Python APIs — if missing, skip the whole module.
@@ -58,11 +57,21 @@ from mathutils import Matrix  # noqa: E402
 
 
 def _compose_flame_rotation_np(rx_deg, ry_deg, rz_deg) -> np.ndarray:
-    """Flame convention: R = Rz(rz) · Ry(-ry) · Rx(-rx). Matches
-    forge_core.math.rotations.flame_euler_to_cam_rot exactly; we use
-    it here as the ground-truth matrix feeder for the decomposition
-    test."""
-    return flame_euler_to_cam_rot((rx_deg, ry_deg, rz_deg))
+    """Flame aim-rig convention: R = Rz(-rz) · Ry(-ry) · Rx(-rx).
+    Matches forge_core.math.rotations.flame_euler_xyz_to_cam_rot
+    exactly; we use it here as the ground-truth matrix feeder for
+    the decomposition test. Phase 04.3 swapped from the older Z·Y·X
+    with only rx/ry negated composer (the Free-rig _zyx pair) to the
+    Z·Y·X with all-three-negated composer (flame_euler_xyz_to_cam_rot)
+    to match the new _rot3_to_flame_euler_deg convention.
+
+    Note: the previous form passed a tuple to the old composer; that
+    signature took 3 separate args, so the call would have raised
+    TypeError at runtime. The whole module was being skipped via
+    pytest.importorskip on bpy/mathutils at the top of this file
+    (the conda forge env doesn't ship bpy), so the latent bug never
+    surfaced. The new call site uses the correct 3-arg signature."""
+    return flame_euler_xyz_to_cam_rot(rx_deg, ry_deg, rz_deg)
 
 
 def _np_to_mathutils_matrix(R_np: np.ndarray) -> "Matrix":

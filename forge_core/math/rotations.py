@@ -7,13 +7,17 @@ against the test.fspy fixture; see memory/flame_rotation_convention.md
 for the history of getting this right.
 
 For aim-rig cameras the convention differs: Flame's aim-rig
-rotation actually composes as ``R = Rx(-rx) · Ry(-ry) · Rz(-rz)``
-— X·Y·Z matrix-product order with all three Euler signs negated.
-Verified 2026-04-25 via forge-bridge live probe of Camera1 plus a
-user viewport manual-match plus empirical sign/order search (see
-04.3-SPIKE.md). The ``compute_flame_euler_xyz`` /
-``flame_euler_xyz_to_cam_rot`` pair below implements that
-convention. They are ADDITIVE: the existing
+rotation composes as ``R = Rz(-rz) · Ry(-ry) · Rx(-rx)`` — the
+SAME matrix-product order as ``compute_flame_euler_zyx`` (Z·Y·X
+left-to-right), but with rz ALSO sign-negated (in addition to the
+existing rx, ry negations). Verified 2026-04-25 via forge-bridge
+live probe of Camera1 + Flame viewport manual-match + empirical
+sign/order search; the coupled fix is the L167 roll-Rodrigues
+sign in ``rotation_matrix_from_look_at``. See 04.3-SPIKE.md for
+the empirical reproduction (1.814°, 1.058°, 1.252° within 0.006°
+of viewport ground truth on every axis). The
+``compute_flame_euler_xyz`` / ``flame_euler_xyz_to_cam_rot`` pair
+below implements that convention. They are ADDITIVE: the existing
 ``compute_flame_euler_zyx`` / ``flame_euler_to_cam_rot`` pair
 stays unchanged because the Free-rig solve path
 (forge_flame.adapter) relies on its symmetric pass-through
@@ -22,6 +26,12 @@ existing free-rig code keeps importing ``_zyx``. NB: aim-rig
 callers must also use the post-Phase-04.3
 ``rotation_matrix_from_look_at`` (positive roll Rodrigues
 sign) — the look-at sign and decomposer convention are coupled.
+
+The "_xyz" name reflects that this is the convention Flame's UI
+labels as "Rot XYZ" on aim-rig cameras (verified live via
+forge-bridge probe of Camera1's ``rotation_order`` attribute);
+internally the matrix product order is the same Z·Y·X as the
+free-rig path, only the rz sign differs.
 
 This module lives in forge_core (not forge_flame) because:
 
@@ -100,37 +110,51 @@ def flame_euler_to_cam_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> np.nd
 def compute_flame_euler_xyz(cam_rot: np.ndarray) -> Tuple[float, float, float]:
     """Decompose a 3x3 cam-to-world rotation into Flame's XYZ-signflip Euler.
 
-    Flame's aim-rig camera composes R as ``Rx(-rx) · Ry(-ry) · Rz(-rz)``:
-    X·Y·Z matrix-product order with all three Euler signs negated.
-    Substituting α=-rx, β=-ry, γ=-rz reduces to the standard
-    XYZ-positive intrinsic product R = Rx(α)·Ry(β)·Rz(γ); extraction
-    follows the standard closed-form decomposition.
+    Flame's aim-rig camera composes R as ``Rz(-rz) · Ry(-ry) · Rx(-rx)``:
+    the SAME Z·Y·X matrix-product order as ``compute_flame_euler_zyx``
+    on the Free-rig path, but with rz ALSO sign-negated (the Free-rig
+    convention only negates rx and ry). Substituting α=-rx, β=-ry,
+    γ=-rz reduces to a standard ZYX-positive product R = Rz(γ)·Ry(β)·Rx(α);
+    extraction is the standard closed-form decomposition with three
+    atan2/arcsin lines.
 
     Verified 2026-04-25 by:
       - forge-bridge live probe of Camera1 (position/aim/up/roll/fov)
       - Flame viewport manual-match to (1.8193°, 1.0639°, 1.2529°)
       - empirical sign/order search in 04.3-SPIKE.md / spike_xyz_final.py
     Hand-decomposing rotation_matrix_from_look_at(Camera1) under this
-    convention reproduces (1.814°, 1.058°, 1.252°) — within 0.006° of
-    Flame viewport truth on every axis. Closes the Phase 04.2 ~0.087°
-    ry residual on the aim-rig fixture.
+    convention (after the L167 +roll_deg sign flip) reproduces
+    (1.814°, 1.058°, 1.252°) — within 0.006° of Flame viewport truth
+    on every axis. Closes the Phase 04.2 ~0.087° ry residual on the
+    aim-rig fixture.
 
     Does NOT modify or replace ``compute_flame_euler_zyx``; the Free-rig
     solve path depends on that pair's symmetric pass-through behaviour
-    and is out of scope for this phase.
+    and is out of scope for this phase. The "_xyz" name reflects
+    Flame UI's "Rot XYZ" label on aim-rig cameras; internally the
+    product order matches the Free-rig path, only rz's sign differs.
 
     Returns (rx_deg, ry_deg, rz_deg). Handles gimbal lock (ry = ±90°)
-    by pinning rx=0 and recovering rz from the upper-left 2x2 block."""
-    cb = np.sqrt(cam_rot[0, 0] ** 2 + cam_rot[0, 1] ** 2)
+    by pinning rx=0 and recovering rz from the upper-left 2x2 block.
+
+    NB: a previous draft of this function (per the Phase 04.3 plan
+    amendment §A) used an X·Y·Z matrix product instead. That draft
+    was empirically wrong — scipy's ``xyz`` extrinsic mode on the
+    look-at output reproduces the Camera1 hand-decomposed value, and
+    extrinsic ``xyz`` is equivalent to applying ``Rz·Ry·Rx`` (Z·Y·X
+    product), not ``Rx·Ry·Rz``. The amendment author's interpretation
+    of scipy notation was inverted; the original plan's Z·Y·X
+    derivation is what reproduces ground truth."""
+    cb = np.sqrt(cam_rot[0, 0] ** 2 + cam_rot[1, 0] ** 2)
     gimbal = cb <= 1e-6
     if not gimbal:
-        rx =  np.arctan2(cam_rot[1, 2], cam_rot[2, 2])
-        ry = -np.arcsin(cam_rot[0, 2])
-        rz =  np.arctan2(cam_rot[0, 1], cam_rot[0, 0])
+        rx = -np.arctan2(cam_rot[2, 1], cam_rot[2, 2])
+        ry = -np.arcsin(-cam_rot[2, 0])
+        rz = -np.arctan2(cam_rot[1, 0], cam_rot[0, 0])           # SIGN FLIPPED vs _zyx
     else:
         rx = 0.0
-        ry = -np.arcsin(cam_rot[0, 2])
-        rz = -np.arctan2(cam_rot[1, 0], cam_rot[1, 1])
+        ry = -np.arcsin(-cam_rot[2, 0])
+        rz =  np.arctan2(cam_rot[0, 1], cam_rot[1, 1])           # FIRST-ARG SIGN FLIPPED vs _zyx
     deg = np.degrees(np.array([rx, ry, rz]))
     return (float(deg[0]), float(deg[1]), float(deg[2]))
 
@@ -139,9 +163,9 @@ def flame_euler_xyz_to_cam_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> n
     """Compose a 3x3 cam-to-world rotation from Flame's XYZ-signflip Euler.
 
     Exact inverse of ``compute_flame_euler_xyz``: builds R using
-    Flame's aim-rig composition ``R = Rx(-rx) · Ry(-ry) · Rz(-rz)``.
-    Given any (rx, ry, rz) that came out of the decompose, this
-    returns the same rotation matrix that went in.
+    Flame's aim-rig composition ``R = Rz(-rz) · Ry(-ry) · Rx(-rx)``.
+    Same Z·Y·X product order as ``flame_euler_to_cam_rot``; only the
+    cz/sz line differs (the rz sign is now negated).
 
     Used by the aim-rig Flame → Blender bake path (rebuild world
     matrix from stored JSON) and by tests that need to generate
@@ -152,11 +176,11 @@ def flame_euler_xyz_to_cam_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> n
     rx, ry, rz = np.radians([rx_deg, ry_deg, rz_deg])
     cx, sx = np.cos(-rx), np.sin(-rx)
     cy, sy = np.cos(-ry), np.sin(-ry)
-    cz, sz = np.cos(-rz), np.sin(-rz)
+    cz, sz = np.cos(-rz), np.sin(-rz)              # ONLY DIFFERENCE vs flame_euler_to_cam_rot
     Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
-    return Rx @ Ry @ Rz                     # X·Y·Z product order — NOT Z·Y·X
+    return Rz @ Ry @ Rx
 
 
 def rotation_matrix_from_look_at(
@@ -238,12 +262,17 @@ def rotation_matrix_from_look_at(
     # with k = forward and (k.right) = (k.up_cam) = 0, so the third term drops.
     # Sign: Flame's Roll property is the clockwise roll as seen looking
     # down -forward (through the lens), which corresponds to rotating
-    # right/up_cam about -forward — equivalently, about +forward by
-    # -roll_deg. Sign verified against Camera1 live probe 2026-04-23:
-    # position=(0, 57.77, 2113.31), aim=(0.36, 57.13, 2093.32),
-    # up=(0, 30, 0), roll=-1.252521° must produce rz≈-1.25° (not +1.25°)
-    # after compute_flame_euler_zyx decomposition.
-    theta = np.radians(-float(roll_deg))
+    # right/up_cam about +forward by +roll_deg. Sign verified 2026-04-25
+    # against Camera1 forge-bridge probe + Flame viewport manual-match,
+    # decomposed under the new X·Y·Z _xyz convention (see Phase 04.3
+    # CONTEXT.md, 04.3-SPIKE.md, and 04.3-01-PLAN-AMENDMENT.md). The
+    # look-at roll sign and the decomposer convention are coupled — the
+    # additive _xyz pair in this file (compute_flame_euler_xyz /
+    # flame_euler_xyz_to_cam_rot) is what consumes look-at output for
+    # aim-rig cameras. Free-rig callers (test_blender_roundtrip etc.)
+    # pass roll=0 and are unaffected by this sign at zero. Pre-Phase-04.3
+    # the sign was -roll_deg, paired with the legacy _zyx decomposer.
+    theta = np.radians(float(roll_deg))
     ct, st = np.cos(theta), np.sin(theta)
     right_rolled = right * ct + np.cross(forward, right) * st
     up_rolled    = up_cam * ct + np.cross(forward, up_cam) * st

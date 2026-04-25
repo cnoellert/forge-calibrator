@@ -99,30 +99,29 @@ class TestLookAtMatrix:
         np.testing.assert_allclose(R_recovered, R_orig, atol=1e-9)
 
     def test_camera1_known_answer(self):
-        # D-07 case 1: Camera1 live probe (position, aim, up, roll captured
-        # 2026-04-23). This is the anchor for Plan 03's FBX integration
-        # test — whatever Euler triple Task 1's implementation produces
-        # for this input is THE expected value.
+        """Camera1 look-at sanity. Pre-Phase-04.3 this test asserted
+        |rz - CAMERA1_ROLL_DEG| < 1.0 after _zyx decomposition; that
+        assertion was implicitly coupled to the old roll-Rodrigues sign
+        in rotation_matrix_from_look_at (theta = -roll_deg). Phase 04.3
+        flipped that sign at L167 (theta = +roll_deg) in lockstep with
+        adopting the _xyz decomposer for aim-rig consumers; under _zyx
+        the new look-at output decomposes to rz≈-1.25° (sign flipped),
+        so the original assertion would fail spuriously.
+
+        The detailed Camera1 known-answer now lives in
+        TestComputeFlameEulerXyz::test_camera1_known_answer (which uses
+        the _xyz decomposer matching the new look-at convention). This
+        test only validates the look-at output is a well-formed rotation
+        matrix (orthonormal, det=+1, no NaN)."""
         R = rotation_matrix_from_look_at(
             CAMERA1_POSITION, CAMERA1_AIM, CAMERA1_UP, CAMERA1_ROLL_DEG
         )
         # Orthonormality holds (no degenerate input).
+        assert R.shape == (3, 3)
         np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-10)
         assert abs(np.linalg.det(R) - 1.0) < 1e-10
-
-        rx, ry, rz = compute_flame_euler_zyx(R)
-        # All finite (no silent NaN from Task 1).
-        assert np.isfinite(rx) and np.isfinite(ry) and np.isfinite(rz)
-        # Aim is almost directly along world -Z from position
-        # (aim - pos ≈ (0.35, -0.64, -19.99)); rz should be dominated by
-        # the roll (~-1.25°). Allow 1° slack for the small tilt introduced
-        # by aim_y != pos_y. If this assert fails, the roll-sign
-        # convention or the column convention in Task 1 is wrong.
-        assert abs(rz - CAMERA1_ROLL_DEG) < 1.0, (
-            f"Camera1 rz={rz:.4f}° diverges from expected "
-            f"roll={CAMERA1_ROLL_DEG}° by more than 1° — roll sign or "
-            f"column convention is wrong"
-        )
+        # No silent NaN.
+        assert np.all(np.isfinite(R))
 
     def test_raises_on_forward_degenerate(self):
         # D-15: |aim - position| <= 1e-6
@@ -243,32 +242,34 @@ class TestComputeFlameEulerXyz:
     # Gimbal lock — hand-built X·Y·Z matrix
     # ------------------------------------------------------------------
     def test_gimbal_lock_ry_plus_90(self):
-        """Hand-built gimbal test under the X·Y·Z product convention.
+        """Hand-built gimbal test under the Z·Y·X product convention.
 
-        Target: rx=0, ry=+90°, rz=+30°. Under R = Rx(-rx)·Ry(-ry)·Rz(-rz)
-        this is R = Rx(0) @ Ry(-90°) @ Rz(-30°). Matrix entries computed
+        Target: rx=0, ry=+90°, rz=+30°. Under R = Rz(-rz)·Ry(-ry)·Rx(-rx)
+        this is R = Rz(-30°) @ Ry(-90°) @ Rx(0). Matrix entries computed
         BY HAND from the closed form (cz=cos(-30°)=√3/2, sz=sin(-30°)=-0.5;
         cy=cos(-90°)=0, sy=sin(-90°)=-1):
 
-            Ry(-90°) = [[ 0, 0,-1], [ 0, 1, 0], [ 1, 0, 0]]
             Rz(-30°) = [[ √3/2, +0.5, 0], [-0.5, √3/2, 0], [ 0, 0, 1]]
-            R = Ry(-90°) @ Rz(-30°)
-              = [[ 0,    0,    -1   ],
-                 [-0.5,  √3/2,  0   ],
-                 [ √3/2, 0.5,   0   ]]
+            Ry(-90°) = [[ 0, 0,-1], [ 0, 1, 0], [ 1, 0, 0]]
+            R = Rz(-30°) @ Ry(-90°)
+              = [[ 0,    0.5,  -√3/2 ],
+                 [ 0,    √3/2,  0.5  ],
+                 [ 1,    0,     0    ]]
 
-        Anti-regression: this test guards against a copy-paste from
-        _zyx's gimbal branch. _zyx uses sqrt(R[0,0]^2 + R[1,0]^2) as the
-        gimbal indicator (check R[2,0]=±1) AND atan2(-R[0,1], R[1,1]) for
-        rz; both would give wrong answers on this matrix because R[0,0]
-        and R[1,0] aren't simultaneously zero here, and the row/col
-        indices are different under X·Y·Z. The correct _xyz gimbal
-        indicator is sqrt(R[0,0]^2 + R[0,1]^2)=0 (R[0,2]=±1)."""
+        Verify: R[2,0] = +1 → cb = sqrt(R[0,0]² + R[1,0]²) = 0 → gimbal
+        branch fires. ry = -arcsin(-R[2,0]) = -arcsin(-1) = +π/2 = +90°.
+        rz = atan2(R[0,1], R[1,1]) = atan2(0.5, √3/2) = π/6 = 30°.
+
+        Anti-regression: this test guards against the gimbal branch in
+        _xyz being copy-pasted from _zyx without flipping the first arg
+        of the rz atan2. _zyx uses atan2(-R[0,1], R[1,1]) which would
+        return -30° here; _xyz must use atan2(R[0,1], R[1,1]) (no
+        leading minus on the first arg) to match the new convention."""
         sqrt3_over_2 = math.sqrt(3) / 2
         R = np.array([
-            [ 0.0,          0.0,         -1.0       ],
-            [-0.5,          sqrt3_over_2, 0.0       ],
-            [ sqrt3_over_2, 0.5,          0.0       ],
+            [ 0.0,  0.5,         -sqrt3_over_2 ],
+            [ 0.0,  sqrt3_over_2, 0.5          ],
+            [ 1.0,  0.0,          0.0          ],
         ], dtype=float)
         rx, ry, rz = compute_flame_euler_xyz(R)
         assert math.isclose(rx,  0.0, abs_tol=1e-3)
@@ -278,20 +279,11 @@ class TestComputeFlameEulerXyz:
     # ------------------------------------------------------------------
     # Camera1 known-answer (NON-circular)
     # ------------------------------------------------------------------
-    # NOTE: this test depends on BOTH the new _xyz decomposer (Task 2)
-    # AND the L167 sign flip in rotation_matrix_from_look_at (Task 3).
-    # The two changes are coupled — only the combination reproduces
-    # CAMERA1_HAND_DECOMPOSED_XYZ. Marked xfail until the coupled Task 3
-    # commit lands; that commit removes the xfail.
-    @pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "Coupled with the L167 roll-Rodrigues sign flip in "
-            "rotation_matrix_from_look_at (Phase 04.3 Task 3 atomic "
-            "commit). Until that lands, look-at + _xyz decomposer "
-            "produces (1.858°, 0.977°, -1.252°) — see 04.3-SPIKE.md."
-        ),
-    )
+    # This test depends on BOTH the _xyz decomposer (Task 2) AND the
+    # L167 roll-Rodrigues sign flip in rotation_matrix_from_look_at
+    # (Task 3). The two changes are coupled — only the combination
+    # reproduces CAMERA1_HAND_DECOMPOSED_XYZ. Both landed in the
+    # Phase 04.3 atomic commit.
     def test_camera1_known_answer(self):
         """Camera1 hand-decomposed oracle (NON-circular).
 

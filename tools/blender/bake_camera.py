@@ -32,9 +32,16 @@ Conventions:
     cameras look down local -Z (OpenGL), so no camera-local correction
     is needed.
 
-  - Flame's rotation composes as R = Rz(rz) · Ry(-ry) · Rx(-rx). This is
-    the ZYX-with-X,Y-negated order verified in memory/flame_rotation_convention.md
-    and tested by tests/test_hook_parity.py + tests/test_blender_roundtrip.py.
+  - Flame's aim-rig rotation composes as R = Rz(-rz) · Ry(-ry) · Rx(-rx).
+    This is the Z·Y·X-with-all-three-negated order verified 2026-04-25
+    against Camera1 (forge-bridge probe + viewport manual-match; see
+    memory/flame_rotation_convention.md and Phase 04.3 CONTEXT.md /
+    04.3-SPIKE.md). Note: the Free-rig solve path on the Flame side
+    still uses the older Rz(rz)·Ry(-ry)·Rx(-rx) (Z·Y·X with only
+    rx/ry negated) convention via forge_core.math.rotations
+    .flame_euler_to_cam_rot — the two conventions coexist
+    intentionally; aim-rig (this script's consumer) uses the
+    XYZ-signflip pair from Phase 04.3.
 
   - --scale is a divisor applied to POSITION ONLY. `--scale 1000` means
     "1 Blender unit represents 1000 Flame pixels" for placement purposes.
@@ -49,10 +56,14 @@ Conventions:
     they prefer Euler controls for editing.
 
 The math here intentionally duplicates forge_core.math.rotations.
-flame_euler_to_cam_rot using mathutils instead of numpy so this file
-can ship standalone to anyone with Blender — no forge_core install
-required. The round-trip test in tests/test_blender_roundtrip.py is
-what guards against the two implementations drifting.
+flame_euler_xyz_to_cam_rot using mathutils instead of numpy so this
+file can ship standalone to anyone with Blender — no forge_core
+install required. tests/test_blender_roundtrip.py guards the
+Free-rig pipeline (which still rides on the older Z·Y·X with only
+rx/ry negated convention via flame_euler_to_cam_rot); the aim-rig
+convention parity is guarded by tests/test_fbx_ascii.py
+::TestAimRigFixture (parser side) and tests/test_rotations.py
+::TestComputeFlameEulerXyz (forge_core side).
 """
 
 import argparse
@@ -98,18 +109,28 @@ def _parse_args() -> argparse.Namespace:
 
 
 # =============================================================================
-# Math — parallel implementation of forge_core.math.rotations.flame_euler_to_cam_rot
+# Math — parallel implementation of forge_core.math.rotations.flame_euler_xyz_to_cam_rot
 # =============================================================================
 
 
 def _flame_euler_to_rot_matrix(rx_deg: float, ry_deg: float, rz_deg: float) -> Matrix:
-    """Compose Flame's R = Rz(rz) · Ry(-ry) · Rx(-rx) as a 4x4 mathutils.Matrix.
+    """Compose Flame's R = Rz(-rz) · Ry(-ry) · Rx(-rx) as a 4x4 mathutils.Matrix.
 
     Must stay numerically identical to forge_core.math.rotations
-    .flame_euler_to_cam_rot. If you touch one, touch both, and run
-    tests/test_blender_roundtrip.py."""
+    .flame_euler_xyz_to_cam_rot. If you touch one, touch both, and run
+    tests/test_blender_roundtrip.py.
+
+    Phase 04.3: convention swapped from Rz(rz)·Ry(-ry)·Rx(-rx) (used by
+    `flame_euler_to_cam_rot` on the Free-rig solve path) to
+    Rz(-rz)·Ry(-ry)·Rx(-rx) — the same Z·Y·X matrix-product order, with
+    rz now ALSO negated (in addition to the existing rx, ry negations).
+    Coupled with the L167 sign flip in forge_core.math.rotations
+    .rotation_matrix_from_look_at; both must change together. Verified
+    2026-04-25 via forge-bridge probe + viewport manual-match on
+    Camera1 + empirical sign/order search; closes the Phase 04.2
+    ~0.087° ry residual on the aim-rig fixture."""
     rx, ry, rz = (math.radians(a) for a in (rx_deg, ry_deg, rz_deg))
-    return (Matrix.Rotation(rz,  4, 'Z')
+    return (Matrix.Rotation(-rz, 4, 'Z')
             @ Matrix.Rotation(-ry, 4, 'Y')
             @ Matrix.Rotation(-rx, 4, 'X'))
 

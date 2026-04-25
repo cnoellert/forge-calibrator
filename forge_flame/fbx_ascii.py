@@ -806,7 +806,7 @@ def _merge_curves(
     # and per-frame branches below straightforward.
     from forge_core.math.rotations import (  # noqa: E402 — intentional local import
         rotation_matrix_from_look_at,
-        compute_flame_euler_zyx,
+        compute_flame_euler_xyz,
     )
 
     tx = _read_curve(cam.t_curve_ids.get("X"), root)
@@ -888,7 +888,7 @@ def _merge_curves(
                 up=cam.static_up_vector,
                 roll_deg=cam.static_roll,
             )
-            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_xyz(R)
         else:
             sr = cam.static_rotation
             # Existing free-rig sign-flip.
@@ -956,7 +956,7 @@ def _merge_curves(
                 up=(up_x, up_y, up_z),
                 roll_deg=roll,
             )
-            rx_deg, ry_deg, rz_deg = compute_flame_euler_zyx(R)
+            rx_deg, ry_deg, rz_deg = compute_flame_euler_xyz(R)
         else:
             rx_deg = -_sample_at(rx, ktime, cam.static_rotation[0])
             ry_deg = -_sample_at(ry, ktime, cam.static_rotation[1])

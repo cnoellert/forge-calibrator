@@ -15,9 +15,16 @@ Scope boundaries:
 
 Round-trip parity: the Euler decomposition here MUST stay
 numerically identical to
-forge_core.math.rotations.compute_flame_euler_zyx. If you change one,
+forge_core.math.rotations.compute_flame_euler_xyz. If you change one,
 change both and run tests/test_blender_roundtrip.py plus
-tests/test_forge_sender_flame_math.py.
+tests/test_forge_sender_flame_math.py. Phase 04.3 swapped this
+module from the older Z·Y·X convention with only rx/ry negated
+(the Free-rig _zyx pair) to R = Rz(-rz)·Ry(-ry)·Rx(-rx) — same
+Z·Y·X product, but with rz also sign-negated — to match Flame's
+actual aim-rig rendering, verified 2026-04-25 via forge-bridge
+probe of Camera1. Coupled with the L167 sign flip in
+forge_core.math.rotations.rotation_matrix_from_look_at; the two
+changes must always land together.
 
 Scale handling:
 
@@ -39,31 +46,42 @@ from mathutils import Matrix
 
 # =============================================================================
 # Math — parallel implementation of
-# forge_core.math.rotations.compute_flame_euler_zyx
+# forge_core.math.rotations.compute_flame_euler_xyz
 # =============================================================================
 
 
 def _rot3_to_flame_euler_deg(R) -> tuple:
-    """Decompose a 3x3 cam-to-world rotation into Flame's Euler triple.
+    """Decompose a 3x3 cam-to-world rotation into Flame's XYZ-signflip Euler.
 
-    Flame composes rotations as R = Rz(rz) · Ry(-ry) · Rx(-rx). This is
-    the matching inverse decomposition. Must stay numerically identical
-    to forge_core.math.rotations.compute_flame_euler_zyx — if you change
-    one, change both and run tests/test_blender_roundtrip.py.
+    Flame's aim-rig camera composes rotations as
+    R = Rz(-rz) · Ry(-ry) · Rx(-rx). This is the matching inverse
+    decomposition. Must stay numerically identical to
+    forge_core.math.rotations.compute_flame_euler_xyz — if you
+    change one, change both and run tests/test_blender_roundtrip.py
+    plus tests/test_forge_sender_flame_math.py.
 
-    Handles gimbal lock (ry ≈ ±90°) by pinning rx=0 and recovering rz
-    from the remaining 2x2 block."""
+    Phase 04.3: convention swapped from Rz(rz)·Ry(-ry)·Rx(-rx) (the
+    Z·Y·X with only rx/ry negated form used by the Free-rig _zyx
+    pair) to Rz(-rz)·Ry(-ry)·Rx(-rx) — same Z·Y·X product, with rz
+    now ALSO sign-negated. Coupled with the L167 sign flip in
+    forge_core.math.rotations.rotation_matrix_from_look_at; the two
+    changes always land together. Verified 2026-04-25 against
+    Camera1 viewport ground truth (1.8193°, 1.0639°, 1.2529°) within
+    0.01° per axis.
+
+    Handles gimbal lock (ry ≈ ±90°) by pinning rx=0 and recovering
+    rz from the remaining 2x2 block."""
     # mathutils 3x3 Matrix indexes as [row][col]. Keep aligned with numpy.
     cb = math.sqrt(R[0][0] ** 2 + R[1][0] ** 2)
     gimbal = cb <= 1e-6
     if not gimbal:
         rx = -math.atan2(R[2][1], R[2][2])
         ry = -math.asin(-R[2][0])
-        rz =  math.atan2(R[1][0], R[0][0])
+        rz = -math.atan2(R[1][0], R[0][0])             # Phase 04.3: sign flipped
     else:
         rx = 0.0
         ry = -math.asin(-R[2][0])
-        rz =  math.atan2(-R[0][1], R[1][1])
+        rz =  math.atan2(R[0][1], R[1][1])             # Phase 04.3: first arg sign flipped
     return (math.degrees(rx), math.degrees(ry), math.degrees(rz))
 
 

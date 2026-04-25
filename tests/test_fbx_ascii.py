@@ -543,13 +543,13 @@ class TestAimRigFixture:
 
     def test_rotation_matches_plan01_known_answer(self, fbx_path, tmp_path):
         # D-07 case 1 full-integration gate. Derive the expected Euler
-        # by calling rotation_matrix_from_look_at + compute_flame_euler_zyx
+        # by calling rotation_matrix_from_look_at + compute_flame_euler_xyz
         # on the Camera1 inputs (FBX-scaled position + aim, unscaled up,
         # FBX-stored roll sign). Keeps the fixture end-to-end test aligned
         # with the helper — whatever Euler the helper produces for these
         # inputs is what the parser must emit.
         from forge_core.math.rotations import (  # noqa: E402
-            rotation_matrix_from_look_at, compute_flame_euler_zyx,
+            rotation_matrix_from_look_at, compute_flame_euler_xyz,
         )
         expected_R = rotation_matrix_from_look_at(
             position=CAMERA1_POSITION_SCALED,
@@ -557,7 +557,7 @@ class TestAimRigFixture:
             up=CAMERA1_UP,
             roll_deg=CAMERA1_ROLL_FBX,
         )
-        expected_rx, expected_ry, expected_rz = compute_flame_euler_zyx(expected_R)
+        expected_rx, expected_ry, expected_rz = compute_flame_euler_xyz(expected_R)
 
         out = tmp_path / "aimrig.json"
         fbx_to_v5_json(str(fbx_path), str(out),
@@ -566,9 +566,15 @@ class TestAimRigFixture:
         r = data["frames"][0]["rotation_flame_euler"]
         # atol=1e-3 accommodates small rounding drift between the FBX's
         # numeric representation of aim/up/roll and the exact live-probe
-        # values expected_R is computed from. ROADMAP acceptance is 0.1°
-        # round-trip-through-Blender; this unit-test tolerance of 1e-3°
-        # is ~100x tighter so any real regression surfaces cleanly.
+        # values expected_R is computed from. Phase 04.3 swapped (a) the
+        # decomposer to compute_flame_euler_xyz under the Z·Y·X product
+        # with all-three-negated convention AND (b)
+        # rotation_matrix_from_look_at's roll Rodrigues sign at L167;
+        # both changes are coupled and landed in the same atomic commit.
+        # Live ground truth on Camera1: (1.8193°, 1.0639°, 1.2529°) —
+        # this test asserts the parser matches whatever the helper
+        # produces; absolute tolerance vs Flame ground truth is exercised
+        # by tests/test_rotations.py::TestComputeFlameEulerXyz.
         assert r[0] == pytest.approx(expected_rx, abs=1e-3)
         assert r[1] == pytest.approx(expected_ry, abs=1e-3)
         assert r[2] == pytest.approx(expected_rz, abs=1e-3)
