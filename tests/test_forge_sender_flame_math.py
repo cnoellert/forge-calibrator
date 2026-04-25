@@ -74,6 +74,46 @@ def _compose_flame_rotation_np(rx_deg, ry_deg, rz_deg) -> np.ndarray:
     return flame_euler_xyz_to_cam_rot(rx_deg, ry_deg, rz_deg)
 
 
+# Hand-built single-axis rotation matrices. These are the closed-form
+# truth oracles for the decomposer — independent of any composer in
+# this module or in forge_core. Under R = Rz(-rz) · Ry(-ry) · Rx(-rx),
+# pure-axis inputs reduce to a single sign-negated factor whose closed
+# form is mathematically determined. If the decomposer recovers the
+# input angle from these, the math is correct. Used by
+# test_rot3_to_flame_euler_deg_pure_axis_oracle below to defeat the
+# composer-as-oracle anti-pattern (CONTEXT.md §"D-TEST anti-pattern"
+# in Phase 04.3).
+def _hand_rx_matrix(rx_deg: float) -> np.ndarray:
+    """Pure rx → R = Rx(-rx). Closed form, no composer dependency."""
+    a = math.radians(-rx_deg)
+    c, s = math.cos(a), math.sin(a)
+    return np.array([[1.0, 0.0, 0.0],
+                     [0.0,   c,  -s],
+                     [0.0,   s,   c]], dtype=float)
+
+
+def _hand_ry_matrix(ry_deg: float) -> np.ndarray:
+    """Pure ry → R = Ry(-ry). Closed form, no composer dependency."""
+    b = math.radians(-ry_deg)
+    c, s = math.cos(b), math.sin(b)
+    return np.array([[  c, 0.0,   s],
+                     [0.0, 1.0, 0.0],
+                     [ -s, 0.0,   c]], dtype=float)
+
+
+def _hand_rz_matrix(rz_deg: float) -> np.ndarray:
+    """Pure rz → R = Rz(-rz). Closed form, no composer dependency.
+
+    NOTE the sign: Phase 04.3's aim-rig convention negates rz in the
+    matrix product, so a pure +30° rz produces Rz(-30°). This is what
+    differentiates _xyz from the Free-rig _zyx pair."""
+    g = math.radians(-rz_deg)
+    c, s = math.cos(g), math.sin(g)
+    return np.array([[  c,  -s, 0.0],
+                     [  s,   c, 0.0],
+                     [0.0, 0.0, 1.0]], dtype=float)
+
+
 def _np_to_mathutils_matrix(R_np: np.ndarray) -> "Matrix":
     """Wrap a 3x3 numpy rotation as a mathutils.Matrix so flame_math's
     helper can consume it. flame_math indexes R[row][col]; mathutils
@@ -126,6 +166,66 @@ class TestRot3ToFlameEulerDeg:
         assert rx == 0.0
         # ry should be very close to 90°
         assert math.isclose(ry, 90.0, abs_tol=1e-4)
+
+    # ------------------------------------------------------------------
+    # Hand-built oracle tests — defeat the composer-as-oracle anti-pattern.
+    #
+    # The parametrized roundtrip test above feeds flame_euler_xyz_to_cam_rot
+    # into _rot3_to_flame_euler_deg. Mirrored sign errors in BOTH the
+    # composer AND decomposer would still pass that test (the input matrix
+    # would be wrong, but the decomposer's inverse mirror error would
+    # recover the input angles). This is the EXACT anti-pattern Phase 04.3
+    # CONTEXT.md / PATTERNS.md warned against, and it's what masked the
+    # stale-Blender-addon bug (debug session aim-rig-roundtrip-offset).
+    #
+    # The tests below feed HAND-BUILT rotation matrices (computed from
+    # closed-form trig identities, not from any composer in this codebase)
+    # into the decomposer. If they pass, the decomposer is mathematically
+    # correct under the Phase 04.3 R = Rz(-rz)·Ry(-ry)·Rx(-rx) convention,
+    # independent of the composer's correctness.
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("rx_in", [-30.0, -5.0, 0.0, 5.0, 30.0])
+    def test_rot3_to_flame_euler_deg_pure_rx_hand_oracle(self, rx_in):
+        """Hand-built pure-rx matrix → decomposer recovers (rx, 0, 0)."""
+        R_np = _hand_rx_matrix(rx_in)
+        R_m = _np_to_mathutils_matrix(R_np)
+        rx, ry, rz = _rot3_to_flame_euler_deg(R_m)
+        assert math.isclose(rx, rx_in, abs_tol=1e-9)
+        assert math.isclose(ry, 0.0, abs_tol=1e-9)
+        assert math.isclose(rz, 0.0, abs_tol=1e-9)
+
+    @pytest.mark.parametrize("ry_in", [-30.0, -5.0, 0.0, 5.0, 30.0])
+    def test_rot3_to_flame_euler_deg_pure_ry_hand_oracle(self, ry_in):
+        """Hand-built pure-ry matrix → decomposer recovers (0, ry, 0)."""
+        R_np = _hand_ry_matrix(ry_in)
+        R_m = _np_to_mathutils_matrix(R_np)
+        rx, ry, rz = _rot3_to_flame_euler_deg(R_m)
+        assert math.isclose(rx, 0.0, abs_tol=1e-9)
+        assert math.isclose(ry, ry_in, abs_tol=1e-9)
+        assert math.isclose(rz, 0.0, abs_tol=1e-9)
+
+    @pytest.mark.parametrize("rz_in", [-30.0, -5.0, 0.0, 5.0, 30.0])
+    def test_rot3_to_flame_euler_deg_pure_rz_hand_oracle(self, rz_in):
+        """Hand-built pure-rz matrix → decomposer recovers (0, 0, rz).
+
+        REGRESSION GUARD: This is the test that catches the pre-04.3
+        decomposer (rz = +atan2(R[1][0], R[0][0]), no leading minus).
+        Under the new convention pure rz=+30° gives R = Rz(-30°). The
+        pre-04.3 form would return rz=-30° from this matrix, failing
+        this assertion. The Phase 04.3 form (rz = -atan2(...)) returns
+        rz=+30°, passing.
+
+        If this test fails on a fresh checkout, ensure
+        forge_sender/flame_math.py has the leading minus on the rz
+        atan2 in the non-gimbal branch and NO leading minus on
+        R[0][1] in the gimbal branch. (See debug session
+        aim-rig-roundtrip-offset.md for the historical context.)"""
+        R_np = _hand_rz_matrix(rz_in)
+        R_m = _np_to_mathutils_matrix(R_np)
+        rx, ry, rz = _rot3_to_flame_euler_deg(R_m)
+        assert math.isclose(rx, 0.0, abs_tol=1e-9)
+        assert math.isclose(ry, 0.0, abs_tol=1e-9)
+        assert math.isclose(rz, rz_in, abs_tol=1e-9)
 
 
 # =============================================================================

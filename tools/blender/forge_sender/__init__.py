@@ -60,12 +60,22 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 0, 0),
+    "version": (1, 2, 0),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.2.0 (2026-04-25): aim-rig fix — adopt Phase 04.3 R = Rz(-rz)·Ry(-ry)·Rx(-rx)
+#                      decomposer convention to match Flame-side bake's new
+#                      composer. Resolves rz sign flip on aim-rig round-trip.
+#                      flame_math.py was updated in source on 2026-04-25 but
+#                      the redistributable zip was not rebuilt; users must
+#                      reinstall this version. See .planning/debug/
+#                      resolved/aim-rig-roundtrip-offset.md.
+# v1.1.1 (2026-04-23): unit-scale fix.
+# v1.1.0 (earlier):    debug build.
+# v1.0.0 (initial):    first release.
 
 
 # =============================================================================
