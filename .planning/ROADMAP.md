@@ -79,10 +79,10 @@ Plans:
 **Goal:** Close the Phase 04.2 known limitation — aim-rig camera round-trip lands ~0.087° off on `ry` for the Camera1 fixture because Euler decomposition uses the wrong rotation convention. Adopt the correct convention (`R = Rz(-rz)·Ry(-ry)·Rx(-rx)` — XYZ matrix order with all three Euler signs negated) in every place the aim-rig Euler math touches, in sync, in one wave of commits that leaves the tree consistent on every intermediate revision. Verified 2026-04-24 via forge-bridge probe + viewport manual-match.
 **Requirements**: None (no formal requirement IDs — this phase closes a known limitation from Phase 04.2; de-facto requirements are CONTEXT.md decisions D-CONV / D-ADD / D-KEEP / D-READER / D-BAKE / D-EXTR / D-DOCXR / D-SYNC / D-TEST, all captured in 04.3-01-PLAN.md frontmatter).
 **Depends on:** Phase 4
-**Plans:** 1 plan
+**Plans:** 1/1 plans complete
 
 Plans:
-- [ ] 04.3-01-PLAN.md — Pipeline-symmetric XYZ-signflip swap: add `_xyz` rotation pair in `forge_core/math/rotations.py`, swap aim-rig FBX reader + Blender bake + extract + addon-side flame_math, update lockstep tests, full pytest gate (target: Camera1 within 0.01° of Flame viewport truth)
+- [x] 04.3-01-PLAN.md — Pipeline-symmetric XYZ-signflip swap: add `_xyz` rotation pair in `forge_core/math/rotations.py`, swap aim-rig FBX reader + Blender bake + extract + addon-side flame_math, update lockstep tests, full pytest gate (target: Camera1 within 0.01° of Flame viewport truth)
 
 ### Phase 4.1: Phase 4 polish items (INSERTED)
 

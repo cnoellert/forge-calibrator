@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
-status: executing
-stopped_at: Phase 04.3 Task 1 spike PAUSED — Branch B with rz delta = 2.504° (> 0.05° threshold); awaiting user direction on three options in 04.3-SPIKE.md
-last_updated: "2026-04-25T05:53:09.887Z"
-last_activity: 2026-04-25 -- Phase 04.3 execution started
+status: verifying
+stopped_at: Completed 04.3-01-PLAN.md — aim-rig Euler convention fix shipped, Camera1 within 0.006° of Flame ground truth
+last_updated: "2026-04-25T16:33:21.581Z"
+last_activity: 2026-04-25
 progress:
   total_phases: 9
-  completed_phases: 6
+  completed_phases: 7
   total_plans: 19
-  completed_plans: 18
-  percent: 95
+  completed_plans: 19
+  percent: 100
 ---
 
 # Project State
@@ -27,8 +27,8 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 
 Phase: 04.3 (aim-rig-euler-convention-fix-adopt-xyz-sign-flip-end-to-end) — EXECUTING
 Plan: 1 of 1
-Status: Executing Phase 04.3
-Last activity: 2026-04-25 -- Phase 04.3 execution started
+Status: Phase complete — ready for verification
+Last activity: 2026-04-25
 
 Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
@@ -55,6 +55,7 @@ Progress: [██████░░░░] 60% (3 of 5 phases complete)
 - Trend: —
 
 *Updated after each plan completion*
+| Phase 04.3 P01 | 14min | 5 tasks | 10 files |
 
 ## Accumulated Context
 
@@ -69,6 +70,9 @@ Recent decisions affecting current work:
 - D-19 triggered: `flame.batch.frame_rate` is a plain `NoneType` slot (not a `PyAttribute`), returned `None` under all tested conditions including with a Batch + clip + Action loaded. Recovery ladder adopted: (1) read `cam["forge_bake_frame_rate"]` custom prop on the Blender camera, (2) fall back to `bpy.context.scene.render.fps / fps_base`, (3) popup asking the user. Plan 02-02's `v5_json_str_to_fbx` takes `frame_rate` as a caller-provided kwarg; Plan 02-03's addon owns the ladder. See `memory/flame_batch_frame_rate.md`.
 - FOLDED-01 closed: multi-camera picker 4-check sweep PASSED all checks. Perspective correctly filtered, dropdown order deterministic, Cancel path clean, picker→stamp integrity verified via JSON `forge_bake_camera_name`. See `.planning/todos/completed/2026-04-21-verify-multi-camera-picker-in-live-uat.md`.
 - Phase 2 shipped (2026-04-21): Forge Sender v1.0.0 addon, all IMP-01..IMP-06 verified live. Two hotfix commits landed during UAT (permissive operator poll(); bridge _result surfacing via trailing expression + ast.literal_eval). Four Phase 4 polish follow-ups captured in 02-04-SUMMARY: plural popup filter, Flame FBX stereo-rig expansion investigation, Blender reload discipline, single uncaptured Flame crash. Code review: 0 blockers, 2 warnings (fidelity-discipline on D-19 ladder fall-through), 3 info.
+- [Phase 04.3]: Adopted R = Rz(-rz)·Ry(-ry)·Rx(-rx) (Z·Y·X product, all 3 signs negated) for aim-rig pipeline; coupled with rotation_matrix_from_look_at L167 +roll_deg sign flip. Camera1 fixture lands within 0.006° of Flame viewport ground truth.
+- [Phase 04.3]: Pipeline-symmetric atomic landing: 7-file commit covers reader + bake + flame_math + look-at L167 + 3 lockstep tests. Mitigates Phase 04.2 importToActionFBX hard-crash class of failures.
+- [Phase 04.3]: Plan amendment §A's symbolic derivation was empirically wrong (claimed X·Y·Z product; correct form is Z·Y·X — extrinsic xyz means Rz·Ry·Rx in matrix product, not Rx·Ry·Rz). Auto-applied Rule 1 fix in Task 3. Original plan's <symbolic_derivation> block was actually correct.
 
 ### Pending Todos
 
@@ -104,6 +108,6 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 
 ## Session Continuity
 
-Last session: 2026-04-25T05:53:09.884Z
-Stopped at: Phase 04.3 Task 1 spike PAUSED — Branch B with rz delta = 2.504° (> 0.05° threshold); awaiting user direction on three options in 04.3-SPIKE.md
+Last session: 2026-04-25T16:33:10.639Z
+Stopped at: Completed 04.3-01-PLAN.md — aim-rig Euler convention fix shipped, Camera1 within 0.006° of Flame ground truth
 Resume file: None
