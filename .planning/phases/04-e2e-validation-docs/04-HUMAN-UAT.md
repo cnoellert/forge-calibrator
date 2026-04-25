@@ -43,15 +43,15 @@ notes: Independent of Test 1's blocker. Can be exercised once a TD is ready to w
 
 ### 3. Ctrl-F troubleshooting usability check
 expected: Each of the 5 Symptom strings is the first Ctrl-F hit in a rendered markdown viewer. The fix copy is clear and actionable. Decide whether WR-01 needs addressing before v6.3 ships.
-result: pending
-notes: Also independent. Reviewer judgment call on WR-01.
+result: pass
+resolved: 2026-04-25 — user confirmed via desk-side review of docs/seamless-bridge.md.
 
 ## Summary
 
 total: 3
-passed: 0
-issues: 1
-pending: 2
+passed: 1
+issues: 0
+pending: 1
 skipped: 0
 blocked: 1
 
