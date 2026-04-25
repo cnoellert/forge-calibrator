@@ -97,4 +97,4 @@ This document evolves at phase transitions and milestone boundaries.
 4. Update Context with current state
 
 ---
-*Last updated: 2026-04-22 after Phase 4 (E2E Validation + Docs) — README.md + docs/seamless-bridge.md + tools/smoke-test/seamless-bridge-smoke.sh delivered; DOC-02 closed. DOC-01 runtime closure deferred to after Phase 4.1 empty-camera-bake UX fix (pre-existing Phase 1/2 bug surfaced by smoke test Test 1 on fresh Camera Match solve).*
+*Last updated: 2026-04-25 after Phase 04.3 (aim-rig Euler convention fix) — `compute_flame_euler_xyz` / `flame_euler_xyz_to_cam_rot` pair added for aim-rig cameras, paired with a coupled `rotation_matrix_from_look_at` roll-sign flip. The Phase 04.2 known limitation (~0.087° ry residual on Camera1) is closed; Camera1 round-trip now lands within 0.006° of Flame viewport ground truth on every axis. Pipeline-symmetric atomic landing (single 7-file commit) prevents the importToActionFBX hard-crash that forced the Phase 04.2 revert. 400 tests passing, 0 regressions on the Free-rig path.*
