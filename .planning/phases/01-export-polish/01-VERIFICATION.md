@@ -98,7 +98,8 @@ Scanned: `flame/camera_match_hook.py` (new functions), `forge_flame/fbx_ascii.py
 #### 1. Happy-path end-to-end: zero-dialog export to Blender
 
 **Test:** On a machine with Flame 2026.2.1 and Blender installed:
-1. Sync files: `rsync -av flame/ forge_flame/ forge_core/ tools/ /opt/Autodesk/shared/python/`
+1. Deploy via the installer: `./install.sh --force` from the repo root.
+   ⚠ DO NOT use a bare `rsync -av flame/ forge_flame/ forge_core/ tools/ /opt/Autodesk/shared/python/` — that command was previously suggested here and corrupted production installs (see Phase 04.2 HUMAN-UAT Test 2 gap from 2026-04-25). It flattens four packages' contents into one directory, shadows Flame's bundled `flame` module, and triggers SIGSEGVs. install.sh deploys each package to its own subdirectory and routes `tools/blender/` outside Flame's hook discovery tree.
 2. Restart Flame.
 3. Open a Batch that contains an Action node with a single non-Perspective camera and a source clip.
 4. Right-click the Action → "Camera Match" → "Export Camera to Blender".
