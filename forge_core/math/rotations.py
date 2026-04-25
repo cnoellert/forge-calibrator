@@ -6,6 +6,23 @@ Rx(-rx)`` — ZYX order with X and Y signs negated. Verified 2026-04-16
 against the test.fspy fixture; see memory/flame_rotation_convention.md
 for the history of getting this right.
 
+For aim-rig cameras the convention differs: Flame's aim-rig
+rotation actually composes as ``R = Rx(-rx) · Ry(-ry) · Rz(-rz)``
+— X·Y·Z matrix-product order with all three Euler signs negated.
+Verified 2026-04-25 via forge-bridge live probe of Camera1 plus a
+user viewport manual-match plus empirical sign/order search (see
+04.3-SPIKE.md). The ``compute_flame_euler_xyz`` /
+``flame_euler_xyz_to_cam_rot`` pair below implements that
+convention. They are ADDITIVE: the existing
+``compute_flame_euler_zyx`` / ``flame_euler_to_cam_rot`` pair
+stays unchanged because the Free-rig solve path
+(forge_flame.adapter) relies on its symmetric pass-through
+behaviour. New aim-rig code should import the ``_xyz`` pair;
+existing free-rig code keeps importing ``_zyx``. NB: aim-rig
+callers must also use the post-Phase-04.3
+``rotation_matrix_from_look_at`` (positive roll Rodrigues
+sign) — the look-at sign and decomposer convention are coupled.
+
 This module lives in forge_core (not forge_flame) because:
 
   - The math is numpy-only. No flame, no Qt, no Wiretap, no OCIO.
@@ -78,6 +95,68 @@ def flame_euler_to_cam_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> np.nd
     Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
     Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
     return Rz @ Ry @ Rx
+
+
+def compute_flame_euler_xyz(cam_rot: np.ndarray) -> Tuple[float, float, float]:
+    """Decompose a 3x3 cam-to-world rotation into Flame's XYZ-signflip Euler.
+
+    Flame's aim-rig camera composes R as ``Rx(-rx) · Ry(-ry) · Rz(-rz)``:
+    X·Y·Z matrix-product order with all three Euler signs negated.
+    Substituting α=-rx, β=-ry, γ=-rz reduces to the standard
+    XYZ-positive intrinsic product R = Rx(α)·Ry(β)·Rz(γ); extraction
+    follows the standard closed-form decomposition.
+
+    Verified 2026-04-25 by:
+      - forge-bridge live probe of Camera1 (position/aim/up/roll/fov)
+      - Flame viewport manual-match to (1.8193°, 1.0639°, 1.2529°)
+      - empirical sign/order search in 04.3-SPIKE.md / spike_xyz_final.py
+    Hand-decomposing rotation_matrix_from_look_at(Camera1) under this
+    convention reproduces (1.814°, 1.058°, 1.252°) — within 0.006° of
+    Flame viewport truth on every axis. Closes the Phase 04.2 ~0.087°
+    ry residual on the aim-rig fixture.
+
+    Does NOT modify or replace ``compute_flame_euler_zyx``; the Free-rig
+    solve path depends on that pair's symmetric pass-through behaviour
+    and is out of scope for this phase.
+
+    Returns (rx_deg, ry_deg, rz_deg). Handles gimbal lock (ry = ±90°)
+    by pinning rx=0 and recovering rz from the upper-left 2x2 block."""
+    cb = np.sqrt(cam_rot[0, 0] ** 2 + cam_rot[0, 1] ** 2)
+    gimbal = cb <= 1e-6
+    if not gimbal:
+        rx =  np.arctan2(cam_rot[1, 2], cam_rot[2, 2])
+        ry = -np.arcsin(cam_rot[0, 2])
+        rz =  np.arctan2(cam_rot[0, 1], cam_rot[0, 0])
+    else:
+        rx = 0.0
+        ry = -np.arcsin(cam_rot[0, 2])
+        rz = -np.arctan2(cam_rot[1, 0], cam_rot[1, 1])
+    deg = np.degrees(np.array([rx, ry, rz]))
+    return (float(deg[0]), float(deg[1]), float(deg[2]))
+
+
+def flame_euler_xyz_to_cam_rot(rx_deg: float, ry_deg: float, rz_deg: float) -> np.ndarray:
+    """Compose a 3x3 cam-to-world rotation from Flame's XYZ-signflip Euler.
+
+    Exact inverse of ``compute_flame_euler_xyz``: builds R using
+    Flame's aim-rig composition ``R = Rx(-rx) · Ry(-ry) · Rz(-rz)``.
+    Given any (rx, ry, rz) that came out of the decompose, this
+    returns the same rotation matrix that went in.
+
+    Used by the aim-rig Flame → Blender bake path (rebuild world
+    matrix from stored JSON) and by tests that need to generate
+    known-answer rotations under the XYZ-signflip convention.
+
+    Does NOT modify or replace ``flame_euler_to_cam_rot``; the
+    Free-rig pipeline keeps the ``_zyx`` pair."""
+    rx, ry, rz = np.radians([rx_deg, ry_deg, rz_deg])
+    cx, sx = np.cos(-rx), np.sin(-rx)
+    cy, sy = np.cos(-ry), np.sin(-ry)
+    cz, sz = np.cos(-rz), np.sin(-rz)
+    Rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    Ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    Rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return Rx @ Ry @ Rz                     # X·Y·Z product order — NOT Z·Y·X
 
 
 def rotation_matrix_from_look_at(

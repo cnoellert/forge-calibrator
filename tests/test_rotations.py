@@ -7,13 +7,21 @@ Covers:
     - Camera1 live-probe known-answer (D-07 verification gate)
     - fail-loud on degenerate inputs (forward collapsed, up parallel to view)
     - roll-sign convention locked
+  - compute_flame_euler_xyz / flame_euler_xyz_to_cam_rot (Phase 04.3, D-ADD/D-TEST)
+    - Identity, pure-axis hand-built matrices, gimbal-lock branch
+    - Camera1 known-answer with hand-decomposed oracle (NON-circular)
+    - Composer/decomposer invertibility on parametrised triples
+    - Orthonormality + det=+1 of composer output
+    - Anti-regression: _zyx pair untouched
 
 Does NOT cover:
-  - compute_flame_euler_zyx / flame_euler_to_cam_rot inverse pair — that
-    lives in tests/test_blender_roundtrip.py::TestEulerHelperInverse.
+  - compute_flame_euler_zyx / flame_euler_to_cam_rot inverse pair on
+    arbitrary triples — that lives in
+    tests/test_blender_roundtrip.py::TestEulerHelperInverse.
   - FBX-layer aim-rig resolution (Plan 03 in tests/test_fbx_ascii.py).
 """
 
+import math
 import os
 import sys
 
@@ -23,8 +31,10 @@ import pytest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))  # noqa: E402
 
 from forge_core.math.rotations import (  # noqa: E402
+    compute_flame_euler_xyz,
     compute_flame_euler_zyx,
     flame_euler_to_cam_rot,
+    flame_euler_xyz_to_cam_rot,
     rotation_matrix_from_look_at,
 )
 
@@ -39,6 +49,15 @@ CAMERA1_POSITION = (0.0, 57.774681, 2113.305420)
 CAMERA1_AIM      = (0.355065, 57.133656, 2093.318848)
 CAMERA1_UP       = (0.0, 30.0, 0.0)
 CAMERA1_ROLL_DEG = 1.252521
+
+# Phase 04.3: Camera1 ground-truth Euler under the new XYZ-signflip convention
+# (R = Rx(-rx)·Ry(-ry)·Rz(-rz), X·Y·Z product order). Source: 04.3-SPIKE.md
+# empirical search; reproduces Flame viewport ground truth within 0.006°.
+# Hand-decomposed value used as the test oracle (NON-circular — does NOT round
+# through flame_euler_xyz_to_cam_rot, which would be the composer-as-oracle
+# anti-pattern that masked the Phase 04.2 bug).
+CAMERA1_HAND_DECOMPOSED_XYZ = (1.814, 1.058, 1.252)        # tolerance 1e-3°
+CAMERA1_FLAME_VIEWPORT_XYZ  = (1.8193, 1.0639, 1.2529)     # tolerance 0.01°
 
 
 class TestLookAtMatrix:
@@ -143,3 +162,202 @@ class TestLookAtMatrix:
         # Orthonormality survives any roll.
         np.testing.assert_allclose(Rp @ Rp.T, np.eye(3), atol=1e-12)
         np.testing.assert_allclose(Rn @ Rn.T, np.eye(3), atol=1e-12)
+
+
+class TestComputeFlameEulerXyz:
+    """compute_flame_euler_xyz / flame_euler_xyz_to_cam_rot — Phase 04.3.
+
+    Convention: R = Rx(-rx) · Ry(-ry) · Rz(-rz) — X·Y·Z matrix product order
+    with all three Euler signs negated. Verified 2026-04-25 via forge-bridge
+    live probe of Camera1 + Flame viewport manual-match + empirical spike
+    (see 04.3-SPIKE.md, 04.3-01-PLAN-AMENDMENT.md §A).
+
+    Anti-pattern guard: the Camera1 known-answer test uses
+    rotation_matrix_from_look_at output as the input AND the hand-decomposed
+    (1.814°, 1.058°, 1.252°) as the expected oracle. It does NOT use
+    flame_euler_xyz_to_cam_rot to construct the input — that's the
+    composer-as-decomposer-oracle anti-pattern that masked the Phase 04.2
+    bug (PATTERNS.md §"Anti-Pattern to AVOID")."""
+
+    # ------------------------------------------------------------------
+    # Identity
+    # ------------------------------------------------------------------
+    def test_identity_decomposes_to_zero(self):
+        rx, ry, rz = compute_flame_euler_xyz(np.eye(3))
+        assert math.isclose(rx, 0.0, abs_tol=1e-12)
+        assert math.isclose(ry, 0.0, abs_tol=1e-12)
+        assert math.isclose(rz, 0.0, abs_tol=1e-12)
+
+    def test_identity_composes_to_eye(self):
+        R = flame_euler_xyz_to_cam_rot(0.0, 0.0, 0.0)
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-12)
+
+    # ------------------------------------------------------------------
+    # Pure-axis hand-built matrices
+    # ------------------------------------------------------------------
+    # Under R = Rx(-rx) · Ry(-ry) · Rz(-rz), with the other two angles
+    # zeroed, R reduces to a single factor whose argument is the
+    # corresponding negated angle. Pure-axis matrices are convention-
+    # invariant (only one factor is non-trivial) so these tests work
+    # under both the old Z·Y·X form and the new X·Y·Z form. They guard
+    # against accidental angle-radian/degree confusion or lost minus signs.
+    def test_pure_rx_30_deg(self):
+        # Pure rx=+30° → R = Rx(-30°)
+        a = math.radians(-30.0)
+        c, s = math.cos(a), math.sin(a)
+        R = np.array([[1.0, 0.0, 0.0],
+                      [0.0,   c,  -s],
+                      [0.0,   s,   c]], dtype=float)
+        rx, ry, rz = compute_flame_euler_xyz(R)
+        assert math.isclose(rx, 30.0, abs_tol=1e-9)
+        assert math.isclose(ry,  0.0, abs_tol=1e-9)
+        assert math.isclose(rz,  0.0, abs_tol=1e-9)
+
+    def test_pure_ry_30_deg(self):
+        # Pure ry=+30° → R = Ry(-30°)
+        b = math.radians(-30.0)
+        c, s = math.cos(b), math.sin(b)
+        R = np.array([[  c, 0.0,   s],
+                      [0.0, 1.0, 0.0],
+                      [ -s, 0.0,   c]], dtype=float)
+        rx, ry, rz = compute_flame_euler_xyz(R)
+        assert math.isclose(rx,  0.0, abs_tol=1e-9)
+        assert math.isclose(ry, 30.0, abs_tol=1e-9)
+        assert math.isclose(rz,  0.0, abs_tol=1e-9)
+
+    def test_pure_rz_30_deg(self):
+        # Pure rz=+30° → R = Rz(-30°). NOTE: this differs from _zyx where
+        # pure rz=+30 builds Rz(+30°). The new _xyz convention negates
+        # all three angles in the matrix product.
+        g = math.radians(-30.0)
+        c, s = math.cos(g), math.sin(g)
+        R = np.array([[  c,  -s, 0.0],
+                      [  s,   c, 0.0],
+                      [0.0, 0.0, 1.0]], dtype=float)
+        rx, ry, rz = compute_flame_euler_xyz(R)
+        assert math.isclose(rx,  0.0, abs_tol=1e-9)
+        assert math.isclose(ry,  0.0, abs_tol=1e-9)
+        assert math.isclose(rz, 30.0, abs_tol=1e-9)
+
+    # ------------------------------------------------------------------
+    # Gimbal lock — hand-built X·Y·Z matrix
+    # ------------------------------------------------------------------
+    def test_gimbal_lock_ry_plus_90(self):
+        """Hand-built gimbal test under the X·Y·Z product convention.
+
+        Target: rx=0, ry=+90°, rz=+30°. Under R = Rx(-rx)·Ry(-ry)·Rz(-rz)
+        this is R = Rx(0) @ Ry(-90°) @ Rz(-30°). Matrix entries computed
+        BY HAND from the closed form (cz=cos(-30°)=√3/2, sz=sin(-30°)=-0.5;
+        cy=cos(-90°)=0, sy=sin(-90°)=-1):
+
+            Ry(-90°) = [[ 0, 0,-1], [ 0, 1, 0], [ 1, 0, 0]]
+            Rz(-30°) = [[ √3/2, +0.5, 0], [-0.5, √3/2, 0], [ 0, 0, 1]]
+            R = Ry(-90°) @ Rz(-30°)
+              = [[ 0,    0,    -1   ],
+                 [-0.5,  √3/2,  0   ],
+                 [ √3/2, 0.5,   0   ]]
+
+        Anti-regression: this test guards against a copy-paste from
+        _zyx's gimbal branch. _zyx uses sqrt(R[0,0]^2 + R[1,0]^2) as the
+        gimbal indicator (check R[2,0]=±1) AND atan2(-R[0,1], R[1,1]) for
+        rz; both would give wrong answers on this matrix because R[0,0]
+        and R[1,0] aren't simultaneously zero here, and the row/col
+        indices are different under X·Y·Z. The correct _xyz gimbal
+        indicator is sqrt(R[0,0]^2 + R[0,1]^2)=0 (R[0,2]=±1)."""
+        sqrt3_over_2 = math.sqrt(3) / 2
+        R = np.array([
+            [ 0.0,          0.0,         -1.0       ],
+            [-0.5,          sqrt3_over_2, 0.0       ],
+            [ sqrt3_over_2, 0.5,          0.0       ],
+        ], dtype=float)
+        rx, ry, rz = compute_flame_euler_xyz(R)
+        assert math.isclose(rx,  0.0, abs_tol=1e-3)
+        assert math.isclose(ry, 90.0, abs_tol=1e-3)
+        assert math.isclose(rz, 30.0, abs_tol=1e-3)
+
+    # ------------------------------------------------------------------
+    # Camera1 known-answer (NON-circular)
+    # ------------------------------------------------------------------
+    # NOTE: this test depends on BOTH the new _xyz decomposer (Task 2)
+    # AND the L167 sign flip in rotation_matrix_from_look_at (Task 3).
+    # The two changes are coupled — only the combination reproduces
+    # CAMERA1_HAND_DECOMPOSED_XYZ. Marked xfail until the coupled Task 3
+    # commit lands; that commit removes the xfail.
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "Coupled with the L167 roll-Rodrigues sign flip in "
+            "rotation_matrix_from_look_at (Phase 04.3 Task 3 atomic "
+            "commit). Until that lands, look-at + _xyz decomposer "
+            "produces (1.858°, 0.977°, -1.252°) — see 04.3-SPIKE.md."
+        ),
+    )
+    def test_camera1_known_answer(self):
+        """Camera1 hand-decomposed oracle (NON-circular).
+
+        Construct R via rotation_matrix_from_look_at (independently
+        proven by TestLookAtMatrix above); decompose with the new
+        compute_flame_euler_xyz; assert the result matches the hand-
+        decomposed (1.814°, 1.058°, 1.252°) within 1e-3°. Does NOT
+        round-trip through flame_euler_xyz_to_cam_rot — that would be
+        the composer-as-oracle anti-pattern."""
+        R = rotation_matrix_from_look_at(
+            CAMERA1_POSITION, CAMERA1_AIM, CAMERA1_UP, CAMERA1_ROLL_DEG
+        )
+        rx, ry, rz = compute_flame_euler_xyz(R)
+        assert math.isclose(rx, CAMERA1_HAND_DECOMPOSED_XYZ[0], abs_tol=1e-3)
+        assert math.isclose(ry, CAMERA1_HAND_DECOMPOSED_XYZ[1], abs_tol=1e-3)
+        assert math.isclose(rz, CAMERA1_HAND_DECOMPOSED_XYZ[2], abs_tol=1e-3)
+
+    # ------------------------------------------------------------------
+    # Invertibility — composer ↔ decomposer round-trip
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("tri", [
+        (10.0, 20.0, 30.0),
+        (-15.5, 45.0, -70.25),
+        (5.0, 0.0, 0.0),
+        (0.0, 30.0, 0.0),
+        (0.0, 0.0, -60.0),
+        (-80.0, 20.0, 45.0),
+    ], ids=["compound", "neg-compound", "rx-only", "ry-only",
+            "rz-only-neg", "strong-tilt"])
+    def test_invertibility(self, tri):
+        """compose then decompose returns the input within 1e-9°.
+
+        This proves invertibility ONLY — not correctness against an
+        external oracle. Correctness is exercised by the pure-axis,
+        gimbal-lock, and Camera1 known-answer tests above."""
+        R = flame_euler_xyz_to_cam_rot(*tri)
+        recovered = compute_flame_euler_xyz(R)
+        np.testing.assert_allclose(recovered, tri, atol=1e-9)
+
+    # ------------------------------------------------------------------
+    # Orthonormality + det(R)=+1 of composer output
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("tri", [
+        (10.0, 20.0, 30.0),
+        (-15.5, 45.0, -70.25),
+        (5.0, 0.0, 0.0),
+        (0.0, 30.0, 0.0),
+        (0.0, 0.0, -60.0),
+        (-80.0, 20.0, 45.0),
+    ], ids=["compound", "neg-compound", "rx-only", "ry-only",
+            "rz-only-neg", "strong-tilt"])
+    def test_orthonormality(self, tri):
+        R = flame_euler_xyz_to_cam_rot(*tri)
+        np.testing.assert_allclose(R @ R.T, np.eye(3), atol=1e-12)
+        assert abs(np.linalg.det(R) - 1.0) < 1e-12
+
+    # ------------------------------------------------------------------
+    # Anti-regression: _zyx pair untouched
+    # ------------------------------------------------------------------
+    def test_anti_regression_zyx_unchanged(self):
+        """_zyx pair must remain a self-inverse on identity. Phase 04.3
+        is additive — the Free-rig solve path depends on _zyx's
+        symmetric pass-through behavior and must not be perturbed."""
+        rx, ry, rz = compute_flame_euler_zyx(np.eye(3))
+        assert math.isclose(rx, 0.0, abs_tol=1e-12)
+        assert math.isclose(ry, 0.0, abs_tol=1e-12)
+        assert math.isclose(rz, 0.0, abs_tol=1e-12)
+        R = flame_euler_to_cam_rot(0.0, 0.0, 0.0)
+        np.testing.assert_allclose(R, np.eye(3), atol=1e-12)
