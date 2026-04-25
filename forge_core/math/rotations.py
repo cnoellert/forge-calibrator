@@ -264,8 +264,13 @@ def rotation_matrix_from_look_at(
     # down -forward (through the lens), which corresponds to rotating
     # right/up_cam about +forward by +roll_deg. Sign verified 2026-04-25
     # against Camera1 forge-bridge probe + Flame viewport manual-match,
-    # decomposed under the new X·Y·Z _xyz convention (see Phase 04.3
-    # CONTEXT.md, 04.3-SPIKE.md, and 04.3-01-PLAN-AMENDMENT.md). The
+    # decomposed under the new _xyz convention (Z·Y·X matrix product
+    # with rz also negated; same product order as compute_flame_euler_zyx
+    # but with the extra rz sign-flip). See Phase 04.3 CONTEXT.md,
+    # 04.3-SPIKE.md, and compute_flame_euler_xyz's docstring above
+    # (NB: the 04.3-01-PLAN-AMENDMENT.md proposed an X·Y·Z product order;
+    # that proposal was empirically falsified during execution and the
+    # production code reverted to the original Z·Y·X form). The
     # look-at roll sign and the decomposer convention are coupled — the
     # additive _xyz pair in this file (compute_flame_euler_xyz /
     # flame_euler_xyz_to_cam_rot) is what consumes look-at output for
