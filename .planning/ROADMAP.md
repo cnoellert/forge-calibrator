@@ -74,6 +74,16 @@ Plans:
 - [x] 04-01-PLAN.md — User-facing docs: README.md (repo root) + docs/seamless-bridge.md (canonical guide, install TD+artist, autostart, Send-to-Flame walkthrough, 5 grep-anchored troubleshooting recipes) — DOC-02
 - [x] 04-02-PLAN.md — E2E smoke-test script: tools/smoke-test/seamless-bridge-smoke.sh (hybrid [mech]+[human], 10 steps, folds Phase 3 HUMAN-UAT Test 3) — DOC-01
 
+### Phase 04.3: Aim-rig Euler convention fix: adopt XYZ-sign-flip end-to-end (INSERTED)
+
+**Goal:** Close the Phase 04.2 known limitation — aim-rig camera round-trip lands ~0.087° off on `ry` for the Camera1 fixture because Euler decomposition uses the wrong rotation convention. Adopt the correct convention (`R = Rz(-rz)·Ry(-ry)·Rx(-rx)` — XYZ matrix order with all three Euler signs negated) in every place the aim-rig Euler math touches, in sync, in one wave of commits that leaves the tree consistent on every intermediate revision. Verified 2026-04-24 via forge-bridge probe + viewport manual-match.
+**Requirements**: None (no formal requirement IDs — this phase closes a known limitation from Phase 04.2; de-facto requirements are CONTEXT.md decisions D-CONV / D-ADD / D-KEEP / D-READER / D-BAKE / D-EXTR / D-DOCXR / D-SYNC / D-TEST, all captured in 04.3-01-PLAN.md frontmatter).
+**Depends on:** Phase 4
+**Plans:** 1 plan
+
+Plans:
+- [ ] 04.3-01-PLAN.md — Pipeline-symmetric XYZ-signflip swap: add `_xyz` rotation pair in `forge_core/math/rotations.py`, swap aim-rig FBX reader + Blender bake + extract + addon-side flame_math, update lockstep tests, full pytest gate (target: Camera1 within 0.01° of Flame viewport truth)
+
 ### Phase 4.1: Phase 4 polish items (INSERTED)
 
 **Goal:** Bucket for polish items captured during Phases 1-3 that were tagged "Phase 4 polish" in SUMMARY/REVIEW artifacts but don't belong in Phase 4's docs+validation scope. Run the Phase 4 E2E smoke test first; any items it surfaces as blocking for v6.3 ship get prioritized, others ride to v2.
