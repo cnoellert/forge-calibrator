@@ -243,6 +243,49 @@ def _read_source_frame(clip, target_frame=None, source_colourspace=None):
 # PySide2 Camera Match Window
 # =========================================================================
 
+# FORGE palette — matches forge_cv_align. Hoisted to module level (Plan
+# 04.4-02 / RESEARCH Pitfall 5) so module-level dialogs like _pick_camera
+# can reference it without NameError. The original definition lived inside
+# _open_camera_match's body; the inner-scope copy was removed when this
+# constant was hoisted.
+_FORGE_SS = (
+    "QDialog { background: #282c34; }"
+    "QWidget#sidePanel { background: #282c34; }"
+    "QGroupBox { color: #888; font-size: 11px; font-weight: bold; "
+    "  border: 1px solid #3a3f4f; border-radius: 3px; "
+    "  margin-top: 12px; padding: 12px 10px 10px 10px; }"
+    "QGroupBox::title { subcontrol-origin: margin; left: 10px; "
+    "  padding: 0 4px; color: #888; }"
+    "QLabel { color: #ccc; font-size: 12px; }"
+    "QLabel#fieldLabel { color: #888; font-size: 11px; }"
+    "QLabel#value { color: #ccc; font-size: 12px; font-family: 'JetBrains Mono', 'SF Mono', monospace; }"
+    "QLabel#valueDim { color: #666; font-size: 12px; font-family: 'JetBrains Mono', 'SF Mono', monospace; }"
+    "QLabel#statusOK { color: #7bd37b; font-size: 11px; font-weight: bold; }"
+    "QLabel#statusBad { color: #d37b7b; font-size: 11px; font-weight: bold; }"
+    "QComboBox { background: #1e2028; color: #ccc; "
+    "  border: 1px solid #555; border-radius: 3px; "
+    "  padding: 4px 8px; font-size: 12px; }"
+    "QComboBox:focus { border: 1px solid #E87E24; }"
+    "QComboBox QAbstractItemView { background: #1e2028; color: #ccc; "
+    "  selection-background-color: #E87E24; }"
+    "QCheckBox { color: #ccc; font-size: 12px; }"
+    "QCheckBox::indicator { width: 14px; height: 14px; }"
+    "QSlider::groove:horizontal { border: 1px solid #3a3f4f; "
+    "  height: 4px; background: #1e2028; border-radius: 2px; }"
+    "QSlider::handle:horizontal { background: #E87E24; "
+    "  border: none; width: 14px; margin: -5px 0; border-radius: 7px; }"
+    "QPushButton { background: #333; color: #ccc; border: 1px solid #555; "
+    "  border-radius: 3px; padding: 6px 12px; font-size: 12px; }"
+    "QPushButton:hover:enabled { background: #444; }"
+    "QPushButton:disabled { background: #2a2d36; color: #666; border: 1px solid #333; }"
+    "QPushButton#primary { background: #E87E24; color: #fff; border: none; "
+    "  font-weight: bold; padding: 8px 12px; }"
+    "QPushButton#primary:hover:enabled { background: #f59035; }"
+    "QPushButton#primary:disabled { background: #2a2d36; color: #555; border: 1px solid #333; }"
+    "QFrame#sep { color: #3a3f4f; }"
+)
+
+
 def _open_camera_match(clip):
     _ensure_forge_env()
     import flame
@@ -297,43 +340,10 @@ def _open_camera_match(clip):
         pa.end()
         return QtGui.QIcon(pix)
 
-    # FORGE palette — matches forge_cv_align.
-    _FORGE_SS = (
-        "QDialog { background: #282c34; }"
-        "QWidget#sidePanel { background: #282c34; }"
-        "QGroupBox { color: #888; font-size: 11px; font-weight: bold; "
-        "  border: 1px solid #3a3f4f; border-radius: 3px; "
-        "  margin-top: 12px; padding: 12px 10px 10px 10px; }"
-        "QGroupBox::title { subcontrol-origin: margin; left: 10px; "
-        "  padding: 0 4px; color: #888; }"
-        "QLabel { color: #ccc; font-size: 12px; }"
-        "QLabel#fieldLabel { color: #888; font-size: 11px; }"
-        "QLabel#value { color: #ccc; font-size: 12px; font-family: 'JetBrains Mono', 'SF Mono', monospace; }"
-        "QLabel#valueDim { color: #666; font-size: 12px; font-family: 'JetBrains Mono', 'SF Mono', monospace; }"
-        "QLabel#statusOK { color: #7bd37b; font-size: 11px; font-weight: bold; }"
-        "QLabel#statusBad { color: #d37b7b; font-size: 11px; font-weight: bold; }"
-        "QComboBox { background: #1e2028; color: #ccc; "
-        "  border: 1px solid #555; border-radius: 3px; "
-        "  padding: 4px 8px; font-size: 12px; }"
-        "QComboBox:focus { border: 1px solid #E87E24; }"
-        "QComboBox QAbstractItemView { background: #1e2028; color: #ccc; "
-        "  selection-background-color: #E87E24; }"
-        "QCheckBox { color: #ccc; font-size: 12px; }"
-        "QCheckBox::indicator { width: 14px; height: 14px; }"
-        "QSlider::groove:horizontal { border: 1px solid #3a3f4f; "
-        "  height: 4px; background: #1e2028; border-radius: 2px; }"
-        "QSlider::handle:horizontal { background: #E87E24; "
-        "  border: none; width: 14px; margin: -5px 0; border-radius: 7px; }"
-        "QPushButton { background: #333; color: #ccc; border: 1px solid #555; "
-        "  border-radius: 3px; padding: 6px 12px; font-size: 12px; }"
-        "QPushButton:hover:enabled { background: #444; }"
-        "QPushButton:disabled { background: #2a2d36; color: #666; border: 1px solid #333; }"
-        "QPushButton#primary { background: #E87E24; color: #fff; border: none; "
-        "  font-weight: bold; padding: 8px 12px; }"
-        "QPushButton#primary:hover:enabled { background: #f59035; }"
-        "QPushButton#primary:disabled { background: #2a2d36; color: #555; border: 1px solid #333; }"
-        "QFrame#sep { color: #3a3f4f; }"
-    )
+    # _FORGE_SS hoisted to module scope (Plan 04.4-02 / RESEARCH Pitfall 5).
+    # The CameraMatchWindow.setStyleSheet call below this comment still
+    # resolves — it now reads the module global _FORGE_SS instead of an
+    # inner-scope local.
 
     class ImageWidget(QtWidgets.QWidget):
         """Image display with draggable VP line endpoints."""
@@ -1860,18 +1870,86 @@ def _scan_first_clip_metadata():
     return None
 
 
+# RESEARCH Pitfall 5: _FORGE_SS MUST be at module level by the time this
+# function is called. The Plan 04.4-02 hoist moved it from inside
+# _open_camera_match's body to module scope so this reference resolves
+# without NameError.
+# UI-SPEC §A-1: keyboard semantics — Enter accepts (default button),
+# Escape rejects (QDialog default), double-click on item also accepts
+# via the itemDoubleClicked → dialog.accept signal wiring below.
 def _pick_camera(cameras, dialog_title):
-    """Prompt user to pick one camera from the list; returns (action, cam,
-    label) or None if cancelled. No dialog shown if only one camera exists."""
+    """FORGE-styled camera picker. Returns (action, cam, label) or None.
+
+    No dialog shown if 0 or 1 cameras (D-01 early exit). Dialog uses
+    module-level _FORGE_SS (hoisted in this same plan). Window title is
+    em-dash framed: 'FORGE — <title>'.
+    """
+    if not cameras:
+        return None
     if len(cameras) == 1:
         return cameras[0]
-    from PySide6 import QtWidgets
+
+    from PySide6.QtWidgets import (
+        QDialog, QVBoxLayout, QHBoxLayout,
+        QLabel, QListWidget, QPushButton, QFrame,
+    )
+    from PySide6.QtCore import Qt  # noqa: F401  (kept for future use; harmless)
+
+    dialog = QDialog()
+    dialog.setWindowTitle(f"FORGE — {dialog_title}")
+    dialog.setMinimumWidth(360)
+    dialog.setStyleSheet(_FORGE_SS)
+
+    layout = QVBoxLayout(dialog)
+    layout.setContentsMargins(16, 14, 16, 14)
+    layout.setSpacing(12)
+
+    header = QLabel(dialog_title)
+    header.setStyleSheet("color: #E87E24; font-weight: bold; font-size: 14px;")
+    layout.addWidget(header)
+
+    sep1 = QFrame()
+    sep1.setFrameShape(QFrame.HLine)
+    sep1.setObjectName("sep")
+    layout.addWidget(sep1)
+
+    lst = QListWidget()
+    lst.setStyleSheet(
+        "QListWidget { background: #1e2028; color: #ccc; border: 1px solid #555; "
+        "  border-radius: 3px; font-size: 12px; }"
+        "QListWidget::item:selected { background: #E87E24; color: #fff; }"
+    )
     choices = [c[2] for c in cameras]
-    choice, ok = QtWidgets.QInputDialog.getItem(
-        None, dialog_title, "Target camera:", choices, 0, False)
-    if not ok:
+    lst.addItems(choices)
+    lst.setCurrentRow(0)
+    layout.addWidget(lst)
+
+    sep2 = QFrame()
+    sep2.setFrameShape(QFrame.HLine)
+    sep2.setObjectName("sep")
+    layout.addWidget(sep2)
+
+    btn_row = QHBoxLayout()
+    btn_row.setSpacing(8)
+    btn_row.addStretch()
+
+    cancel_btn = QPushButton("Don't Export")
+    cancel_btn.clicked.connect(dialog.reject)
+    btn_row.addWidget(cancel_btn)
+
+    ok_btn = QPushButton("Select Camera")
+    ok_btn.setObjectName("primary")
+    ok_btn.setDefault(True)
+    ok_btn.clicked.connect(dialog.accept)
+    btn_row.addWidget(ok_btn)
+
+    layout.addLayout(btn_row)
+
+    lst.itemDoubleClicked.connect(lambda _: dialog.accept())
+
+    if dialog.exec() != QDialog.Accepted:
         return None
-    return cameras[choices.index(choice)]
+    return cameras[lst.currentRow()]
 
 
 def _read_launch_focus_steal() -> bool:
