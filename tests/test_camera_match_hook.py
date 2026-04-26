@@ -97,7 +97,19 @@ _spec.loader.exec_module(_hook_module)
 
 # Restore sys.modules: remove stubs we installed so they don't pollute
 # other test modules collected after this file.
+#
+# EXCEPTION: keep `_fake_flame` installed in sys.modules. _scope_action_camera
+# (and other module-level helpers added in Plan 04.4-02 / Wave 1) use a lazy
+# `import flame` inside the function body — required because camera_match_hook
+# is imported at Flame startup and a top-level `import flame` would create a
+# circular dependency. At test runtime that lazy import has to find the fake
+# `flame` module with `_PyCoNode` attached so `isinstance(item, flame.PyCoNode)`
+# succeeds. `flame` is not a real importable package on dev machines, so
+# leaving the fake in sys.modules cannot pollute any other test module.
+_KEEP_INSTALLED = {"flame"}
 for _mod_name in _STUBS_TO_INSTALL:
+    if _mod_name in _KEEP_INSTALLED:
+        continue
     if _pre_stub_state[_mod_name] is None and _mod_name in sys.modules:
         del sys.modules[_mod_name]
     elif _pre_stub_state[_mod_name] is not None:

@@ -1844,6 +1844,59 @@ def _first_action_in_selection(selection):
     return None
 
 
+def _scope_action_camera(selection):
+    """True when any selected item is a non-Perspective Camera PyCoNode
+    inside an Action schematic. Used as `isVisible` for
+    get_action_custom_ui_actions (added in Plan 04.4-03).
+
+    CRITICAL (RESEARCH §Pitfall 1): in get_action_custom_ui_actions
+    callbacks, item.type is a plain Python str — NOT a PyAttribute.
+    Compare with `item.type == "Camera"` directly. Calling .get_value()
+    raises AttributeError, the try/except below swallows it, and the
+    menu silently never appears. The Wave 0 test
+    test_scope_action_camera_does_not_call_get_value_on_type guards
+    against re-introducing the .get_value() call.
+    """
+    import flame
+    for item in selection:
+        try:
+            if (isinstance(item, flame.PyCoNode)
+                    and item.type == "Camera"
+                    and item.name.get_value() != "Perspective"):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _first_camera_in_action_selection(selection):
+    """Return (action_node, cam_node) for the first non-Perspective Camera
+    in selection, or (None, None) if no such item.
+
+    cam_node.parent is the containing PyActionNode (RESEARCH §P-02:
+    verified live via forge-bridge probe 2026-04-25). Same iterate-and-
+    return-first shape as _first_action_in_selection above, but returns
+    a tuple — the new Action-schematic handler needs both the camera
+    AND the Action that owns it for the export pipeline to bake / stamp
+    correctly.
+
+    Open Question OQ-2 fallback (deferred): if cam.parent ever returns
+    None in hook callback context (different from bridge context), scan
+    flame.batch.nodes for the Action whose .nodes contains cam_node.
+    Defer until UAT shows the parent path failing.
+    """
+    import flame
+    for item in selection:
+        try:
+            if (isinstance(item, flame.PyCoNode)
+                    and item.type == "Camera"
+                    and item.name.get_value() != "Perspective"):
+                return item.parent, item
+        except Exception:
+            continue
+    return None, None
+
+
 def _scan_first_clip_metadata():
     """Best-effort plate metadata from the first clip in the current batch.
 
