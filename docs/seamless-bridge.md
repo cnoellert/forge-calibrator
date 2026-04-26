@@ -110,6 +110,33 @@ booted.
 
 ---
 
+### Symptom: Flame SIGSEGVs on the very first Send to Flame after a fresh Flame launch
+
+**Likely cause:** Flame's `importToActionFBX` C++ path appears to have a race when
+called as the first significant Flame API operation after boot. The crash
+signature is `signal = 11 / SIGSEGV / invalid permissions for mapped object`
+near the import call. The FBX content is innocent — the same byte-for-byte FBX
+imports cleanly on subsequent attempts in the same session. Reproduced
+2026-04-25 across multiple cold-install verification runs.
+
+**Workaround:** Don't make Send to Flame the first thing you do after Flame
+boots. Open a batch, click a node or two, let the workspace fully load
+(15–30 s after the splash screen disappears) before triggering the round-trip.
+
+**Recovery if it crashes:**
+1. Restart Flame.
+2. Open the batch with your aim-rig camera.
+3. Do any small UI action (open a node, scrub the timeline) — this seems to
+   stabilise Flame's internal state.
+4. Right-click the Action → Camera Match → Export Camera to Blender, then
+   Send to Flame from Blender. The second attempt typically succeeds.
+
+This is suspected to be an Autodesk-side bug, not a forge-calibrator bug. The
+math layer is verified correct end-to-end: returned camera matches original
+within 0.001° per axis on Camera1 fixtures (well inside the 0.1° UAT gate).
+
+---
+
 ### Symptom: Send to Flame: active camera is missing 'forge_bake_action_name' — this camera was not baked by forge-calibrator. Re-export from Flame via right-click → Camera Match → Export Camera to Blender
 
 **Likely cause:** The active Blender camera was not baked from Flame, or was baked by
