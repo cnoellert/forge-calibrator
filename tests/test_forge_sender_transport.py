@@ -731,3 +731,189 @@ class TestInstrumentationLogging:
             assert tag in template, (
                 f"Template missing phase tag {tag!r}"
             )
+
+
+# ---------------------------------------------------------------------------
+# Phase 04.4-01 (Wave 0) — stub tests for symbols Wave 3 (Plan 04.4-04) lands:
+#   transport.list_batch_actions, transport.make_create_code, and the
+#   "Could not set Batch node name" error-string canary.
+# These tests skip cleanly until Wave 3 lands the symbols, then flip to PASS.
+# Skip message must read exactly:
+#   "list_batch_actions/make_create_code not yet implemented (Wave 3)"
+# so future executors can grep for the wave pointer.
+# ---------------------------------------------------------------------------
+
+
+def _wave3_implemented():
+    """True iff Wave 3 has landed list_batch_actions + make_create_code in transport."""
+    return (hasattr(transport, "list_batch_actions")
+            and hasattr(transport, "make_create_code"))
+
+
+_WAVE3_SKIP_REASON = (
+    "list_batch_actions/make_create_code not yet implemented (Wave 3)"
+)
+
+
+class _FakeResp:
+    """Minimal requests.Response stand-in for monkey-patching requests.post.
+
+    Mirrors the surface used by transport.send (.json(), .raise_for_status()).
+    """
+
+    def __init__(self, envelope, status_code=200):
+        self._envelope = envelope
+        self.status_code = status_code
+
+    def json(self):
+        return self._envelope
+
+    def raise_for_status(self):
+        return None
+
+
+def test_list_batch_actions_payload_shape(monkeypatch):
+    """List-Actions payload composes the correct Flame-side query.
+
+    The POSTed JSON body must contain the substrings 'flame.batch.nodes'
+    AND "== 'Action'" (or '== "Action"'). This locks the bridge query
+    shape per RESEARCH §Pattern 3 / Code Example 3.
+    """
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    captured = {}
+
+    def fake_post(url, *, json=None, timeout=None):
+        captured["url"] = url
+        captured["json"] = json
+        captured["timeout"] = timeout
+        return _FakeResp({"result": "[]", "error": None,
+                          "stdout": "", "stderr": "", "traceback": None})
+
+    monkeypatch.setattr(transport.requests, "post", fake_post)
+    transport.list_batch_actions()
+
+    assert captured["url"] == transport.BRIDGE_URL
+    assert "code" in captured["json"]
+    code = captured["json"]["code"]
+    assert "flame.batch.nodes" in code, code
+    assert ("== 'Action'" in code) or ('== "Action"' in code), code
+
+
+def test_list_batch_actions_parses_repr_list(monkeypatch):
+    """Bridge REPL contract: result is repr() of last expression — parse via ast.literal_eval."""
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    def fake_post(url, *, json=None, timeout=None):  # noqa: ARG001
+        return _FakeResp({
+            "result": "['action1', 'action2']",
+            "error": None,
+            "stdout": "",
+            "stderr": "",
+            "traceback": None,
+        })
+
+    monkeypatch.setattr(transport.requests, "post", fake_post)
+    result = transport.list_batch_actions()
+    assert result == ["action1", "action2"], result
+
+
+def test_list_batch_actions_raises_on_envelope_error(monkeypatch):
+    """Bridge envelope error must surface as RuntimeError to the addon."""
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    def fake_post(url, *, json=None, timeout=None):  # noqa: ARG001
+        return _FakeResp({
+            "result": None,
+            "error": "RuntimeError: kaboom",
+            "stdout": "",
+            "stderr": "",
+            "traceback": None,
+        })
+
+    monkeypatch.setattr(transport.requests, "post", fake_post)
+    with pytest.raises(RuntimeError) as excinfo:
+        transport.list_batch_actions()
+    assert "kaboom" in str(excinfo.value), str(excinfo.value)
+
+
+def test_make_create_code_embeds_name_via_repr():
+    """make_create_code must embed the Action name via repr(), not f-string.
+
+    Python's repr() on a plain ASCII str picks single quotes by default:
+        repr("MyAction") == "'MyAction'"
+    So the code body must contain set_value('MyAction') and MUST NOT
+    contain set_value("MyAction") — the latter would indicate an
+    f-string interpolation that bypasses the repr() escape (security
+    contract T-02-03-01).
+    """
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    code = transport.make_create_code("MyAction")
+    assert "set_value('MyAction')" in code, code
+    assert 'set_value("MyAction")' not in code, code
+
+
+def test_make_create_code_repr_escapes_quotes_and_special_chars():
+    """Adversarial input round-trips through repr() — code stays parseable
+    and the embedded literal recovers the original string verbatim."""
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    nasty = "Don't \"break\""
+    code = transport.make_create_code(nasty)
+    # 1) The generated code must compile without raising.
+    compile(code, "<test>", "exec")
+    # 2) Locate the literal between set_value( and ) — extract and round-trip
+    #    via ast.literal_eval to recover the original string.
+    marker = "set_value("
+    idx = code.rfind(marker)
+    assert idx != -1, code
+    after = code[idx + len(marker):]
+    # The literal ends at the first ')' that closes set_value's call. Because
+    # repr() never produces an unmatched ')' inside a string literal in this
+    # context, the first ')' on this slice is the closing paren.
+    end = after.index(")")
+    literal = after[:end]
+    recovered = ast.literal_eval(literal)
+    assert recovered == nasty, (recovered, nasty)
+
+
+def test_make_create_code_rejects_non_str():
+    """Defensive type check — same shape as build_payload's str-only contract."""
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    with pytest.raises(TypeError):
+        transport.make_create_code(42)  # type: ignore[arg-type]
+
+
+def test_create_action_name_collision_error_string_match():
+    """Source-text canary: transport.py must reference the exact Flame
+    error string the addon's collision-detection branch keys on.
+
+    Per RESEARCH §P-03 / Pitfall 2, Flame raises:
+        RuntimeError: Could not set Batch node name, name is already being used.
+    when name.set_value() collides with an existing Batch node. The addon's
+    Tier-1 popup branch matches on the substring 'Could not set Batch node name'.
+    This test guards against future renames silently breaking that branch.
+    """
+    if not _wave3_implemented():
+        pytest.skip(_WAVE3_SKIP_REASON)
+
+    transport_path = os.path.join(
+        os.path.dirname(__file__), "..",
+        "tools", "blender", "forge_sender", "transport.py",
+    )
+    with open(transport_path) as f:
+        src = f.read()
+    assert "Could not set Batch node name" in src, (
+        "transport.py must reference the literal 'Could not set Batch node "
+        "name' (constant, comment, or template) so the addon's collision "
+        "branch can match Flame's RuntimeError text. See RESEARCH P-03 / "
+        "Pitfall 2."
+    )
