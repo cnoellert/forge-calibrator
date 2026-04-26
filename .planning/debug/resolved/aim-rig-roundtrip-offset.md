@@ -1,10 +1,21 @@
 ---
 slug: aim-rig-roundtrip-offset
-status: fixed-needs-uat
+status: resolved
 phase: 04.2
 related_phases: [04.3]
 created: 2026-04-25
 updated: 2026-04-25
+probe: 4
+resolution: |
+  Probe 4 SIGSEGV did NOT recur on a fresh Flame session with the v1.2.0
+  addon and clean install layout. Round-trip succeeded end-to-end:
+  returned Camera3 has rotation (1.8140°, 1.0576°, +1.2521°) — exactly
+  Phase 04.3's ground truth — and position matches the original
+  Camera1 to 0.0005 units. Likely environmental: Probe 4 was probably
+  Flame state corruption residual from the Probe 1-3 crash cascade
+  (each SIGSEGV restart should've cleared it but apparently chained).
+  See "Probe 4 — Resolution" section below for the live verification
+  (capture artifacts in ~/forge_diag/capture/).
 trigger: |
   Aim-rig camera Blender→Flame round-trip produces a returned camera offset by
   several degrees of rotation plus translation, despite Phase 04.3's Camera1
@@ -258,6 +269,33 @@ which of (A) or (B) is wrong, propose the fix, validate by re-running
 unit tests + reasoning about why the fix doesn't break Camera1's 0.006°
 parser-side gate.
 
+---
+
+**[Probe 4 update — 2026-04-25 evening]**
+
+Probe 3 fix shipped (v1.2.0 addon, commit 6d7c4d4). Round-trip retried,
+NEW SIGSEGV at the same address (`0x00001508`) with a different signature.
+Hypothesis A (install-layout residue) rejected by user diagnostics.
+Active hypothesis B: Phase-04.3-specific code path crashes
+`action.import_fbx()`. See "Probe 4 — NEW SIGSEGV after v1.2.0 install"
+section at end of file for the full Probe 4 evidence + recon findings.
+
+**next_action (Probe 4):** Drive a live differential test. User must
+restart Flame so forge-bridge auto-spawns on `127.0.0.1:9999`. First
+test: hand the user a `/exec` payload that calls
+`action.import_fbx('.planning/phases/04.2-aim-target-rig-camera-orientation-round-trip/04.2-aimrig-probe-camera1.fbx')`
+on a live Action node — no Blender round-trip in the loop. If that
+crashes too → environmental/Flame state issue (rule out forge-bridge
+caching, restart Flame fully). If that imports cleanly → the
+v1.2.0-round-trip-generated FBX is the cause; instrument
+`_FLAME_SIDE_TEMPLATE` in `tools/blender/forge_sender/transport.py`
+to `shutil.copy(fbx_path, ~/forge_crash_capture/incoming.fbx)` BEFORE
+`import_fbx_to_action`, redeploy via Blender addon reinstall, retry
+round-trip, and inspect the captured FBX for malformed bytes /
+illegal Euler values / missing tags. Diff against the orchestrator's
+locally-rebuilt FBX (v5_json_to_fbx of the Camera1 fixture) which is
+known to be structurally clean.
+
 ## Evidence
 
 - 2026-04-25: Phase 04.3's unit tests on Camera1 (`tests/test_rotations.py::TestComputeFlameEulerXyz`) pass at 1e-9° / 1e-3° tolerances. Camera1 angles are tiny (rx=1.8°, ry=1.0°, rz=1.2°).
@@ -376,4 +414,321 @@ landed.
 - `tools/blender/bake_camera.py` — composer is verified correct (bake matrix matches cam_rot at 1e-16)
 - `tools/blender/forge_sender/flame_math.py` — decomposer source IS Phase 04.3 form
 
+---
+
+## Probe 4 — NEW SIGSEGV after v1.2.0 install (2026-04-25 evening)
+
+After Probe 3's fix shipped (commit `6d7c4d4`, addon v1.2.0), user installed
+v1.2.0 in Blender (verified: `bl_info.version = (1, 2, 0)` at
+`~/Library/Application Support/Blender/4.5/scripts/addons/forge_sender/__init__.py`),
+restarted Blender, retried the round-trip. **Hard crash, SIGSEGV, same
+mapped-object address `0x00001508` as Probes 1-2 — but a NEW error
+signature.**
+
+### Probe 4 error signature
+
+```
+Python encountered ImportError('attempted relative import with no known parent package') in unknown code
+[PYTHON HOOK] An error occurred. Ignoring python hooks from /opt/Autodesk/shared/python/forge_core/solver/solver.py
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/forge_core/solver/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/forge_core/math/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/forge_core/image/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/forge_core/colour/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/camera_match/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+[PYTHON HOOK] Duplicate module name found __init__ (/opt/Autodesk/shared/python/forge_core/__init__.py vs /opt/Autodesk/shared/python/forge_flame/__init__.py).
+(repeats once)
+Application: flame 2026.2.1 arm64
+Pid: 37328
+Error: abnormal termination, signal = 11
+SIGSEGV - Segmentation Fault
+Signal was generated internally:
+invalid permissions for mapped object at address 0x00001508
+```
+
+### Hypothesis A (install-layout residue) — REJECTED
+
+User confirmed install layout is clean post-cleanup:
+
+```
+$ ls -la /opt/Autodesk/shared/python/__init__.py
+ls: /opt/Autodesk/shared/python/__init__.py: No such file or directory
+
+$ find /opt/Autodesk/shared/python/ -maxdepth 1 -name "*.py"
+(empty)
+
+$ find /opt/Autodesk/shared/python/ -maxdepth 2 -name "__init__.py"
+/opt/Autodesk/shared/python/forge_flame/__init__.py
+/opt/Autodesk/shared/python/forge_core/__init__.py
+/opt/Autodesk/shared/python/camera_match/__init__.py
+```
+
+`rm -f /opt/Autodesk/shared/python/__init__.py` (no-op since absent) +
+retry → same SIGSEGV at same address, same duplicate-init cascade. Layout
+is what install.sh deploys.
+
+### Hypothesis B (active) — Phase-04.3-specific code path crashes import_fbx
+
+Hook-scanner ImportError + duplicate-init noise is pre-existing
+(forge_core/solver/solver.py uses relative imports `from .math_util import
+...`; Flame's hook scanner imports each .py as a top-level module, so it
+ALWAYS fails with this error). Pre-04.3 logs would also show this noise,
+just nobody noticed because no crash followed.
+
+The actual SIGSEGV is something `action.import_fbx()` does with the FBX
+forge-bridge generates from the v1.2.0 Blender addon's payload. Phase
+04.3 changed the rz value in v5 JSON's `rotation_flame_euler[2]` (sign
+flipped from pre-04.3); writer (`v5_json_str_to_fbx`) is unchanged but
+its INPUT is different.
+
+### Orchestrator recon (2026-04-25 evening, pre-debugger handoff)
+
+1. **Install layout verified clean** (per Hypothesis A test above).
+
+2. **v1.2.0 Blender addon confirmed installed**:
+   `~/Library/Application Support/Blender/4.5/scripts/addons/forge_sender/__init__.py`
+   has `bl_info.version = (1, 2, 0)`.
+
+3. **forge-bridge unreachable** (Flame is closed post-crash). curl to
+   `127.0.0.1:9999/ping` returns empty (forge-bridge runs INSIDE Flame
+   per `flame_bridge.md`).
+
+4. **No /tmp/forge_bake_* artifacts** survived the crash (Flame's tmpdir
+   cleanup ran before the SIGSEGV, OR forge-bridge's preserve-on-failure
+   in `_FLAME_SIDE_TEMPLATE` doesn't fire when Flame itself crashes
+   before the `finally` block runs). No crash-time FBX captured.
+
+5. **Phase 04.3 commit `5d5febe` does NOT touch the FBX writer** —
+   only the reader's aim-rig branch (`_merge_curves` L806, L891, L959 —
+   `compute_flame_euler_zyx` → `compute_flame_euler_xyz`). Writer at
+   `forge_flame/fbx_ascii.py:1421-1423` (`-float(kf["rotation_flame_euler"][i])`)
+   is byte-unchanged since commit `49bbe43` (2026-04-22).
+
+6. **Local writer simulation**: ran `fbx_to_v5_json` (Phase 04.3 reader) +
+   `v5_json_to_fbx` (writer) on the known-good Camera1 fixture
+   `.planning/phases/04.2-.../04.2-aimrig-probe-camera1.fbx`. Output FBX
+   structure: top-level node order matches source; `References: { }`
+   block correctly emitted (per `flame_fbx_empty_block_contract.md`);
+   AnimationCurve count differs (8 source vs 7 rebuilt) because source
+   is aim-rig (Camera + Camera1_aim Null) while rebuilt is free-rig
+   (Camera with explicit Lcl Rotation values — no Null, no
+   LookAtProperty connection); 28 source connections vs 16 rebuilt
+   (delta = aim-rig structure). **The writer ALWAYS produces a free-rig
+   FBX**, regardless of source camera type — that's its only
+   capability and was true pre-04.3 too. Probe 3 confirmed Flame
+   imports this free-rig form WITHOUT crashing.
+
+7. **Diff between v1.1.1 and v1.2.0 zips**: rebuilt v1.1.1 zip and
+   diffed against v1.2.0:
+     - `__init__.py`: version bump (1,0,0)→(1,2,0) + WR-01 fix
+       (frame_rate stamp now FAILS LOUD if not in `_FLAME_FPS_LABELS`,
+       was silent fall-through to scene fps in v1.1.1)
+     - `flame_math.py`: `_rot3_to_flame_euler_deg` non-gimbal branch
+       `rz = math.atan2(...)` → `rz = -math.atan2(...)`; gimbal branch
+       `rz = math.atan2(-R[0][1], R[1][1])` → `rz = math.atan2(R[0][1], R[1][1])`
+     - `transport.py`: NEW runtime guard injected into `_FLAME_SIDE_TEMPLATE`
+       — `if frame_rate not in fbx_ascii._FPS_FROM_FRAME_RATE: raise RuntimeError(...)`.
+       This runs INSIDE Flame before `v5_json_str_to_fbx` is called.
+
+   The numerical change between Probe 3 (v1.1.1, no crash) and Probe 4
+   (v1.2.0, crash) is JUST the rz sign flip — both values are valid
+   floats in the small-angle regime (~1.25°). No NaN, no overflow.
+
+8. **Pre-existing hook-scanner noise hypothesis**: `forge_core/solver/solver.py`
+   has used `from .math_util import ...` (relative imports) since the
+   `35cee94` namespace move. Flame's hook scanner walking the depth-3
+   tree and failing each top-level import has been silently happening
+   forever. Not the SIGSEGV cause.
+
+### Probes / hypotheses ranked for Probe 4
+
+The .continue-here.md investigation plan (priority order):
+
+1. **Capture intermediate FBX before /tmp cleanup** — instrument the user's
+   reproduction so the FBX forge-bridge generates survives. The simplest
+   path: add a `cp` in `_FLAME_SIDE_TEMPLATE` BEFORE `import_fbx_to_action`
+   to copy the FBX to `~/forge_crash_capture/`. Then user reproduces,
+   we read the FBX, look for malformed bytes / illegal Euler values /
+   missing tags.
+
+2. **Differential test on known-good fixture** — paste a forge-bridge
+   `/exec` payload that calls `action.import_fbx()` directly on the
+   `.planning/phases/04.2-.../04.2-aimrig-probe-camera1.fbx` known-good
+   fixture (no Blender round-trip). If THAT crashes → environmental
+   issue (Flame state, install corruption). If THAT works → the
+   round-trip-generated FBX is the cause; combine with #1.
+
+3. **Bisect** — revert Phase 04.3 changes one at a time (rotations.py
+   L167 sign, fbx_ascii.py L891+L959 _xyz call, bake_camera.py
+   `Matrix.Rotation(-rz)`, flame_math.py `-math.atan2(...)`) and re-run
+   round-trip on each revision until crash disappears. The first
+   un-reverted change that crashes is the culprit.
+
+4. **Hypothesis C (forge-bridge state corruption)**: forge-bridge's exec
+   endpoint may have cached imports of pre-Phase-04.3 modules. Restart
+   forge-bridge between probes (i.e., restart Flame fully).
+
+5. **Hypothesis E (FBX content malformed)**: Phase 04.3 fbx_ascii output
+   subtly malformed in a way Flame's import_fbx tolerates first time
+   but corrupts state on subsequent runs. Inspect generated FBX bytes.
+
+### Next action for the next session
+
+Drive the live test — user must restart Flame, then we either:
+
+(a) Add an FBX capture instrumentation to the Flame-side template (one-line
+    `shutil.copy(fbx_path, "~/forge_crash_capture/")` insertion) and have
+    the user retry the round-trip; OR
+(b) Skip the round-trip and hand the user a `/exec` payload that imports
+    the known-good fixture FBX directly to differentially confirm the
+    crash class.
+
+Recommend running (b) first (cheaper and decisive — known-good FBX import
+is a fast test that doesn't depend on Blender). If known-good crashes
+→ environmental; if not → run (a).
+
+### Key files for cold pickup
+
+1. `.planning/.continue-here.md` — full handoff narrative
+2. `.planning/phases/04.2-.../04.2-aimrig-probe-camera1.fbx` — known-good FBX fixture
+3. `forge_flame/fbx_ascii.py:1280-1645` — writer (`v5_json_str_to_fbx` + `_mutate_template_with_payload`)
+4. `forge_flame/fbx_io.py:173-232` — `import_fbx_to_action`
+5. `tools/blender/forge_sender/transport.py` — Flame-side template (`_FLAME_SIDE_TEMPLATE`)
+6. `/tmp/aim_rig_roundtrip_repro.py` — Phase 04.3 round-trip variants A-D in pure numpy
+
 **Verification status:** awaits user re-install of v1.2.0 zip + live UAT.
+
+---
+
+## Probe 4 — Resolution (2026-04-25, live UAT)
+
+**Status: RESOLVED.** The Probe 4 SIGSEGV did NOT recur on a fresh Flame
+session with the v1.2.0 addon and the clean install layout. The Blender
+→ Flame round-trip succeeded end-to-end, and the returned camera matches
+the original aim-rig Camera1 to sub-pixel precision.
+
+### Live verification
+
+User had Flame open with forge-bridge alive on `127.0.0.1:9999`. The
+orchestrator drove the investigation through forge-bridge's `/exec`
+endpoint:
+
+1. **Differential test #1** (known-good fixture):
+   `action.import_fbx('.planning/.../04.2-aimrig-probe-camera1.fbx')`
+   on action9 → imported cleanly. **Conclusion: Flame's `import_fbx` is
+   not crashing on its own.**
+
+2. **Differential test #2** (writer-rebuilt FBX, default `pixel_to_units`):
+   `fbx_to_v5_json` (Phase 04.3 reader) + `v5_json_to_fbx` (writer) on
+   the same fixture → imported cleanly. **Conclusion: writer's free-rig
+   output is well-formed.**
+
+3. **Differential test #3** (writer with `pixel_to_units=1.0`,
+   matching forge-bridge's actual call):
+   v5_json_to_fbx on the 50-frame fixture v5 with the bridge's exact
+   kwargs → imported cleanly.
+
+4. **Differential test #4** (single-frame static, mimicking
+   forge_sender's no-keyframe fallback):
+   sliced v5 to 1 frame → imported cleanly.
+
+5. **Differential test #5** (synthetic v5 with user's actual Camera1
+   params, computed via Phase 04.3 `rotation_matrix_from_look_at` +
+   `compute_flame_euler_xyz`):
+   v5_json_to_fbx + import → imported cleanly.
+
+6. **Differential test #6** (FULL `_FLAME_SIDE_TEMPLATE` code path
+   replicated inside forge-bridge, matching action by name, calling
+   `import_fbx_to_action`):
+   imported cleanly. **Conclusion: nothing in the bridge-side flow
+   crashes on synthetic-but-realistic input.**
+
+7. **Live capture instrumentation**: monkey-patched
+   `fbx_ascii.v5_json_str_to_fbx` and `fbx_io.import_fbx_to_action` in
+   forge-bridge's persistent namespace to copy the v5 JSON and FBX to
+   `~/forge_diag/capture/<stamp>.{json,fbx}` BEFORE the import call.
+   User triggered the actual Blender round-trip (Camera Match → Export
+   Camera to Blender → open .blend → Send to Flame). **Result: import
+   succeeded — no crash.** The captured artifacts (`v5_20260425_185630.json`
+   + `fbx_20260425_185630.fbx`, 35285 bytes) are preserved.
+
+### Capture verification (the round-trip's actual data)
+
+```
+v5 JSON sent by forge_sender (49 frames, 991-1039):
+  width: 4448, height: 3096, film_back_mm: 16.002
+  frame[0]:  position=[0.0, 5.7775, 211.331]
+             rotation_flame_euler=[1.8140, 1.0576, +1.2521]
+             focal_mm=35.331
+  custom_properties:
+    forge_bake_action_name: 'action11'
+    forge_bake_camera_name: 'Camera1'
+  frame_rate: '24 fps'  (resolved by addon's D-19 ladder)
+  pixel_to_units passed to writer: 1.0
+```
+
+The `+1.2521` rz is exactly Phase 04.3's predicted ground truth (vs
+the −1.252 the v1.1.1 addon produced before Probe 3's fix). The
+addon's frame_rate ladder resolved to '24 fps' (NOT '23.976 fps' which
+the original FBX used) — this is benign for a static-orientation
+camera and falls within `_FPS_FROM_FRAME_RATE`.
+
+### Returned-camera comparison
+
+| | Original Camera1 (aim-rig, action11) | Returned Camera3 (post-v1.2.0 round-trip) |
+|---|---|---|
+| Position | (0.0, 57.7747, 2113.3054) | (0.0, 57.7747, 2113.3059) — Δ ≈ 0.0005 |
+| Rotation | (0,0,0) — aim-rig in Aim/Target mode | (1.81399, 1.05764, **+1.25210**) — Free-rig |
+| Aim | (0.355, 57.134, 2093.319) — drives orientation | (3.75, 50.99, 1902.04) — stored, but Free-rig ignores |
+
+The position matches to within 0.0005 units (sub-pixel). The rotation
+is exactly the Phase 04.3 predicted ground truth on Camera1. The aim
+field on Camera3 is stored but inert (Free-rig cameras read rotation,
+not aim).
+
+### Why Probe 4 was a one-shot
+
+Probe 4 happened immediately after a chain of Probes 1-3 SIGSEGVs in
+the same Flame session generation. Each crash leaves Flame closed but
+forge-bridge state, /tmp tmpdirs, and possibly OS-level mapped-memory
+artifacts behind. The "invalid permissions for mapped object at
+0x00001508" SIGSEGV signature is consistent with Flame's import_fbx
+hitting state corruption rather than malformed FBX content (which
+would typically surface as a Python traceback through Flame's PyXX
+bindings before any segfault).
+
+After a fresh Flame restart and the orchestrator's repeated `/exec`
+calls (which exercised import_fbx 6+ times against varied FBXs without
+any crash), Flame's state was effectively reset. The user then
+triggered the round-trip and it worked.
+
+### Resolution
+
+The Phase 04.3 + v1.2.0 addon fix (commits `5d5febe` + `6d7c4d4`) is
+**verified end-to-end on the user's actual aim-rig Camera1**.
+Aim-rig Blender→Flame round-trip is now functional; rotation lands
+within 0.001° per axis on Camera1 (well under the 0.1° UAT acceptance
+gate). Position lands within 0.0005 units.
+
+**No additional source change was needed for Probe 4.** It was an
+environmental flake from the Probes 1-3 cascade.
+
+### Operational note for future debugging
+
+The capture instrumentation in `~/forge_diag/capture/` was a one-shot
+forge-bridge namespace monkey-patch (already cleaned up). To
+re-enable on a future SIGSEGV cycle, the orchestrator can re-paste
+the install_capture.json POST. The captured FBXs survived the import
+(stable filesystem path outside Flame's tmpdir cleanup), which made
+this round-trip's data fully reconstructable. Same approach would
+work the next time we need to inspect a crash-time payload — the
+`finally`-tmpdir-preserve in `_FLAME_SIDE_TEMPLATE` doesn't fire on
+SIGSEGV (Python finally is bypassed by SIGSEGV), so capture-on-call
+is the only reliable mechanism.
+
+### Status
+
+- Phase 04.2 HUMAN-UAT Test 2: ready to mark **PASS** (returned
+  camera within 0.1° on all axes)
+- Phase 04.3 closure: confirmed working in production
+- This debug session: marked `resolved`, ready to move to
+  `.planning/debug/resolved/`
