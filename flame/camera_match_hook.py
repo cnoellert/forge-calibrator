@@ -2209,11 +2209,96 @@ def _launch_blender_on_blend(blend_path: str, *, focus_steal: bool):
 
 
 def _export_camera_to_blender(selection):
-    """Export a Flame Action camera to a Blender .blend (zero-dialog happy path).
+    """Right-click handler for an Action node in Batch — Action-scope path.
 
     Flow: right-click the Action holding your solved camera
     -> auto-pick the target camera (dialog ONLY if Action has 2+ cameras)
-    -> infer plate resolution via the three-tier fallback
+    -> delegate to _export_camera_pipeline for the shared
+       plate-resolution / bake / Blender-launch sequence.
+
+    Scope is `_scope_batch_action`, so this menu item appears on Action
+    right-clicks. The Camera-scope sibling
+    (_export_camera_from_action_selection, Plan 04.4-02) bypasses
+    _pick_camera and feeds (action, cam, label) directly into the
+    shared pipeline. D-05: single resolution helper, two thin wrappers.
+    """
+    import flame
+
+    # --- Selection / action / camera pick (Action-scope head) ---
+    action_node = _first_action_in_selection(selection)
+    if action_node is None:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message="Right-click an Action node in Batch (the Action that "
+                    "holds your solved camera).",
+            type="error", buttons=["OK"])
+        return
+
+    cameras = _find_action_cameras(only_action=action_node)
+    if not cameras:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message=f"No non-Perspective camera in "
+                    f"'{_val(action_node.name)}'.",
+            type="error", buttons=["OK"])
+        return
+
+    picked = _pick_camera(cameras, "Export Camera to Blender")
+    if picked is None:
+        return  # user cancelled the 2+-camera picker; no dialog needed
+    action, cam, label = picked
+
+    _export_camera_pipeline(action, cam, label)
+
+
+# RESEARCH §P-02 + Open Question OQ-2: cam.parent returning the containing
+# PyActionNode is verified via bridge probe but not in the actual hook
+# callback context. If UAT shows action_node is None despite a camera
+# being right-clicked, the fallback is to scan flame.batch.nodes for an
+# Action whose .nodes contains cam_node. NOT implemented here — defer to
+# a quick-fix patch if UAT trips it.
+# RESEARCH §Pitfall 4: this handler is wired into the menu only AFTER
+# Plan 04.4-03 ships and a Flame restart picks up the new
+# get_action_custom_ui_actions function. After Plan 04.4-02 lands, this
+# code is present but unreachable from the menu.
+def _export_camera_from_action_selection(selection):
+    """Right-click handler for a Camera PyCoNode inside an Action's
+    schematic — Camera-scope path. Bypasses _pick_camera entirely:
+    the user has already indicated which camera by right-clicking it.
+
+    Resolution: cam.parent → containing PyActionNode (RESEARCH §P-02).
+    The label format matches _find_action_cameras' f"{action} > {cam}"
+    shape so the pipeline's downstream code (filename construction,
+    info-dialog text) sees identical input regardless of entry point.
+    """
+    import flame
+    action_node, cam_node = _first_camera_in_action_selection(selection)
+    if action_node is None or cam_node is None:
+        flame.messages.show_in_dialog(
+            title="Export Camera to Blender",
+            message="Right-click a Camera node inside an Action's "
+                    "schematic. Perspective cameras are not supported.",
+            type="error", buttons=["OK"])
+        return
+
+    # Mirror _find_action_cameras' label format (':1812' — uses '>' not em-dash)
+    # so downstream _safe_filename / info-dialog text is identical between
+    # entry points.
+    label = f"{_val(action_node.name)} > {_val(cam_node.name)}"
+
+    _export_camera_pipeline(action_node, cam_node, label)
+
+
+def _export_camera_pipeline(action, cam, label):
+    """Shared export pipeline used by both right-click entry points
+    (Batch Action-scope and Action-schematic Camera-scope).
+
+    Caller resolves (action, cam, label) by whatever means and hands it
+    here; this function owns the plate-resolution / bake / Blender-launch
+    sequence. Extracted from _export_camera_to_blender per D-05 (single
+    resolution helper) so both entry points share one implementation.
+
+    Flow: infer plate resolution via the three-tier fallback
        (_infer_plate_resolution: action.resolution -> batch w/h -> first clip)
     -> bake to a tempfile.mkdtemp(prefix='forge_bake_') dir:
          * ASCII FBX via fbx_io.export_action_cameras_to_fbx
@@ -2239,8 +2324,9 @@ def _export_camera_to_blender(selection):
     per D-15 — "zero dialogs" is a happy-path goal, not a silencing
     rule.
 
-    Scope is `_scope_batch_action`, so this menu item appears on Action
-    right-clicks.
+    `action` is the PyActionNode that owns `cam`; `cam` is the
+    PyCoNode for the target Camera; `label` is the human-readable
+    identifier ('{action_name} > {cam_name}') for the info dialog.
     """
     _ensure_forge_env()
     _ensure_forge_core_on_path()
@@ -2259,29 +2345,9 @@ def _export_camera_to_blender(selection):
     # gone from the new happy path. File-level PySide6 imports at the top
     # of camera_match_hook.py are UNCHANGED; other handlers still use them.
 
-    # --- Selection / action / camera pick (unchanged from prior handler) ---
-    action_node = _first_action_in_selection(selection)
-    if action_node is None:
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message="Right-click an Action node in Batch (the Action that "
-                    "holds your solved camera).",
-            type="error", buttons=["OK"])
-        return
-
-    cameras = _find_action_cameras(only_action=action_node)
-    if not cameras:
-        flame.messages.show_in_dialog(
-            title="Export Camera to Blender",
-            message=f"No non-Perspective camera in "
-                    f"'{_val(action_node.name)}'.",
-            type="error", buttons=["OK"])
-        return
-
-    picked = _pick_camera(cameras, "Export Camera to Blender")
-    if picked is None:
-        return  # user cancelled the 2+-camera picker; no dialog needed
-    action, cam, label = picked
+    # `action_node` here is the same object as `action` — the original
+    # head used both names. _infer_plate_resolution takes the Action node.
+    action_node = action
 
     # --- Plate resolution — three-tier fallback (D-07, D-08) ---
     try:
