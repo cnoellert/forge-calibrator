@@ -74,6 +74,16 @@ Plans:
 - [x] 04-01-PLAN.md — User-facing docs: README.md (repo root) + docs/seamless-bridge.md (canonical guide, install TD+artist, autostart, Send-to-Flame walkthrough, 5 grep-anchored troubleshooting recipes) — DOC-02
 - [x] 04-02-PLAN.md — E2E smoke-test script: tools/smoke-test/seamless-bridge-smoke.sh (hybrid [mech]+[human], 10 steps, folds Phase 3 HUMAN-UAT Test 3) — DOC-01
 
+### Phase 04.4: Tester-rollout polish: forge UI style on multi-camera picker, right-click on camera nodes inside Action, bidirectional Blender import (live session + .blend file), and menu reorganization to FORGE/Camera/{Camera Calibrator, Export Camera to Blender, Import Camera from Blender} (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 4
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run /gsd-plan-phase 04.4 to break down)
+
 ### Phase 04.3: Aim-rig Euler convention fix: adopt XYZ-sign-flip end-to-end (INSERTED)
 
 **Goal:** Close the Phase 04.2 known limitation — aim-rig camera round-trip lands ~0.087° off on `ry` for the Camera1 fixture because Euler decomposition uses the wrong rotation convention. Adopt the correct convention (`R = Rz(-rz)·Ry(-ry)·Rx(-rx)` — XYZ matrix order with all three Euler signs negated) in every place the aim-rig Euler math touches, in sync, in one wave of commits that leaves the tree consistent on every intermediate revision. Verified 2026-04-24 via forge-bridge probe + viewport manual-match.
