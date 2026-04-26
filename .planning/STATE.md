@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
-status: verifying
-stopped_at: Phase 04.4 context gathered
-last_updated: "2026-04-26T04:20:39.442Z"
-last_activity: 2026-04-25
+status: executing
+stopped_at: Completed 04.4-01-PLAN.md (Wave 0 test stubs); Task 4 human-verify checkpoint awaiting user sign-off
+last_updated: "2026-04-26T19:45:49.459Z"
+last_activity: 2026-04-26
 progress:
   total_phases: 10
   completed_phases: 7
-  total_plans: 19
-  completed_plans: 19
-  percent: 100
+  total_plans: 24
+  completed_plans: 20
+  percent: 83
 ---
 
 # Project State
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 04.3 — aim-rig-euler-convention-fix-adopt-xyz-sign-flip-end-to-end
+**Current focus:** Phase 04.4 — tester-rollout-polish-forge-ui-style-on-multi-camera-picker-
 
 ## Current Position
 
-Phase: 999.1
-Plan: Not started
-Status: Phase complete — ready for verification
-Last activity: 2026-04-25
+Phase: 04.4 (tester-rollout-polish-forge-ui-style-on-multi-camera-picker-) — EXECUTING
+Plan: 2 of 5
+Status: Ready to execute
+Last activity: 2026-04-26
 
 Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
@@ -57,6 +57,7 @@ Progress: [██████░░░░] 60% (3 of 5 phases complete)
 
 *Updated after each plan completion*
 | Phase 04.3 P01 | 14min | 5 tasks | 10 files |
+| Phase 04.4 P01 | 4min | 3 tasks | 3 files |
 
 ## Accumulated Context
 
@@ -74,6 +75,7 @@ Recent decisions affecting current work:
 - [Phase 04.3]: Adopted R = Rz(-rz)·Ry(-ry)·Rx(-rx) (Z·Y·X product, all 3 signs negated) for aim-rig pipeline; coupled with rotation_matrix_from_look_at L167 +roll_deg sign flip. Camera1 fixture lands within 0.006° of Flame viewport ground truth.
 - [Phase 04.3]: Pipeline-symmetric atomic landing: 7-file commit covers reader + bake + flame_math + look-at L167 + 3 lockstep tests. Mitigates Phase 04.2 importToActionFBX hard-crash class of failures.
 - [Phase 04.3]: Plan amendment §A's symbolic derivation was empirically wrong (claimed X·Y·Z product; correct form is Z·Y·X — extrinsic xyz means Rz·Ry·Rx in matrix product, not Rx·Ry·Rz). Auto-applied Rule 1 fix in Task 3. Original plan's <symbolic_derivation> block was actually correct.
+- [Phase 04.4]: Wave 0 (Plan 04.4-01) — 14 test stubs across 3 files; skip-gated with wave-pointer reasons; Pitfall-1 canary in place for _scope_action_camera; R-08 source-text canary auto-flips when rename lands
 
 ### Pending Todos
 
@@ -110,6 +112,6 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 
 ## Session Continuity
 
-Last session: 2026-04-26T04:20:39.438Z
-Stopped at: Phase 04.4 context gathered
-Resume file: .planning/phases/04.4-tester-rollout-polish-forge-ui-style-on-multi-camera-picker-/04.4-CONTEXT.md
+Last session: 2026-04-26T19:45:49.457Z
+Stopped at: Completed 04.4-01-PLAN.md (Wave 0 test stubs); Task 4 human-verify checkpoint awaiting user sign-off
+Resume file: None

@@ -76,13 +76,17 @@ Plans:
 
 ### Phase 04.4: Tester-rollout polish: forge UI style on multi-camera picker, right-click on camera nodes inside Action, bidirectional Blender import (live session + .blend file), and menu reorganization to FORGE/Camera/{Camera Calibrator, Export Camera to Blender, Import Camera from Blender} (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Pre-tester UX polish on the Flame Batch right-click menu surface plus a coupled Blender-addon scope expansion. Four cohesive items: FORGE-styled multi-camera picker (folds 999.1), camera-node-scope right-click entry point in Action schematics (new `get_action_custom_ui_actions`), removal of Flame-side "Import Camera from Blender" + extension of forge_sender addon to push cameras without bake metadata (new `FORGE_OT_send_to_flame_choose_action` operator), and menu reorganization under a new top-level `FORGE` group (`FORGE > {Open Camera Calibrator, Export Camera to Blender}` flat per RESEARCH §P-01 — two-level nesting unsupported on Flame 2026.2.1). User-visible label rename "Camera Match" → "Camera Calibrator" / "FORGE" (D-13: internal filenames + install paths unchanged). Verified pre-plan via live forge-bridge probes against Flame 2026.2.1 (P-01/P-02/P-03 all resolved, including the D-09 correction that Flame raises `RuntimeError` on Action-name collision rather than auto-suffixing).
+**Requirements**: D-01..D-15 from 04.4-CONTEXT.md (no formal REQ-IDs — rollout polish phase)
 **Depends on:** Phase 4
-**Plans:** 0 plans
+**Plans:** 1/5 plans executed
 
 Plans:
-- [ ] TBD (run /gsd-plan-phase 04.4 to break down)
+- [x] 04.4-01-PLAN.md — Wave 0 test stubs: 14 stub tests across tests/test_forge_sender_transport.py, tests/test_forge_sender_preflight.py, tests/test_camera_match_hook.py (NEW); covers list_batch_actions/make_create_code repr() injection canary, _scope_action_camera Pitfall-1 guard, R-08 string-rename gate
+- [ ] 04.4-02-PLAN.md — Wave 1 hook refactor (no menu): hoist _FORGE_SS to module level, replace _pick_camera with FORGE-styled QDialog, add _scope_action_camera + _first_camera_in_action_selection + _export_camera_from_action_selection + extracted _export_camera_pipeline (D-01/D-03/D-05/P-02)
+- [ ] 04.4-03-PLAN.md — Wave 2 menu surface: restructure get_batch_custom_ui_actions to flat FORGE group, add get_action_custom_ui_actions, delete _import_camera_from_blender, R-08 user-visible string updates inside the hook (D-06/D-11/D-12/D-13/D-14/D-15/P-01/P-02/R-08)
+- [ ] 04.4-04-PLAN.md — Wave 3 Blender addon (parallel): add transport.list_batch_actions + transport.make_create_code (repr-injection-safe), new FORGE_OT_send_to_flame_choose_action operator with invoke()/draw()/execute() (handles pick-existing AND create-new with name-collision detection), panel extension, preflight R-08 update, bl_info v1.2.0 → v1.3.0 (D-07/D-08/D-09 corrected/D-10/P-03/R-06/R-08)
+- [ ] 04.4-05-PLAN.md — Wave 3 docs (parallel): R-08 string updates to docs/seamless-bridge.md (FORGE menu paths, Camera Calibrator brand, drop Flame-side Import workflow references)
 
 ### Phase 04.3: Aim-rig Euler convention fix: adopt XYZ-sign-flip end-to-end (INSERTED)
 
