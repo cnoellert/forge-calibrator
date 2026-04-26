@@ -135,3 +135,66 @@ class TestRequiredKeysOrder:
         # assertion so a refactor can't silently flip it.
         assert _REQUIRED_STAMPED_KEYS == (
             "forge_bake_action_name", "forge_bake_camera_name")
+
+
+# ---------------------------------------------------------------------------
+# Phase 04.4-01 (Wave 0) — stub tests for the new addon dialog flow.
+#
+# Test 1 locks the *current* contract that preflight returns a non-None
+# error specifically for the cam-typed-but-stamp-absent case. The new
+# choose-Action operator's panel-button gate (UI-SPEC §B-1) keys on this
+# exact error shape — if a future change makes preflight return None for
+# this case, the new panel branch breaks silently.
+#
+# Test 2 is a R-08 string-rename canary: when Wave 3 (Plan 04.4-04 Task 4)
+# updates the menu-path copy from "Camera Match → Export Camera to Blender"
+# to "FORGE → Export Camera to Blender", the test flips from SKIP to PASS.
+# ---------------------------------------------------------------------------
+
+import pathlib  # noqa: E402
+
+import preflight  # noqa: E402  -- preflight module already on sys.path above
+
+
+_PREFLIGHT_SRC = (pathlib.Path(__file__).resolve().parent.parent
+                  / "tools" / "blender" / "forge_sender" / "preflight.py")
+
+
+def test_check_returns_metadata_absent_error_for_camera_without_stamps():
+    """Lock the contract: preflight returns a non-None error containing
+    "is missing 'forge_bake_action_name'" for an active CAMERA whose data
+    has no forge_bake_* custom properties.
+
+    This is the gate the new choose-Action operator (UI-SPEC §B-1) keys on:
+    the panel button is shown precisely when preflight returns this specific
+    error. A regression to None for cam-typed-but-stamp-absent would silently
+    break the new dialog flow.
+    """
+    class _FakeCtx:
+        active_object = _FakeObject(type_="CAMERA", data={})
+
+    err = preflight.check(_FakeCtx())
+    assert err is not None
+    assert "is missing 'forge_bake_action_name'" in err, err
+
+
+def test_check_error_uses_new_menu_path_string_after_r08_rename():
+    """R-08 canary: skips while preflight.py still mentions "Camera Match";
+    flips to PASS once Wave 3 lands the menu-path rename to "FORGE".
+
+    Skip reason: "R-08 string rename not yet applied (Wave 3)" — kept exact
+    so future executors can grep for the wave pointer.
+    """
+    src = _PREFLIGHT_SRC.read_text()
+    if "Camera Match" in src:
+        pytest.skip("R-08 string rename not yet applied (Wave 3)")
+
+    # Wave 3 has landed — verify the NEW menu path appears in the
+    # metadata-absent error and the old "Camera Match" string is gone.
+    class _FakeCtx:
+        active_object = _FakeObject(type_="CAMERA", data={})
+
+    err = preflight.check(_FakeCtx())
+    assert err is not None
+    assert "FORGE → Export Camera to Blender" in err, err
+    assert "Camera Match" not in err, err
