@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04.4-01-PLAN.md (Wave 0 test stubs); Task 4 human-verify checkpoint awaiting user sign-off
-last_updated: "2026-04-26T19:45:49.459Z"
+stopped_at: Completed 04.4-02-PLAN.md (Wave 1) — awaiting Task 4 human-verify checkpoint
+last_updated: "2026-04-26T20:13:21.623Z"
 last_activity: 2026-04-26
 progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 24
-  completed_plans: 20
-  percent: 83
+  completed_plans: 21
+  percent: 88
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 ## Current Position
 
 Phase: 04.4 (tester-rollout-polish-forge-ui-style-on-multi-camera-picker-) — EXECUTING
-Plan: 2 of 5
+Plan: 3 of 5
 Status: Ready to execute
 Last activity: 2026-04-26
 
@@ -58,6 +58,7 @@ Progress: [██████░░░░] 60% (3 of 5 phases complete)
 *Updated after each plan completion*
 | Phase 04.3 P01 | 14min | 5 tasks | 10 files |
 | Phase 04.4 P01 | 4min | 3 tasks | 3 files |
+| Phase 04.4 P02 | 6min | 3 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -76,6 +77,10 @@ Recent decisions affecting current work:
 - [Phase 04.3]: Pipeline-symmetric atomic landing: 7-file commit covers reader + bake + flame_math + look-at L167 + 3 lockstep tests. Mitigates Phase 04.2 importToActionFBX hard-crash class of failures.
 - [Phase 04.3]: Plan amendment §A's symbolic derivation was empirically wrong (claimed X·Y·Z product; correct form is Z·Y·X — extrinsic xyz means Rz·Ry·Rx in matrix product, not Rx·Ry·Rz). Auto-applied Rule 1 fix in Task 3. Original plan's <symbolic_derivation> block was actually correct.
 - [Phase 04.4]: Wave 0 (Plan 04.4-01) — 14 test stubs across 3 files; skip-gated with wave-pointer reasons; Pitfall-1 canary in place for _scope_action_camera; R-08 source-text canary auto-flips when rename lands
+- [Phase 04.4]: Plan 04.4-02 / Task 1: hoisted _FORGE_SS to module scope so _pick_camera (and any future module-level dialog) can reference it without NameError. Original definition at line ~301 inside _open_camera_match's body migrated to line 251.
+- [Phase 04.4]: Plan 04.4-02 / Task 1: replaced QInputDialog.getItem in _pick_camera with FORGE-styled QDialog (UI-SPEC §A-1). QListWidget over QComboBox per RESEARCH Pattern 1; em-dash window title 'FORGE — <title>'; double-click-to-accept wired.
+- [Phase 04.4]: Plan 04.4-02 / Task 2: added _scope_action_camera + _first_camera_in_action_selection at module level. Both use direct string equality on item.type (RESEARCH Pitfall 1 — item.type is plain str in action-callback context, not PyAttribute). Wave 0 test infrastructure required _KEEP_INSTALLED set so the helper's lazy  finds the fake at test runtime.
+- [Phase 04.4]: Plan 04.4-02 / Task 3: extracted _export_camera_pipeline (PATTERNS Shape A) so the Camera-scope handler can bypass _pick_camera and feed the resolved (action_node, cam_node) triple straight into the bake/launch tail. Label format uses '>' separator to match _find_action_cameras (line 1812), not the em-dash specified in the plan body — Rule 1 deviation tracked.
 
 ### Pending Todos
 
@@ -112,6 +117,6 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 
 ## Session Continuity
 
-Last session: 2026-04-26T19:45:49.457Z
-Stopped at: Completed 04.4-01-PLAN.md (Wave 0 test stubs); Task 4 human-verify checkpoint awaiting user sign-off
+Last session: 2026-04-26T20:13:07.998Z
+Stopped at: Completed 04.4-02-PLAN.md (Wave 1) — awaiting Task 4 human-verify checkpoint
 Resume file: None
