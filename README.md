@@ -30,8 +30,9 @@ Flame↔Blender round-trip must preserve that fidelity end-to-end.**
 ## Install
 
 - Run `./install.sh` (macOS/Linux; requires the forge conda env).
-- Install the Blender addon: zip `tools/blender/forge_sender/` → Blender Preferences
-  → Add-ons → Install from file → enable "Forge Sender".
+- Install the Blender addon: in Blender → Edit → Preferences → Add-ons →
+  Install from file → select `tools/blender/forge_sender-v1.2.0.zip` → enable
+  "Forge: Send Camera to Flame".
 - See [docs/seamless-bridge.md#install](docs/seamless-bridge.md#install) for the
   detailed walkthrough covering preflight checks, what deploys where, and the full
   artist addon setup.
