@@ -61,12 +61,18 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 3, 2),
+    "version": (1, 3, 3),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.3.3 (2026-04-27): Phase 04.4 UAT diagnostic — v1.3.2 fix did not solve
+#                      the empty dropdown. Adds [forge_sender DEBUG] stdout
+#                      prints to invoke() and _get_action_items so we can
+#                      see whether either is being called at all and what
+#                      the items list looks like at each call site. Pure
+#                      diagnostic build — strip prints in v1.3.4.
 # v1.3.2 (2026-04-27): Phase 04.4 UAT fix #2 — empty dropdown again because
 #                      _get_action_items rebuilt fresh tuples each call,
 #                      letting Blender garbage-collect them. Cache the items
@@ -399,13 +405,23 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
         Returning a freshly-built list each call lets Blender garbage-
         collect the strings, which silently empties the dropdown.
         """
+        print(
+            f"[forge_sender DEBUG] _get_action_items called, "
+            f"len={len(_choose_action_items)} items={_choose_action_items}",
+            flush=True,
+        )
         return _choose_action_items
 
     def invoke(self, context, event):
         # Probe Flame for live Actions before showing the dialog.
         global _choose_action_items
+        print("[forge_sender DEBUG] invoke() entered", flush=True)
         try:
             action_names = transport.list_batch_actions()
+            print(
+                f"[forge_sender DEBUG] list_batch_actions -> {action_names}",
+                flush=True,
+            )
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout):
             msg = (
@@ -431,6 +447,12 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
         # to the exact tuple objects that get returned.
         _choose_action_items = (
             [(n, n, "") for n in action_names] + [_CREATE_NEW_ITEM]
+        )
+        print(
+            f"[forge_sender DEBUG] after invoke() rebuild, "
+            f"_choose_action_items id={id(_choose_action_items)} "
+            f"len={len(_choose_action_items)}",
+            flush=True,
         )
         return context.window_manager.invoke_props_dialog(self, width=360)
 
