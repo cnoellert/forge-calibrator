@@ -262,7 +262,7 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
                 requests.exceptions.Timeout):
             msg = (
                 "Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999"
-                " — is Flame running with the Camera Match hook loaded?"
+                " — is Flame running with the Camera Calibrator hook loaded?"
             )
             self.report({'ERROR'}, msg)
             _popup(context, msg)
