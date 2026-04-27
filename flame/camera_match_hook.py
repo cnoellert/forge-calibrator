@@ -1498,18 +1498,27 @@ def _open_camera_match(clip):
             created_new_action = False
             try:
                 if cameras:
-                    choices = [c[2] for c in cameras] + ["Create new Action"]
-                    choice, ok = QtWidgets.QInputDialog.getItem(
-                        self, "Apply Camera", "Target camera:", choices, 0, False)
-                    if not ok:
+                    # Append a synthetic sentinel for the "Create new Action"
+                    # option. _pick_camera takes (action, cam, label) tuples
+                    # and returns the picked tuple unchanged, so we detect
+                    # the sentinel by None action/cam after the dialog returns.
+                    # Plan 04.4-03: replaces the prior bare-style picker
+                    # dialog with the FORGE-styled _pick_camera so the
+                    # Apply Camera picker matches the Export picker
+                    # visually.
+                    _CREATE_NEW_LABEL = "Create new Action"
+                    choices = list(cameras) + [(None, None, _CREATE_NEW_LABEL)]
+                    picked = _pick_camera(choices, "Apply Camera")
+                    if picked is None:
                         return
-                    if choice == "Create new Action":
+                    sel_action, sel_cam, sel_label = picked
+                    if sel_label == _CREATE_NEW_LABEL:
                         action = flame.batch.create_node("Action")
                         cam = action.nodes[0]
                         created_new_action = True
                     else:
-                        action = cameras[choices.index(choice)][0]
-                        cam = cameras[choices.index(choice)][1]
+                        action = sel_action
+                        cam = sel_cam
                 else:
                     action = flame.batch.create_node("Action")
                     cam = action.nodes[0]
