@@ -61,12 +61,16 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 3, 0),
+    "version": (1, 3, 1),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.3.1 (2026-04-27): Phase 04.4 UAT fix — Target Action dropdown was empty
+#                      because invoke()'s self._cached_actions did not survive
+#                      invoke_props_dialog instance churn. Cache moved to
+#                      module-level _choose_action_cache.
 # v1.3.0 (2026-04-26): Phase 04.4 — added FORGE_OT_send_to_flame_choose_action
 #                      operator for cameras without forge bake metadata
 #                      (D-07/D-08/D-09). Panel shows a second button row in
@@ -314,9 +318,15 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
 # implement an auto-retry-with-suffix path; the user-correct flow is to
 # choose a different name (or pick the existing Action from the dropdown).
 # RESEARCH §Pattern 2: invoke() probes Flame for the Action list ONCE
-# and caches in self._cached_actions. The EnumProperty items lambda
-# reads from the cache — Blender calls it on every draw, but the bridge
-# probe runs only once.
+# and caches it in a MODULE-level variable. The EnumProperty items
+# lambda reads from that cache — Blender calls it on every draw, but
+# the bridge probe runs only once. Module-level (not self.) is required
+# because Blender's invoke_props_dialog uses a fresh operator instance
+# for draw redraws, so any attribute set in invoke() on `self` is gone
+# by the time the items callback fires (live UAT 2026-04-27 confirmed
+# self._cached_actions read empty during draw despite invoke() setting
+# it just before invoke_props_dialog returned).
+_choose_action_cache: list = []
 # UI-SPEC §B-1: both buttons remain visible simultaneously in the
 # no-metadata state (disabled top button kept for muscle memory; new
 # enabled bottom button is the active path). DO NOT hide either.
@@ -364,10 +374,15 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
 
     def _get_action_items(self, ctx):
         """Build the EnumProperty items list. Called by Blender on every
-        draw — uses self._cached_actions populated in invoke() so we don't
-        re-probe on every draw frame."""
-        items = getattr(self, "_cached_actions", None) or []
-        result = [(name, name, "") for name in items]
+        draw — reads from the module-level _choose_action_cache populated
+        in invoke() so we don't re-probe on every draw frame.
+
+        Blender must hold strong refs to the strings inside the returned
+        tuples, otherwise the dropdown silently drops items. Building from
+        a stable module-level list and returning fresh tuples each call
+        is the canonical workaround.
+        """
+        result = [(name, name, "") for name in _choose_action_cache]
         result.append((
             "__create_new__",
             "-- Create New --",
@@ -377,8 +392,9 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
 
     def invoke(self, context, event):
         # Probe Flame for live Actions before showing the dialog.
+        global _choose_action_cache
         try:
-            self._cached_actions = transport.list_batch_actions()
+            _choose_action_cache = transport.list_batch_actions()
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout):
             msg = (
