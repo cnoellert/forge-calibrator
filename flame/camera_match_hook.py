@@ -1882,27 +1882,85 @@ def _first_camera_in_action_selection(selection):
     """Return (action_node, cam_node) for the first non-Perspective Camera
     in selection, or (None, None) if no such item.
 
-    cam_node.parent is the containing PyActionNode (RESEARCH §P-02:
-    verified live via forge-bridge probe 2026-04-25). Same iterate-and-
-    return-first shape as _first_action_in_selection above, but returns
-    a tuple — the new Action-schematic handler needs both the camera
-    AND the Action that owns it for the export pipeline to bake / stamp
-    correctly.
+    Two-step resolution per RESEARCH §P-02 Open Question OQ-2:
 
-    Open Question OQ-2 fallback (deferred): if cam.parent ever returns
-    None in hook callback context (different from bridge context), scan
-    flame.batch.nodes for the Action whose .nodes contains cam_node.
-    Defer until UAT shows the parent path failing.
+    1. Fast path: try ``cam.parent`` — verified live via forge-bridge probe
+       2026-04-25 from a bridge-context REPL. Preserved with try/except so
+       that any raise (or a parent that doesn't expose .nodes) silently
+       falls through to step 2 instead of bubbling up to the caller.
+
+    2. Fallback: scan ``flame.batch.nodes`` for the PyActionNode whose
+       ``.nodes`` contains ``cam_node`` (identity comparison, not name
+       equality — name equality would be ambiguous if two Actions both
+       hold a 'Camera1'). Mirrors the iteration shape in
+       ``_find_action_cameras`` (line ~1812) and the duck-typed
+       PyAttribute-vs-str ``.type`` handling in
+       ``_first_action_in_selection`` (line ~1843).
+
+    Why both paths: the fast path is verified in bridge context and saves
+    the linear scan. UAT 2026-04-27 (HUMAN-UAT GAP-04.4-UAT-01) confirmed
+    that in actual hook callback context on Flame 2026.2.1 arm64 macOS,
+    ``cam.parent`` returns an object whose chained API resolves to None
+    so ``parent.export_fbx`` raises ``'NoneType' object is not callable``.
+    The fallback scan handles that by going through ``flame.batch.nodes``
+    — the same iteration shape ``_find_action_cameras`` uses
+    successfully in production today.
+
+    Pitfall 1 (RESEARCH §P-02): on the action-schematic side, ``item.type``
+    is a plain Python str — NEVER call ``.get_value()`` on it. The
+    duck-typed PyAttribute handling applies only to ``flame.batch.nodes``
+    items inside the fallback (where the batch-context shape exposes
+    ``.type`` as a PyAttribute).
     """
     import flame
     for item in selection:
         try:
-            if (isinstance(item, flame.PyCoNode)
+            if not (isinstance(item, flame.PyCoNode)
                     and item.type == "Camera"
                     and item.name.get_value() != "Perspective"):
-                return item.parent, item
+                continue
         except Exception:
             continue
+
+        # Fast path: cam.parent. Wrapped because hook callback context
+        # has been observed to produce a parent whose .nodes is missing
+        # or whose chained API resolves to None (HUMAN-UAT GAP-1).
+        parent = None
+        try:
+            parent = item.parent
+        except Exception:
+            parent = None
+        if parent is not None and hasattr(parent, "nodes"):
+            return parent, item
+
+        # Fallback: scan flame.batch.nodes for the Action whose .nodes
+        # contains this cam. Identity comparison (`inode is item`) so two
+        # Actions with same-named cameras stay disambiguated.
+        try:
+            for n in flame.batch.nodes:
+                try:
+                    t = n.type
+                    type_val = t.get_value() if hasattr(t, "get_value") else str(t)
+                    if type_val != "Action":
+                        continue
+                    if not hasattr(n, "nodes"):
+                        continue
+                    for inode in n.nodes:
+                        if inode is item:
+                            return n, item
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # Selection cam exists but no containing Action found — return
+        # the cam alone with action=None so the caller can surface a
+        # diagnostic dialog (better than silent failure). The existing
+        # caller `_export_camera_from_action_selection` checks
+        # `action_node is None` and shows a Tier-1 popup, so (None, item)
+        # is treated identically to (None, None).
+        return None, item
+
     return None, None
 
 
