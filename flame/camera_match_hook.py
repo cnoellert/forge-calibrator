@@ -1,9 +1,9 @@
 """
-Flame Camera Match — PySide2 VP line tool with live camera solve.
+Flame Camera Calibrator — PySide2 VP line tool with live camera solve.
 
 Install: copy this directory to /opt/Autodesk/shared/python/camera_match/
 
-Right-click a Clip in Batch > Camera Match > Open Camera Match
+Right-click a Clip in Batch > FORGE > Open Camera Calibrator
   - Exports one frame from the clip
   - Opens a PySide2 window with draggable VP line endpoints
   - Solver runs live on every drag
@@ -306,7 +306,7 @@ def _open_camera_match(clip):
         clip, source_colourspace=initial_source_cs)
     if img_rgb is None:
         flame.messages.show_in_dialog(
-            title="Camera Match",
+            title="Camera Calibrator",
             message="Could not read frame from clip source. "
                     "Check the clip's media path is accessible.",
             type="error", buttons=["OK"])
@@ -1176,7 +1176,7 @@ def _open_camera_match(clip):
     class CameraMatchWindow(QtWidgets.QDialog):
         def __init__(self, parent=None):
             super().__init__(parent)
-            self.setWindowTitle("FORGE — Camera Match")
+            self.setWindowTitle("FORGE — Camera Calibrator")
             self.resize(1280, 820)
             self.setStyleSheet(_FORGE_SS)
 
@@ -1206,7 +1206,7 @@ def _open_camera_match(clip):
             root.addWidget(side, stretch=0)
 
             # Header
-            header = QtWidgets.QLabel("Camera Match")
+            header = QtWidgets.QLabel("Camera Calibrator")
             header.setStyleSheet("color: #E87E24; font-weight: bold; font-size: 14px;")
             panel.addWidget(header)
             subtitle = QtWidgets.QLabel(
@@ -1668,7 +1668,7 @@ def _scope_batch_clip(selection):
     return False
 
 def _launch_camera_match(selection):
-    """Launch the Camera Match window for the selected clip.
+    """Launch the Camera Calibrator window for the selected clip.
 
     Passes the PyClipNode (not its inner PyClip) through to _open_camera_match
     — downstream code needs both the batch node (for pos_x, connect_nodes on
@@ -1684,7 +1684,7 @@ def _launch_camera_match(selection):
 
     if clip_node is None:
         flame.messages.show_in_dialog(
-            title="Camera Match",
+            title="Camera Calibrator",
             message="Select a Clip node in Batch.",
             type="error", buttons=["OK"])
         return
