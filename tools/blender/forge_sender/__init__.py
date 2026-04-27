@@ -61,16 +61,21 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 3, 1),
+    "version": (1, 3, 2),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
-# v1.3.1 (2026-04-27): Phase 04.4 UAT fix — Target Action dropdown was empty
-#                      because invoke()'s self._cached_actions did not survive
-#                      invoke_props_dialog instance churn. Cache moved to
-#                      module-level _choose_action_cache.
+# v1.3.2 (2026-04-27): Phase 04.4 UAT fix #2 — empty dropdown again because
+#                      _get_action_items rebuilt fresh tuples each call,
+#                      letting Blender garbage-collect them. Cache the items
+#                      tuple list itself at module scope (_choose_action_items)
+#                      and return the same list object every callback call.
+# v1.3.1 (2026-04-27): Phase 04.4 UAT fix #1 — Target Action dropdown was
+#                      empty because invoke()'s self._cached_actions did not
+#                      survive invoke_props_dialog instance churn. First
+#                      attempt: moved cache to module level. Insufficient.
 # v1.3.0 (2026-04-26): Phase 04.4 — added FORGE_OT_send_to_flame_choose_action
 #                      operator for cameras without forge bake metadata
 #                      (D-07/D-08/D-09). Panel shows a second button row in
@@ -318,15 +323,29 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
 # implement an auto-retry-with-suffix path; the user-correct flow is to
 # choose a different name (or pick the existing Action from the dropdown).
 # RESEARCH §Pattern 2: invoke() probes Flame for the Action list ONCE
-# and caches it in a MODULE-level variable. The EnumProperty items
-# lambda reads from that cache — Blender calls it on every draw, but
-# the bridge probe runs only once. Module-level (not self.) is required
-# because Blender's invoke_props_dialog uses a fresh operator instance
-# for draw redraws, so any attribute set in invoke() on `self` is gone
-# by the time the items callback fires (live UAT 2026-04-27 confirmed
-# self._cached_actions read empty during draw despite invoke() setting
-# it just before invoke_props_dialog returned).
-_choose_action_cache: list = []
+# and caches the EnumProperty items tuples at MODULE level. Two
+# Blender-specific reasons this MUST be module-level (not self.):
+#
+# 1. invoke_props_dialog uses fresh operator instances for draw
+#    redraws, so attrs set on `self` in invoke() are gone before the
+#    items callback runs (live UAT 2026-04-27 confirmed empty dropdown
+#    when caching on self).
+#
+# 2. Blender's EnumProperty items callback contract requires Python to
+#    hold strong references to the EXACT tuple objects returned —
+#    rebuilding fresh tuple lists each call lets Blender garbage-
+#    collect the strings, silently dropping all items including
+#    "-- Create New --" (live UAT 2026-04-27 confirmed empty dropdown
+#    even after fixing #1 above by caching just the action names).
+#
+# So: cache the items-tuple list itself, return the same list object
+# every callback call. invoke() rebuilds the list once per dialog open.
+_CREATE_NEW_ITEM = (
+    "__create_new__",
+    "-- Create New --",
+    "Create a new Action in Flame",
+)
+_choose_action_items: list = [_CREATE_NEW_ITEM]
 # UI-SPEC §B-1: both buttons remain visible simultaneously in the
 # no-metadata state (disabled top button kept for muscle memory; new
 # enabled bottom button is the active path). DO NOT hide either.
@@ -373,28 +392,20 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
         return obj is not None and getattr(obj, "type", None) == "CAMERA"
 
     def _get_action_items(self, ctx):
-        """Build the EnumProperty items list. Called by Blender on every
-        draw — reads from the module-level _choose_action_cache populated
-        in invoke() so we don't re-probe on every draw frame.
+        """Return the EnumProperty items tuple list.
 
-        Blender must hold strong refs to the strings inside the returned
-        tuples, otherwise the dropdown silently drops items. Building from
-        a stable module-level list and returning fresh tuples each call
-        is the canonical workaround.
+        Returns the SAME module-level list object on every call so
+        Blender keeps a strong ref to the tuples (and their strings).
+        Returning a freshly-built list each call lets Blender garbage-
+        collect the strings, which silently empties the dropdown.
         """
-        result = [(name, name, "") for name in _choose_action_cache]
-        result.append((
-            "__create_new__",
-            "-- Create New --",
-            "Create a new Action in Flame",
-        ))
-        return result
+        return _choose_action_items
 
     def invoke(self, context, event):
         # Probe Flame for live Actions before showing the dialog.
-        global _choose_action_cache
+        global _choose_action_items
         try:
-            _choose_action_cache = transport.list_batch_actions()
+            action_names = transport.list_batch_actions()
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout):
             msg = (
@@ -415,6 +426,12 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
             self.report({'ERROR'}, msg)
             _popup(context, msg)
             return {'CANCELLED'}
+        # Rebuild the module-level items list and KEEP IT — Blender's
+        # EnumProperty items callback requires Python to hold strong refs
+        # to the exact tuple objects that get returned.
+        _choose_action_items = (
+            [(n, n, "") for n in action_names] + [_CREATE_NEW_ITEM]
+        )
         return context.window_manager.invoke_props_dialog(self, width=360)
 
     def draw(self, context):
