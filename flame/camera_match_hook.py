@@ -2577,11 +2577,12 @@ def _export_camera_pipeline(action, cam, label):
 def get_batch_custom_ui_actions():
     """Right-click menu registration for Batch schematic.
 
-    Flat FORGE group — two-level nesting (FORGE / Camera / leaf) is NOT
-    supported on Flame 2026.2.1 (RESEARCH §P-01: verified via code
-    inspection of installed tools and logik.tv FR FI-02123). The
-    'Camera' sub-tier from CONTEXT D-12 is dropped. Menu is flat under
-    the FORGE group name.
+    Two-level FORGE/Camera hierarchy. The pattern is the same shape
+    forge_cv_align uses in its timeline menu — declare the parent group
+    with `hierarchy: []` and an empty `actions` list, then declare each
+    child group with `hierarchy: ["FORGE"]`. RESEARCH §P-01's flat
+    workaround was based on absence-of-evidence, not a live test;
+    sibling tools confirm the dict shape and Flame 2026.2.1 renders it.
 
     The legacy 'Import' entry (Blender-to-Flame pull) was removed
     (D-06): the Blender-side forge_sender addon is now the sole
@@ -2591,6 +2592,12 @@ def get_batch_custom_ui_actions():
     return [
         {
             "name": "FORGE",
+            "hierarchy": [],
+            "actions": [],
+        },
+        {
+            "name": "Camera",
+            "hierarchy": ["FORGE"],
             "actions": [
                 {
                     "name": "Open Camera Calibrator",
@@ -2603,7 +2610,7 @@ def get_batch_custom_ui_actions():
                     "execute": _export_camera_to_blender,
                 },
             ],
-        }
+        },
     ]
 
 
