@@ -156,6 +156,91 @@ class TestBuildPayload:
             "frame rate' message when the guard trips."
         )
 
+    def test_template_renames_imported_camera_via_forge_bake_camera_name(self):
+        """GAP-04.4-UAT-02: the bridge-side template MUST consume the
+        `forge_bake_camera_name` key from `payload["custom_properties"]` and
+        rename the first duck-typed camera in `created` after
+        `import_fbx_to_action` returns.
+
+        Why this test is grep-anchored only (NOT a behavior test):
+
+        The bridge-side template runs ONLY inside Flame's bundled Python,
+        executed by the forge-bridge `/exec` endpoint. There is no
+        production Flame fake on dev machines (Flame's PyAttribute /
+        PyActionNode / `import_fbx` surface is too large to mock
+        comprehensively). Live UAT in Flame 2026.2.1 is the verification
+        of choice — manual UAT scenario: rename a camera in Blender, send
+        to Flame, observe the Flame-side camera name matches the rename.
+
+        This test pins the SOURCE-TEXT contract: the symbol
+        `forge_bake_camera_name` and the rename idiom `c.name.set_value`
+        appear in `_FLAME_SIDE_TEMPLATE`, and they survive the
+        `build_payload` JSON → format → embedded-code round-trip. Future
+        refactors of the template that accidentally drop the rename
+        block will turn this test RED before they reach UAT.
+
+        Per HUMAN-UAT GAP-04.4-UAT-02 fix scope: "Add a test in
+        tests/test_forge_sender_transport.py that verifies make_create_code
+        and the v5 payload-builder leave forge_bake_camera_name intact
+        through the JSON round-trip."
+        """
+        # 1. Source-text canary on the template itself.
+        template = transport._FLAME_SIDE_TEMPLATE
+        assert "forge_bake_camera_name" in template, (
+            "Template must reference forge_bake_camera_name to consume "
+            "the addon-stamped Blender camera name. Per HUMAN-UAT "
+            "GAP-04.4-UAT-02: the bridge-side _forge_send body must read "
+            "this key from payload['custom_properties'] and rename the "
+            "first duck-typed camera in `created`."
+        )
+        assert "c.name.set_value" in template, (
+            "Template must call c.name.set_value(...) to actually perform "
+            "the rename. The forge_bake_camera_name lookup alone is not "
+            "sufficient — the rename mechanism must be present."
+        )
+
+        # 2. JSON round-trip: a v5 payload carrying the key in
+        # custom_properties survives `build_payload` into the embedded
+        # code body. This guards against future build_payload refactors
+        # that strip custom_properties keys other than forge_bake_action_name.
+        v5_json_str = (
+            '{"custom_properties": {'
+            '"forge_bake_action_name": "TargetAction", '
+            '"forge_bake_camera_name": "MyRenamedCamera"'
+            '}}'
+        )
+        body = transport.build_payload(v5_json_str, frame_rate="23.976 fps")
+        code = body["code"]
+        # The JSON string is embedded via repr() — both keys appear in
+        # the embedded literal. We don't care about the order or quoting;
+        # we just want to confirm the build_payload call did not strip
+        # the new key.
+        assert "forge_bake_camera_name" in code, (
+            "build_payload must embed the entire v5 JSON string verbatim "
+            "via repr(); the forge_bake_camera_name key in custom_properties "
+            "must survive the embed step. If a future refactor parses + "
+            "re-serializes the payload and drops unknown custom_properties "
+            "keys, this assertion catches it."
+        )
+        assert "MyRenamedCamera" in code, (
+            "The Blender-side camera name must survive the embed too — "
+            "the bridge-side template reads it from "
+            "json.loads(v5_json_str)['custom_properties']['forge_bake_camera_name'] "
+            "at runtime."
+        )
+
+        # 3. Symbol-presence canary on the rename block specifically.
+        # The rename block must reference both the lookup AND the set_value
+        # call in the SAME template — accidentally splitting them across
+        # files (e.g., into a future helper) would break the bridge-side
+        # contract. Two hits minimum: one in the .get() call and one in
+        # the _log("step=renamed ..."). Both live in the template body.
+        assert template.count("forge_bake_camera_name") >= 2, (
+            "Template must reference forge_bake_camera_name at least twice "
+            "(once in the payload.get() lookup, once in the rename _log line). "
+            "Pre-edit count was 0; post-Plan-04.4-07 count is >=2."
+        )
+
 
 class TestSend:
     def test_calls_requests_post_with_json_kwarg(self, monkeypatch):
