@@ -290,3 +290,100 @@ def parse_envelope(envelope: dict) -> Tuple[Optional[str], Optional[dict]]:
             # earlier bridge responses that sent back bare strings).
             return (None, raw)
     return (None, raw)
+
+
+# =============================================================================
+# Phase 04.4 additions: list Actions in current Batch + create new Action
+# =============================================================================
+
+# RESEARCH §Pattern 3 + §Code Example 3 — verified live 2026-04-25 via
+# forge-bridge probe. The hasattr() guard on item.type is defensive: in
+# the bridge context (NOT the action-hook context), item.type IS a
+# PyAttribute and .get_value() is the correct call. The action-hook
+# Pitfall 1 (item.type is a plain str) does NOT apply here — this code
+# runs inside flame.batch.nodes iteration, not inside
+# get_action_custom_ui_actions.
+_CODE_LIST_ACTIONS = (
+    "import flame\n"
+    "[n.name.get_value() for n in flame.batch.nodes "
+    "if hasattr(n.type, 'get_value') and n.type.get_value() == 'Action']"
+)
+
+
+def list_batch_actions(timeout: float = DEFAULT_TIMEOUT_S) -> list:
+    """Return the names of all Action nodes in the current Flame Batch.
+
+    Scope is the currently-loaded Batch only (D-08) — Actions in other
+    Desktops or Reels are not visible here. Empty Batch returns [].
+
+    Raises:
+        requests.exceptions.* on transport failure (caller surfaces via
+            UI-SPEC §Transport Tier popup).
+        RuntimeError on bridge-side error envelope or malformed result.
+    """
+    response = requests.post(
+        BRIDGE_URL,
+        json={"code": _CODE_LIST_ACTIONS},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    envelope = response.json()
+    if envelope.get("error"):
+        raise RuntimeError(
+            f"forge-bridge failed listing Actions: {envelope['error']}")
+    raw = envelope.get("result") or "[]"
+    try:
+        result = ast.literal_eval(raw)
+    except (ValueError, SyntaxError) as exc:
+        raise RuntimeError(
+            f"forge-bridge returned malformed Action list: {raw!r}") from exc
+    # Defensive: ensure we got a list of strings.
+    if not isinstance(result, list):
+        raise RuntimeError(
+            f"forge-bridge returned non-list Action result: {raw!r}")
+    return result
+
+
+# RESEARCH §P-03: Flame raises RuntimeError on Action name collision —
+# `name.set_value()` does NOT auto-suffix. The bridge envelope's
+# "error" field will contain the substring "Could not set Batch node
+# name" when the user-provided name conflicts with an existing Action.
+# The addon-side handler (FORGE_OT_send_to_flame_choose_action.execute)
+# detects this substring and surfaces a clear collision error message.
+# DO NOT remove the substring from this docstring — Wave 0 test
+# test_create_action_name_collision_error_string_match grep-asserts it
+# stays in this file as a canary against rename drift.
+#
+# SECURITY (T-04.4-04 / V5 ASVS L1 / transport.py:23-29 contract):
+# the user-provided `name` is embedded via repr() — NEVER f-string
+# interpolation. repr() guarantees a valid, unambiguous Python str
+# literal regardless of whatever quotes / backslashes / unicode the
+# user types. If a developer ever changes this to f"...'{name}'..."
+# the Wave 0 test test_make_create_code_embeds_name_via_repr fails
+# (the test asserts that the rendered code contains the
+# single-quoted form 'MyAction' — i.e. the repr() form — and not the
+# double-quoted form "MyAction").
+def make_create_code(name: str) -> str:
+    """Build the Flame-side Python that creates a new Action and renames it.
+
+    The user-provided name is embedded via repr() (security T-04.4-04 /
+    transport.py:23-29) — never f-stringed. On Flame side,
+    `name.set_value()` raises RuntimeError on collision (RESEARCH §P-03,
+    §Pitfall 2). The bridge envelope's "error" field will contain the
+    substring 'Could not set Batch node name' on collision; caller
+    detects this and surfaces a user-friendly message.
+
+    Returns the Python code string ready to POST as {"code": <here>}.
+    The bridge response's "result" field will be repr() of the new
+    Action's name (e.g. "'MyAction'") — parse with ast.literal_eval.
+    """
+    if not isinstance(name, str):
+        raise TypeError(
+            f"make_create_code: expected name to be str, got "
+            f"{type(name).__name__}")
+    return (
+        "import flame\n"
+        "_n = flame.batch.create_node('Action')\n"
+        f"_n.name.set_value({name!r})\n"
+        "_n.name.get_value()\n"
+    )

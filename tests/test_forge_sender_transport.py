@@ -25,6 +25,7 @@ addon, not by probing Flame. See ``memory/flame_batch_frame_rate.md``.
 """
 from __future__ import annotations
 
+import ast
 import os
 import sys
 from unittest.mock import MagicMock
