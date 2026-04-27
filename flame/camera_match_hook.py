@@ -2596,3 +2596,43 @@ def get_batch_custom_ui_actions():
             ],
         }
     ]
+
+
+# RESEARCH §Pitfall 1: _scope_action_camera uses item.type == "Camera"
+# (PLAIN STR, not PyAttribute) — see _scope_action_camera definition above.
+# Do NOT switch to .get_value() here; the Wave 0 test
+# test_scope_action_camera_does_not_call_get_value_on_type guards it.
+# RESEARCH §Pitfall 3: this is a NEW Flame hook function that must
+# coexist with get_batch_custom_ui_actions. Both fire on different
+# selection surfaces. Do NOT consolidate them.
+# RESEARCH §Pitfall 4: requires a full Flame restart after `bash
+# install.sh` for Flame's menu dispatch table to pick up the new
+# function. Live-reload (gc/exec) does NOT refresh the dispatch table.
+# RESEARCH §P-02 OQ-2: cam.parent returning the containing PyActionNode
+# is verified via bridge but not yet in hook callback context. If UAT
+# shows the parent path failing, fallback to scanning flame.batch.nodes
+# for the Action containing the right-clicked camera.
+def get_action_custom_ui_actions():
+    """Right-click menu on camera nodes inside an Action's schematic.
+
+    Distinct from get_batch_custom_ui_actions — fires when the user
+    right-clicks a PyCoNode inside an Action's node graph, not when
+    they right-click the Action node itself in the Batch schematic
+    (RESEARCH §P-02 — verified live 2026-04-25 via forge-bridge).
+
+    Uses hierarchy: [] (root level) because two-level nesting in
+    action context is unverified on Flame 2026.2.1 (RESEARCH §P-01).
+    The leaf appears as a top-level item in the right-click menu.
+    """
+    return [
+        {
+            "hierarchy": [],
+            "actions": [
+                {
+                    "name": "Export Camera to Blender",
+                    "isVisible": _scope_action_camera,
+                    "execute": _export_camera_from_action_selection,
+                },
+            ],
+        }
+    ]
