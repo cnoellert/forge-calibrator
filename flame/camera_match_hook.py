@@ -2340,10 +2340,11 @@ def _export_camera_pipeline(action, cam, label):
 
     from forge_flame import blender_bridge, fbx_ascii, fbx_io
 
-    # NOTE: The lazy QtWidgets import (for QInputDialog / QFileDialog) that
-    # existed in the prior handler body has been removed — both dialogs are
-    # gone from the new happy path. File-level PySide6 imports at the top
-    # of camera_match_hook.py are UNCHANGED; other handlers still use them.
+    # NOTE: The lazy QtWidgets import (previously used for input/file-open
+    # dialogs in the prior handler body) has been removed — both dialogs
+    # are gone from the new happy path. File-level PySide6 imports at the
+    # top of camera_match_hook.py are UNCHANGED; other handlers still use
+    # them.
 
     # `action_node` here is the same object as `action` — the original
     # head used both names. _infer_plate_resolution takes the Action node.
@@ -2560,145 +2561,30 @@ def _export_camera_pipeline(action, cam, label):
         type="info", buttons=["OK"])
 
 
-def _import_camera_from_blender(selection):
-    """Import a camera FROM a Blender .blend back into a Flame Action.
-
-    Flow: right-click the target Action in Batch
-    -> pick input .blend
-    -> pick target camera name (informs the name on the imported cam;
-       dialog only shown if multiple non-Perspective cameras present)
-    -> shell out to Blender via blender_bridge.run_extract for JSON
-    -> convert the v5 JSON to ASCII FBX via fbx_ascii.v5_json_to_fbx
-    -> Flame-side FBX ingest via fbx_io.import_fbx_to_action
-
-    The FBX route is mandatory for animated cameras — Flame's PyAttribute
-    API has no keyframe write path (see memory/flame_keyframe_api.md).
-    Static .blend files round-trip identically through the same flow;
-    Flame's import_fbx just sees a single-keyframe curve. The Perspective
-    exclusion lives in fbx_io, so the built-in viewport camera is safely
-    filtered out regardless of what the .blend contains.
-
-    Unlike the pre-v6.2 JSON-overwrite path, this creates a NEW camera
-    rather than mutating the picked target. Flame auto-appends a numeric
-    suffix on name collision (e.g. a .blend imported against an existing
-    'Default' produces 'Default1'). The original camera is preserved so
-    the user can compare and remove it manually."""
-    _ensure_forge_env()
-    _ensure_forge_core_on_path()
-
-    import flame
-    import json as _json
-    import subprocess
-    from PySide6 import QtWidgets
-
-    from forge_flame import blender_bridge, fbx_ascii, fbx_io
-
-    action_node = _first_action_in_selection(selection)
-    if action_node is None:
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message="Right-click an Action node in Batch (the target for the "
-                    "imported camera values).",
-            type="error", buttons=["OK"])
-        return
-
-    cameras = _find_action_cameras(only_action=action_node)
-    if not cameras:
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message=f"No non-Perspective camera in "
-                    f"'{_val(action_node.name)}'.",
-            type="error", buttons=["OK"])
-        return
-
-    blend_path, _filter = QtWidgets.QFileDialog.getOpenFileName(
-        None, "Open Blender File", "/tmp", "Blender File (*.blend)")
-    if not blend_path:
-        return
-
-    picked = _pick_camera(cameras, "Import Camera from Blender")
-    if picked is None:
-        return
-    action, cam, _label = picked
-    target_name = _val(cam.name)
-
-    json_path = blend_path[:-len(".blend")] + "_extract.json" \
-        if blend_path.endswith(".blend") else blend_path + "_extract.json"
-    try:
-        blender_bridge.run_extract(
-            blend_path, json_path, camera_name="Camera")
-    except FileNotFoundError as e:
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message=str(e), type="error", buttons=["OK"])
-        return
-    except subprocess.CalledProcessError as e:
-        err = (e.stderr or e.stdout or "unknown error").strip()
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message=f"Blender extract failed (exit {e.returncode}):\n\n{err}",
-            type="error", buttons=["OK"])
-        return
-
-    # Convert v5 JSON -> ASCII FBX. Name the emitted camera after the
-    # picked target; Flame will auto-append a suffix on collision.
-    fbx_path = json_path[:-len(".json")] + ".fbx"
-    try:
-        fbx_ascii.v5_json_to_fbx(
-            json_path, fbx_path,
-            camera_name=target_name,
-        )
-    except Exception as e:
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message=f"Failed to convert Blender JSON to FBX:\n{e}",
-            type="error", buttons=["OK"])
-        return
-
-    try:
-        new_nodes = fbx_io.import_fbx_to_action(action, fbx_path)
-    except Exception as e:
-        flame.messages.show_in_dialog(
-            title="Import Camera from Blender",
-            message=f"Failed to import FBX into Action:\n{e}",
-            type="error", buttons=["OK"])
-        return
-
-    # Count frames for the outcome report.
-    try:
-        with open(json_path) as f:
-            n_frames = len(_json.load(f).get("frames") or [])
-    except Exception:
-        n_frames = 0
-
-    # PyCoNode instances have position / rotation / fov PyAttributes;
-    # helper nodes (null targets) don't.
-    imported_cam_names = [
-        _val(n.name) for n in new_nodes
-        if hasattr(n, "position") and hasattr(n, "fov")
-    ]
-    imported_list = ", ".join(imported_cam_names) or "(none)"
-    plural = "s" if len(imported_cam_names) != 1 else ""
-
-    flame.messages.show_in_dialog(
-        title="Import Camera from Blender",
-        message=(
-            f"Imported {n_frames}-frame camera{plural} into "
-            f"'{_val(action_node.name)}':\n"
-            f"  {imported_list}\n"
-            f"\n"
-            f"Target '{target_name}' preserved; remove manually if desired."
-        ),
-        type="info", buttons=["OK"])
-
-
+# RESEARCH §Pitfall 4: menu structure changes require a full Flame
+# restart. The gc/exec live-reload pattern refreshes module globals but
+# NOT Flame's cached menu dispatch table. Test this menu surface only
+# after `bash install.sh` + Flame restart.
 def get_batch_custom_ui_actions():
+    """Right-click menu registration for Batch schematic.
+
+    Flat FORGE group — two-level nesting (FORGE / Camera / leaf) is NOT
+    supported on Flame 2026.2.1 (RESEARCH §P-01: verified via code
+    inspection of installed tools and logik.tv FR FI-02123). The
+    'Camera' sub-tier from CONTEXT D-12 is dropped. Menu is flat under
+    the FORGE group name.
+
+    The legacy 'Import' entry (Blender-to-Flame pull) was removed
+    (D-06): the Blender-side forge_sender addon is now the sole
+    inbound path. Hard cut on install per D-14 — no backwards-compat
+    shim.
+    """
     return [
         {
-            "name": "Camera Match",
+            "name": "FORGE",
             "actions": [
                 {
-                    "name": "Open Camera Match",
+                    "name": "Open Camera Calibrator",
                     "isVisible": _scope_batch_clip,
                     "execute": _launch_camera_match,
                 },
@@ -2706,11 +2592,6 @@ def get_batch_custom_ui_actions():
                     "name": "Export Camera to Blender",
                     "isVisible": _scope_batch_action,
                     "execute": _export_camera_to_blender,
-                },
-                {
-                    "name": "Import Camera from Blender",
-                    "isVisible": _scope_batch_action,
-                    "execute": _import_camera_from_blender,
                 },
             ],
         }
