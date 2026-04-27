@@ -3,15 +3,15 @@ gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
 status: executing
-stopped_at: Completed 04.4-03-PLAN.md (Wave 2) — awaiting Task 4 human-verify checkpoint (Flame restart UAT)
-last_updated: "2026-04-27T00:49:09.335Z"
+stopped_at: Completed 04.4-04-PLAN.md (Wave 3 addon extension); Task 4 awaiting human UAT — 11 scenarios after v1.3.0 zip repackage + reinstall
+last_updated: "2026-04-27T01:36:21.492Z"
 last_activity: 2026-04-27
 progress:
   total_phases: 10
   completed_phases: 7
   total_plans: 24
-  completed_plans: 22
-  percent: 92
+  completed_plans: 23
+  percent: 96
 ---
 
 # Project State
@@ -26,7 +26,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 ## Current Position
 
 Phase: 04.4 (tester-rollout-polish-forge-ui-style-on-multi-camera-picker-) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Ready to execute
 Last activity: 2026-04-27
 
@@ -60,6 +60,7 @@ Progress: [██████░░░░] 60% (3 of 5 phases complete)
 | Phase 04.4 P01 | 4min | 3 tasks | 3 files |
 | Phase 04.4 P02 | 6min | 3 tasks | 2 files |
 | Phase 04.4 P03 | 5min | 3 tasks | 1 files |
+| Phase 04.4 P04 | 5min | 3 tasks | 4 files |
 
 ## Accumulated Context
 
@@ -83,6 +84,7 @@ Recent decisions affecting current work:
 - [Phase 04.4]: Plan 04.4-02 / Task 2: added _scope_action_camera + _first_camera_in_action_selection at module level. Both use direct string equality on item.type (RESEARCH Pitfall 1 — item.type is plain str in action-callback context, not PyAttribute). Wave 0 test infrastructure required _KEEP_INSTALLED set so the helper's lazy  finds the fake at test runtime.
 - [Phase 04.4]: Plan 04.4-02 / Task 3: extracted _export_camera_pipeline (PATTERNS Shape A) so the Camera-scope handler can bypass _pick_camera and feed the resolved (action_node, cam_node) triple straight into the bake/launch tail. Label format uses '>' separator to match _find_action_cameras (line 1812), not the em-dash specified in the plan body — Rule 1 deviation tracked.
 - [Phase 04.4]: Plan 04.4-03 / Wave 2: flat FORGE group landed (no nested submenus per P-01). get_action_custom_ui_actions registered as a sibling hook for Camera-node right-clicks (root-level via hierarchy: []). _import_camera_from_blender + Import Camera from Blender menu entry deleted (D-06 hard cut). Apply Camera picker also flipped to _pick_camera via Create-new-Action sentinel tuple — every camera picker in the hook is now FORGE-styled. Wave 2 awaits Flame-restart UAT (Task 4 human-verify checkpoint).
+- [Phase 04.4]: Plan 04.4-04: extended Blender forge_sender addon to v1.3.0 — added list_batch_actions/make_create_code transport (repr() injection-safe), FORGE_OT_send_to_flame_choose_action operator with live Action dropdown, panel extension for no-metadata state, and R-08 preflight string updates. All 8 Wave-0 stubs flipped SKIP→PASS.
 
 ### Pending Todos
 
@@ -119,6 +121,6 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 
 ## Session Continuity
 
-Last session: 2026-04-27T00:49:09.332Z
-Stopped at: Completed 04.4-03-PLAN.md (Wave 2) — awaiting Task 4 human-verify checkpoint (Flame restart UAT)
+Last session: 2026-04-27T01:36:21.489Z
+Stopped at: Completed 04.4-04-PLAN.md (Wave 3 addon extension); Task 4 awaiting human UAT — 11 scenarios after v1.3.0 zip repackage + reinstall
 Resume file: None
