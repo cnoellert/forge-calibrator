@@ -179,6 +179,38 @@ def _forge_send():
         created = fbx_io.import_fbx_to_action(action, fbx_path)
         _log("step=post_import_fbx created_count=%d" % len(created))
 
+        # GAP-04.4-UAT-02: rename the imported camera to the Blender-side
+        # name (`forge_bake_camera_name`) when the addon stamped one in
+        # custom_properties. The Blender forge_sender stamping site at
+        # tools/blender/forge_sender/__init__.py:551 always stamps the
+        # active camera's `cam.name`; this rename closes the loop so the
+        # Flame-side camera carries the Blender-side name end-to-end.
+        #
+        # Stereo-rig siblings (*_left/*_right) and FBX-internal nodes
+        # (RootNode_*) are filtered by the duck-type predicate below the
+        # return — we MUST NOT rename them here. Same predicate is
+        # applied here so the rename targets only the primary camera.
+        forge_bake_camera_name = payload.get("custom_properties", {{}}).get(
+            "forge_bake_camera_name"
+        )
+        if forge_bake_camera_name:
+            for c in created:
+                try:
+                    is_real_camera = (
+                        all(hasattr(c, a) for a in ("position", "rotation", "fov", "focal"))
+                        and c.name.get_value() != "Perspective"
+                    )
+                except Exception:
+                    is_real_camera = False
+                if is_real_camera:
+                    try:
+                        c.name.set_value(forge_bake_camera_name)
+                    except Exception as exc:
+                        _log("step=rename_failed err=%r" % (exc,))
+                    else:
+                        _log("step=renamed name=%r" % forge_bake_camera_name)
+                    break  # rename only the FIRST duck-typed camera
+
         success = True
         # Filter per Phase 4.1 D-06: duck-type camera check mirrors
         # forge_flame.fbx_io.iter_keyframable_cameras:63-70. Drops FBX-internal
