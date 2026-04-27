@@ -238,3 +238,199 @@ def test_scope_action_camera_handles_per_item_exception():
     bad = _ExplodingItem()
     good = _FakeCameraNode(name="Default")
     assert _hook_module._scope_action_camera([bad, good]) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests — _first_camera_in_action_selection rewrite (Plan 04.4-07 / GAP-1).
+# Two paths under test: (1) cam.parent works → fast path returns (parent, cam).
+# (2) cam.parent raises / returns None / returns object lacking .nodes →
+#     fall back to scanning flame.batch.nodes for the Action whose .nodes
+#     contains cam (identity comparison).
+# ---------------------------------------------------------------------------
+
+
+import inspect
+
+
+def _first_camera_helper_has_fallback():
+    """True iff the rewrite from Plan 04.4-07 has landed.
+
+    Checks for the function AND for the substring 'for n in flame.batch.nodes'
+    inside its body — distinguishes the Wave-1 deferred-fallback shape
+    (`return item.parent, item`) from the Plan 04.4-07 rewrite that adds
+    the scan loop.
+    """
+    fn = getattr(_hook_module, "_first_camera_in_action_selection", None)
+    if fn is None:
+        return False
+    try:
+        src = inspect.getsource(fn)
+    except (OSError, TypeError):
+        return False
+    return "for n in flame.batch.nodes" in src
+
+
+_GAP1_SKIP_REASON = (
+    "_first_camera_in_action_selection scan fallback not yet implemented "
+    "(Plan 04.4-07 / GAP-04.4-UAT-01)"
+)
+
+
+class _FakeActionNode:
+    """Batch-context Action fake — .type is a PyAttribute (matches batch shape).
+
+    Differs from action-schematic-context items (which use plain str .type)
+    per RESEARCH §P-02 / Pitfall 1 — the batch context exposes PyAttributes,
+    the action-schematic context exposes plain strs. The fallback scan
+    iterates flame.batch.nodes, so it sees the PyAttribute shape; the
+    helper's duck-typed `t = n.type; type_val = t.get_value() if hasattr(t, "get_value") else str(t)`
+    handles both shapes.
+    """
+
+    def __init__(self, name, child_nodes):
+        self.type = _FakeAttr("Action")  # batch-context PyAttribute
+        self.name = _FakeAttr(name)
+        self.nodes = list(child_nodes)
+
+
+def test_first_camera_parent_works_returns_fast_path_tuple(monkeypatch):
+    """Fast path: cam.parent returns a usable PyActionNode-like object →
+    helper returns (parent, cam) without scanning flame.batch.nodes.
+
+    Pre-condition: the rewritten helper preserves the cam.parent fast
+    path inside try/except. This test verifies the fast path still
+    returns the cached parent when it has a .nodes attribute.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="MyCam")
+    fake_parent = _FakeActionNode("ParentAction", child_nodes=[cam])
+    cam.parent = fake_parent  # fast-path attribute injected
+
+    # If the helper's fast path works, it MUST NOT scan flame.batch.nodes
+    # — assert no scan side effect by setting batch.nodes to a sentinel
+    # that would explode if iterated.
+    class _ExplodingBatch:
+        @property
+        def nodes(self):
+            raise AssertionError(
+                "fast path returned (parent, cam); "
+                "flame.batch.nodes scan must NOT run when cam.parent is usable"
+            )
+
+    monkeypatch.setattr(_fake_flame, "batch", _ExplodingBatch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
+    assert action_node is fake_parent
+    assert cam_node is cam
+
+
+def test_first_camera_parent_raises_falls_back_to_batch_scan(monkeypatch):
+    """Fallback path: cam.parent raises Exception → helper scans
+    flame.batch.nodes, finds the Action whose .nodes contains cam by
+    identity, returns (action, cam).
+
+    This is the GAP-04.4-UAT-01 fix path. UAT 2026-04-27 confirmed that
+    cam.parent on Flame 2026.2.1 hook callback context produces a chained
+    API resolution that lands on a None — represented here as a raising
+    property since that's the visible behaviour from the helper's
+    perspective.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="MyCam")
+
+    # cam.parent raises — simulate the Flame 2026.2.1 hook-context misbehavior.
+    class _RaisingDescriptor:
+        def __get__(self, obj, objtype=None):
+            raise RuntimeError("simulated cam.parent failure (GAP-1 case)")
+
+    type(cam).parent = _RaisingDescriptor()
+
+    action_a = _FakeActionNode("OtherAction", child_nodes=[])
+    action_target = _FakeActionNode("RealParent", child_nodes=[cam])
+    action_c = _FakeActionNode("ThirdAction", child_nodes=[])
+
+    class _Batch:
+        nodes = [action_a, action_target, action_c]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    try:
+        action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
+    finally:
+        # Clean up the parent descriptor so other tests aren't polluted.
+        del type(cam).parent
+
+    assert action_node is action_target, (
+        "scan fallback must return the Action whose .nodes contains cam "
+        "(identity comparison, not name equality)"
+    )
+    assert cam_node is cam
+
+
+def test_first_camera_parent_returns_none_falls_back_to_batch_scan(monkeypatch):
+    """Fallback path #2: cam.parent returns None (no exception, just None) →
+    helper scans flame.batch.nodes and resolves via identity.
+
+    Distinct from the raise case because the helper's check is
+    `parent is not None and hasattr(parent, "nodes")` — a parent that's
+    None falls through to the scan without raising. UAT GAP-1 may
+    manifest as either shape depending on Flame's chained-API state.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="MyCam")
+    cam.parent = None  # explicit None — fallback should engage
+
+    action_target = _FakeActionNode("ParentAction", child_nodes=[cam])
+
+    class _Batch:
+        nodes = [action_target]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
+    assert action_node is action_target
+    assert cam_node is cam
+
+
+def test_first_camera_returns_none_pair_when_no_camera_in_selection():
+    """Empty selection / non-camera selection: helper returns (None, None)."""
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    axis = _FakeAxisNode(name="Axis1")
+    action_node, cam_node = _hook_module._first_camera_in_action_selection([axis])
+    assert action_node is None
+    assert cam_node is None
+
+
+def test_first_camera_skips_perspective_and_continues(monkeypatch):
+    """Perspective is filtered: a Perspective cam in selection followed
+    by a real cam → returns (parent, real_cam). This reuses the same
+    scan-fallback path as `test_first_camera_parent_raises_...` since
+    the fallback is the production code path post-Plan 04.4-07.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    perspective_cam = _FakeCameraNode(name="Perspective")
+    real_cam = _FakeCameraNode(name="RealCam")
+    real_cam.parent = None  # force fallback
+
+    action_target = _FakeActionNode("OwningAction", child_nodes=[real_cam])
+
+    class _Batch:
+        nodes = [action_target]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [perspective_cam, real_cam]
+    )
+    assert action_node is action_target
+    assert cam_node is real_cam
