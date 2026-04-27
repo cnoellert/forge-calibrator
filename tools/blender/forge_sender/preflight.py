@@ -54,11 +54,11 @@ def check(context) -> Optional[str]:
             return (f"Send to Flame: active camera is missing '{key}' — "
                     f"this camera was not baked by forge-calibrator. "
                     f"Re-export from Flame via right-click → FORGE → "
-                    f"Export Camera to Blender")
+                    f"Camera → Export Camera to Blender")
 
     if data.get("forge_bake_source") != "flame":
         return ("Send to Flame: active camera was not baked by forge-calibrator "
                 "(forge_bake_source != 'flame') — re-export from Flame via "
-                "right-click → FORGE → Export Camera to Blender")
+                "right-click → FORGE → Camera → Export Camera to Blender")
 
     return None

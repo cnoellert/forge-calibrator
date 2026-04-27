@@ -148,7 +148,9 @@ class TestRequiredKeysOrder:
 #
 # Test 2 is a R-08 string-rename canary: when Wave 3 (Plan 04.4-04 Task 4)
 # updates the menu-path copy from "Camera Match → Export Camera to Blender"
-# to "FORGE → Export Camera to Blender", the test flips from SKIP to PASS.
+# to "FORGE → Camera → Export Camera to Blender", the test flips from SKIP
+# to PASS. (Plan 04.4-06 corrected the asserted path to the three-segment
+# shipped menu per WR-02 arm (b).)
 # ---------------------------------------------------------------------------
 
 import pathlib  # noqa: E402
@@ -196,5 +198,5 @@ def test_check_error_uses_new_menu_path_string_after_r08_rename():
 
     err = preflight.check(_FakeCtx())
     assert err is not None
-    assert "FORGE → Export Camera to Blender" in err, err
+    assert "FORGE → Camera → Export Camera to Blender" in err, err
     assert "Camera Match" not in err, err
