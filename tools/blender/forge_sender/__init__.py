@@ -61,18 +61,27 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 3, 3),
+    "version": (1, 3, 4),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.3.4 (2026-04-27): Phase 04.4 UAT fix #3 — actual root cause: the
+#                      EnumProperty items callback receives an RNA struct
+#                      as `self`, not the operator's Python class instance,
+#                      so `self._get_action_items` raised AttributeError on
+#                      every draw and Blender silently rendered an empty
+#                      dropdown. Switched the callback from a lambda
+#                      closing over a method to a module-level function
+#                      (_choose_action_items_callback). Diagnostic prints
+#                      from v1.3.3 stripped.
 # v1.3.3 (2026-04-27): Phase 04.4 UAT diagnostic — v1.3.2 fix did not solve
 #                      the empty dropdown. Adds [forge_sender DEBUG] stdout
-#                      prints to invoke() and _get_action_items so we can
+#                      prints to invoke() and the items callback so we can
 #                      see whether either is being called at all and what
 #                      the items list looks like at each call site. Pure
-#                      diagnostic build — strip prints in v1.3.4.
+#                      diagnostic build — superseded by v1.3.4.
 # v1.3.2 (2026-04-27): Phase 04.4 UAT fix #2 — empty dropdown again because
 #                      _get_action_items rebuilt fresh tuples each call,
 #                      letting Blender garbage-collect them. Cache the items
@@ -329,29 +338,44 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
 # implement an auto-retry-with-suffix path; the user-correct flow is to
 # choose a different name (or pick the existing Action from the dropdown).
 # RESEARCH §Pattern 2: invoke() probes Flame for the Action list ONCE
-# and caches the EnumProperty items tuples at MODULE level. Two
-# Blender-specific reasons this MUST be module-level (not self.):
+# and caches the EnumProperty items tuples at MODULE level. Three
+# Blender-specific reasons:
 #
-# 1. invoke_props_dialog uses fresh operator instances for draw
+# 1. The items callback receives an RNA struct as `self`, NOT the
+#    Python class instance. It exposes registered bpy.props but NOT
+#    user-defined Python methods. So `self._method(...)` raises
+#    AttributeError ("object has no attribute '_method'") — confirmed
+#    live 2026-04-27 in v1.3.0..1.3.3 attempts. The items callback
+#    therefore MUST be a plain module-level function.
+#
+# 2. invoke_props_dialog uses fresh operator instances for draw
 #    redraws, so attrs set on `self` in invoke() are gone before the
-#    items callback runs (live UAT 2026-04-27 confirmed empty dropdown
-#    when caching on self).
+#    items callback runs.
 #
-# 2. Blender's EnumProperty items callback contract requires Python to
-#    hold strong references to the EXACT tuple objects returned —
-#    rebuilding fresh tuple lists each call lets Blender garbage-
-#    collect the strings, silently dropping all items including
-#    "-- Create New --" (live UAT 2026-04-27 confirmed empty dropdown
-#    even after fixing #1 above by caching just the action names).
+# 3. Blender's items callback also requires Python to hold strong refs
+#    to the EXACT tuple objects returned — rebuilding fresh tuple
+#    lists each call lets Blender garbage-collect them, silently
+#    dropping items.
 #
-# So: cache the items-tuple list itself, return the same list object
-# every callback call. invoke() rebuilds the list once per dialog open.
+# So: cache the assembled items-tuple list at module scope, return the
+# same list object every callback call. invoke() rebuilds the list
+# once per dialog open after the bridge probe succeeds.
 _CREATE_NEW_ITEM = (
     "__create_new__",
     "-- Create New --",
     "Create a new Action in Flame",
 )
 _choose_action_items: list = [_CREATE_NEW_ITEM]
+
+
+def _choose_action_items_callback(self, context):
+    """EnumProperty items callback — module-level by design.
+
+    Blender hands a non-Python-class `self` (an RNA struct) to this
+    callback, so methods on FORGE_OT_send_to_flame_choose_action are
+    NOT reachable here. Use the module-level cache instead.
+    """
+    return _choose_action_items
 # UI-SPEC §B-1: both buttons remain visible simultaneously in the
 # no-metadata state (disabled top button kept for muscle memory; new
 # enabled bottom button is the active path). DO NOT hide either.
@@ -381,7 +405,7 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
     target_action: bpy.props.EnumProperty(
         name="Target Action",
         description="Existing Flame Action or -- Create New --",
-        items=lambda self, ctx: self._get_action_items(ctx),
+        items=_choose_action_items_callback,
     )
     new_action_name: bpy.props.StringProperty(
         name="New Action Name",
@@ -397,31 +421,11 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
         obj = context.active_object
         return obj is not None and getattr(obj, "type", None) == "CAMERA"
 
-    def _get_action_items(self, ctx):
-        """Return the EnumProperty items tuple list.
-
-        Returns the SAME module-level list object on every call so
-        Blender keeps a strong ref to the tuples (and their strings).
-        Returning a freshly-built list each call lets Blender garbage-
-        collect the strings, which silently empties the dropdown.
-        """
-        print(
-            f"[forge_sender DEBUG] _get_action_items called, "
-            f"len={len(_choose_action_items)} items={_choose_action_items}",
-            flush=True,
-        )
-        return _choose_action_items
-
     def invoke(self, context, event):
         # Probe Flame for live Actions before showing the dialog.
         global _choose_action_items
-        print("[forge_sender DEBUG] invoke() entered", flush=True)
         try:
             action_names = transport.list_batch_actions()
-            print(
-                f"[forge_sender DEBUG] list_batch_actions -> {action_names}",
-                flush=True,
-            )
         except (requests.exceptions.ConnectionError,
                 requests.exceptions.Timeout):
             msg = (
@@ -447,12 +451,6 @@ class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
         # to the exact tuple objects that get returned.
         _choose_action_items = (
             [(n, n, "") for n in action_names] + [_CREATE_NEW_ITEM]
-        )
-        print(
-            f"[forge_sender DEBUG] after invoke() rebuild, "
-            f"_choose_action_items id={id(_choose_action_items)} "
-            f"len={len(_choose_action_items)}",
-            flush=True,
         )
         return context.window_manager.invoke_props_dialog(self, width=360)
 
