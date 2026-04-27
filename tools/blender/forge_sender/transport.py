@@ -190,10 +190,31 @@ def _forge_send():
         # (RootNode_*) are filtered by the duck-type predicate below the
         # return — we MUST NOT rename them here. Same predicate is
         # applied here so the rename targets only the primary camera.
+        #
+        # COLLISION GUARD (regression fix 2026-04-27): the stamped-camera
+        # round-trip path stamps `forge_bake_camera_name` = the ORIGINAL
+        # Flame camera name (e.g. 'Camera1'). The original camera still
+        # lives in the target Action; Flame's import_fbx auto-suffixes
+        # the new camera (e.g. 'Camera2'). Calling set_value('Camera1')
+        # on the new camera would collide with the original — RESEARCH
+        # §P-03 documents that name collision raises RuntimeError AND
+        # the failed PyAttribute write can destabilise Flame (observed
+        # SIGSEGV on stamped-path round-trip during UAT). So: enumerate
+        # sibling names BEFORE attempting set_value, skip the rename if
+        # the target is already taken by a sibling.
         forge_bake_camera_name = payload.get("custom_properties", {{}}).get(
             "forge_bake_camera_name"
         )
         if forge_bake_camera_name:
+            try:
+                action_node_names = set(
+                    n.name.get_value()
+                    for n in action.nodes
+                    if hasattr(n, "name") and hasattr(n.name, "get_value")
+                )
+            except Exception:
+                action_node_names = set()
+
             for c in created:
                 try:
                     is_real_camera = (
@@ -202,14 +223,33 @@ def _forge_send():
                     )
                 except Exception:
                     is_real_camera = False
-                if is_real_camera:
-                    try:
-                        c.name.set_value(forge_bake_camera_name)
-                    except Exception as exc:
-                        _log("step=rename_failed err=%r" % (exc,))
-                    else:
-                        _log("step=renamed name=%r" % forge_bake_camera_name)
-                    break  # rename only the FIRST duck-typed camera
+                if not is_real_camera:
+                    continue
+                try:
+                    current_name = c.name.get_value()
+                except Exception:
+                    current_name = None
+                if current_name == forge_bake_camera_name:
+                    _log("step=rename_noop name=%r" % forge_bake_camera_name)
+                    break
+                siblings = (
+                    action_node_names - set([current_name])
+                    if current_name is not None
+                    else action_node_names
+                )
+                if forge_bake_camera_name in siblings:
+                    _log(
+                        "step=rename_skipped reason=collision target=%r"
+                        % (forge_bake_camera_name,)
+                    )
+                    break
+                try:
+                    c.name.set_value(forge_bake_camera_name)
+                except Exception as exc:
+                    _log("step=rename_failed err=%r" % (exc,))
+                else:
+                    _log("step=renamed name=%r" % forge_bake_camera_name)
+                break  # rename only the FIRST duck-typed camera
 
         success = True
         # Filter per Phase 4.1 D-06: duck-type camera check mirrors
