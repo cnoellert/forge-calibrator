@@ -35,7 +35,7 @@ When it prints `> forge-bridge`, it is deploying the bridge hook to
 unavailable, no local clone), the installer emits the warning in recipe 4 below and
 continues — VP-solve and the static camera round-trip still work.
 
-When it prints `> Install`, it is placing the Camera Match hook at
+When it prints `> Install`, it is placing the Camera Calibrator hook at
 `/opt/Autodesk/shared/python/camera_match/`.
 
 When it prints `> tools/blender`, it is copying Blender bake and extract scripts to
@@ -61,7 +61,7 @@ without `--force`.
 
 ## How forge-bridge autostart works
 
-When Flame starts, it loads the Camera Match hook (`camera_match_hook.py`). The hook
+When Flame starts, it loads the Camera Calibrator hook (`camera_match_hook.py`). The hook
 spawns `forge_bridge.py` as a subprocess, which binds `127.0.0.1:9999`. The bridge
 lifecycle is tied to the Flame session — when Flame quits, the bridge subprocess exits.
 No launchd, systemd, or manual process management is needed.
@@ -83,7 +83,7 @@ curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"
 
 ## Using Send to Flame
 
-1. In Flame: right-click the target Action → Camera Match → **Export Camera to
+1. In Flame: right-click the target Action → FORGE → **Export Camera to
    Blender**. Blender opens with the baked camera. No dialog prompts, no save-path
    selection.
 2. In Blender: edit the camera — move it, rotate it, scrub or add keyframes.
@@ -97,7 +97,7 @@ below.
 
 ## Troubleshooting
 
-### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Match hook loaded?
+### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Calibrator hook loaded?
 
 **Likely cause:** Flame is not running, or forge-bridge did not start when Flame
 booted.
@@ -128,7 +128,7 @@ boots. Open a batch, click a node or two, let the workspace fully load
 2. Open the batch with your aim-rig camera.
 3. Do any small UI action (open a node, scrub the timeline) — this seems to
    stabilise Flame's internal state.
-4. Right-click the Action → Camera Match → Export Camera to Blender, then
+4. Right-click the Action → FORGE → Export Camera to Blender, then
    Send to Flame from Blender. The second attempt typically succeeds.
 
 This is suspected to be an Autodesk-side bug, not a forge-calibrator bug. The
@@ -137,7 +137,7 @@ within 0.001° per axis on Camera1 fixtures (well inside the 0.1° UAT gate).
 
 ---
 
-### Symptom: Send to Flame: active camera is missing 'forge_bake_action_name' — this camera was not baked by forge-calibrator. Re-export from Flame via right-click → Camera Match → Export Camera to Blender
+### Symptom: Send to Flame: active camera is missing 'forge_bake_action_name' — this camera was not baked by forge-calibrator. Re-export from Flame via right-click → FORGE → Export Camera to Blender
 
 **Likely cause:** The active Blender camera was not baked from Flame, or was baked by
 an older tool that does not stamp metadata. (The error may name
@@ -145,7 +145,7 @@ an older tool that does not stamp metadata. (The error may name
 property is absent first.)
 
 **Fix:**
-1. In Flame: right-click the target Action → Camera Match → Export Camera to Blender.
+1. In Flame: right-click the target Action → FORGE → Export Camera to Blender.
 2. Use the freshly baked camera in Blender; the stamped metadata is attached
    automatically.
 
@@ -161,7 +161,7 @@ Action was renamed or deleted after the bake.
 **Fix:**
 1. Read the top line of the traceback — it names the underlying error.
 2. Most common cause: the Action was renamed after the bake. Re-bake from the current
-   Action (right-click Action → Camera Match → Export Camera to Blender).
+   Action (right-click Action → FORGE → Export Camera to Blender).
 3. Second most common: the Action has two cameras with the same name. Rename one to
    disambiguate, then re-send.
 
@@ -181,7 +181,7 @@ curl-fallback to `raw.githubusercontent.com` failed (usually offline or firewall
 
 ---
 
-### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Match hook loaded? (and `lsof -i :9999` shows a non-forge-bridge process listening)
+### Symptom: Send to Flame: forge-bridge not reachable at http://127.0.0.1:9999 — is Flame running with the Camera Calibrator hook loaded? (and `lsof -i :9999` shows a non-forge-bridge process listening)
 
 **Likely cause:** Another process — a stale forge-bridge from a previous Flame session
 that did not shut down cleanly, or an unrelated service — is holding port 9999.
