@@ -45,6 +45,7 @@ D-19 frame-rate ladder (Plan 02-01 recovery):
 """
 from __future__ import annotations
 
+import ast
 import json
 from typing import Optional
 
@@ -60,12 +61,17 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 2, 0),
+    "version": (1, 3, 0),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.3.0 (2026-04-26): Phase 04.4 — added FORGE_OT_send_to_flame_choose_action
+#                      operator for cameras without forge bake metadata
+#                      (D-07/D-08/D-09). Panel shows a second button row in
+#                      the no-metadata state. R-08 menu-path string updates
+#                      land in preflight.py error copy.
 # v1.2.0 (2026-04-25): aim-rig fix — adopt Phase 04.3 R = Rz(-rz)·Ry(-ry)·Rx(-rx)
 #                      decomposer convention to match Flame-side bake's new
 #                      composer. Resolves rz sign flip on aim-rig round-trip.
@@ -298,6 +304,246 @@ class FORGE_OT_send_to_flame(bpy.types.Operator):
 
 
 # =============================================================================
+# Phase 04.4 D-07: choose-Action operator (cameras without forge metadata)
+# =============================================================================
+#
+# RESEARCH §Pitfall 2 (D-09 corrected): Flame raises RuntimeError on
+# Action name collision — `name.set_value()` does NOT auto-suffix. The
+# create-new path detects 'Could not set Batch node name' in the
+# envelope error field and surfaces a clear collision message. DO NOT
+# implement an auto-retry-with-suffix path; the user-correct flow is to
+# choose a different name (or pick the existing Action from the dropdown).
+# RESEARCH §Pattern 2: invoke() probes Flame for the Action list ONCE
+# and caches in self._cached_actions. The EnumProperty items lambda
+# reads from the cache — Blender calls it on every draw, but the bridge
+# probe runs only once.
+# UI-SPEC §B-1: both buttons remain visible simultaneously in the
+# no-metadata state (disabled top button kept for muscle memory; new
+# enabled bottom button is the active path). DO NOT hide either.
+# Security T-04.4-04 / V5 ASVS L1: the user-typed `new_action_name`
+# is embedded into the bridge code body via transport.make_create_code,
+# which uses repr() (not f-string) — see transport.py docstring lines
+# 23-29 and the security comment above make_create_code itself.
+
+
+class FORGE_OT_send_to_flame_choose_action(bpy.types.Operator):
+    """Send camera to Flame — pick or create the target Action.
+
+    Phase 04.4 D-07/D-08/D-09. Use this when the active camera lacks
+    forge bake metadata (e.g. it was created in Blender, not exported
+    from Flame). The operator probes Flame for the live Action list,
+    presents a dropdown with a '-- Create New --' option, and pushes
+    the camera to the chosen / created Action.
+    """
+    bl_idname = "forge.send_to_flame_choose_action"
+    bl_label = "Send to Flame (choose Action)"
+    bl_description = (
+        "Send the active camera to a chosen Flame Action — for cameras "
+        "that were not exported from Flame (no forge bake metadata)"
+    )
+    bl_options = {'REGISTER'}
+
+    target_action: bpy.props.EnumProperty(
+        name="Target Action",
+        description="Existing Flame Action or -- Create New --",
+        items=lambda self, ctx: self._get_action_items(ctx),
+    )
+    new_action_name: bpy.props.StringProperty(
+        name="New Action Name",
+        description="Name for the new Action to create in Flame",
+        default="",
+    )
+
+    @classmethod
+    def poll(cls, context):
+        # Active object must be a camera (any camera — no metadata gate).
+        # Bridge reachability is checked in invoke() so F3-search can
+        # exercise the failure popup.
+        obj = context.active_object
+        return obj is not None and getattr(obj, "type", None) == "CAMERA"
+
+    def _get_action_items(self, ctx):
+        """Build the EnumProperty items list. Called by Blender on every
+        draw — uses self._cached_actions populated in invoke() so we don't
+        re-probe on every draw frame."""
+        items = getattr(self, "_cached_actions", None) or []
+        result = [(name, name, "") for name in items]
+        result.append((
+            "__create_new__",
+            "-- Create New --",
+            "Create a new Action in Flame",
+        ))
+        return result
+
+    def invoke(self, context, event):
+        # Probe Flame for live Actions before showing the dialog.
+        try:
+            self._cached_actions = transport.list_batch_actions()
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout):
+            msg = (
+                "forge-bridge not reachable at http://127.0.0.1:9999 — "
+                "is Flame running with the Camera Calibrator hook loaded?"
+            )
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+        except requests.exceptions.RequestException as exc:
+            msg = (f"forge-bridge request failed — "
+                   f"{type(exc).__name__}: {exc}")
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+        except RuntimeError as exc:
+            msg = f"forge-bridge error: {exc}"
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+        return context.window_manager.invoke_props_dialog(self, width=360)
+
+    def draw(self, context):
+        layout = self.layout
+        layout.prop(self, "target_action")
+        if self.target_action == "__create_new__":
+            layout.prop(self, "new_action_name")
+
+    def execute(self, context):
+        cam = context.active_object
+
+        # Resolve the target Action name — either pick existing or create new.
+        if self.target_action == "__create_new__":
+            new_name = self.new_action_name.strip()
+            if not new_name:
+                msg = (
+                    "New Action name cannot be empty — enter a name and "
+                    "try again"
+                )
+                self.report({'ERROR'}, msg)
+                _popup(context, msg)
+                return {'CANCELLED'}
+
+            # POST the create-Action payload. Name is embedded via repr()
+            # inside make_create_code (security T-04.4-04 / V5 ASVS L1).
+            try:
+                response = requests.post(
+                    transport.BRIDGE_URL,
+                    json={"code": transport.make_create_code(new_name)},
+                    timeout=transport.DEFAULT_TIMEOUT_S,
+                )
+                response.raise_for_status()
+                envelope = response.json()
+            except (requests.exceptions.ConnectionError,
+                    requests.exceptions.Timeout):
+                msg = (
+                    "forge-bridge not reachable at http://127.0.0.1:9999 — "
+                    "is Flame running with the Camera Calibrator hook loaded?"
+                )
+                self.report({'ERROR'}, msg)
+                _popup(context, msg)
+                return {'CANCELLED'}
+            except requests.exceptions.RequestException as exc:
+                msg = (f"forge-bridge request failed — "
+                       f"{type(exc).__name__}: {exc}")
+                self.report({'ERROR'}, msg)
+                _popup(context, msg)
+                return {'CANCELLED'}
+
+            err = envelope.get("error", "") or ""
+            if "Could not set Batch node name" in err:
+                # RESEARCH §P-03: Flame raises RuntimeError on Action name
+                # collision — name.set_value() does NOT auto-suffix.
+                msg = (
+                    f"An Action named '{new_name}' already exists in this "
+                    f"Batch — choose a different name and try again"
+                )
+                self.report({'ERROR'}, msg)
+                _popup(context, msg)
+                return {'CANCELLED'}
+            if err:
+                err_msg, _ = transport.parse_envelope(envelope)
+                self.report({'ERROR'}, err_msg)
+                _popup_multiline(context, err_msg)
+                return {'CANCELLED'}
+
+            # Bridge returned the created Action's name (repr of a str).
+            try:
+                target_name = ast.literal_eval(envelope["result"])
+            except (ValueError, SyntaxError, KeyError):
+                msg = (
+                    f"forge-bridge returned malformed create-Action result: "
+                    f"{envelope.get('result')!r}"
+                )
+                self.report({'ERROR'}, msg)
+                _popup(context, msg)
+                return {'CANCELLED'}
+            created_new_action = True
+        else:
+            target_name = self.target_action
+            created_new_action = False
+
+        # D-19 frame-rate ladder — same as the stamped-camera path.
+        frame_rate, fps_err = _resolve_frame_rate(cam, context)
+        if fps_err is not None:
+            self.report({'ERROR'}, fps_err)
+            _popup(context, fps_err)
+            return {'CANCELLED'}
+
+        # Build the v5 payload. Inject custom_properties with the resolved
+        # target Action name so the Flame-side template knows where to
+        # land the camera. The Blender-camera name becomes the cam name
+        # inside the target Action.
+        payload_dict = flame_math.build_v5_payload(cam, scale_override=None)
+        payload_dict["custom_properties"] = {
+            "forge_bake_action_name": target_name,
+            "forge_bake_camera_name": cam.name,
+        }
+        v5_json_str = json.dumps(payload_dict)
+
+        try:
+            envelope = transport.send(v5_json_str, frame_rate=frame_rate)
+        except (requests.exceptions.ConnectionError,
+                requests.exceptions.Timeout):
+            msg = (
+                "forge-bridge not reachable at http://127.0.0.1:9999 — "
+                "is Flame running with the Camera Calibrator hook loaded?"
+            )
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+        except requests.exceptions.RequestException as exc:
+            msg = (f"forge-bridge request failed — "
+                   f"{type(exc).__name__}: {exc}")
+            self.report({'ERROR'}, msg)
+            _popup(context, msg)
+            return {'CANCELLED'}
+
+        err_msg, result = transport.parse_envelope(envelope)
+        if err_msg is not None:
+            self.report({'ERROR'}, err_msg)
+            _popup_multiline(context, err_msg)
+            return {'CANCELLED'}
+
+        action_name = (result or {}).get("action_name", target_name)
+        created = (result or {}).get("created") or []
+        if len(created) == 1:
+            cam_label = created[0]
+        elif len(created) > 1:
+            cam_label = ", ".join(f"'{n}'" for n in created)
+        else:
+            cam_label = "<unknown>"
+
+        if created_new_action:
+            msg = (f"Sent to Flame: camera '{cam_label}' "
+                   f"in new Action '{action_name}'")
+        else:
+            msg = (f"Sent to Flame: camera '{cam_label}' "
+                   f"in Action '{action_name}'")
+        self.report({'INFO'}, msg)
+        _popup(context, msg, level='INFO')
+        return {'FINISHED'}
+
+
+# =============================================================================
 # Panel
 # =============================================================================
 
@@ -329,19 +575,30 @@ class VIEW3D_PT_forge_sender(bpy.types.Panel):
             layout.separator()
             layout.operator("forge.send_to_flame", icon='EXPORT')
         else:
-            # Disabled state — UI-SPEC §Row order (preflight Tier 1 failure).
-            # row.alert renders in Blender's theme-defined "warning red";
-            # icon='ERROR' reinforces (D-15 co-occurrence rule).
+            # Disabled state — UI-SPEC §B-1 (Phase 04.4):
+            # show the warning row, the disabled existing button (kept for
+            # muscle memory), AND the new enabled "choose Action" button
+            # below it. Both buttons are visible simultaneously per D-04.
             row = layout.row()
             row.alert = True
-            row.label(text="Not a Flame-baked camera", icon='ERROR')
+            row.label(
+                text="No Flame metadata — choose a target Action",
+                icon='ERROR')
             layout.separator()
-            # Explicitly disable the Send button in the panel while
-            # keeping the operator itself callable via F3 / search /
-            # bpy.ops (so Plan 02-04 Task 3 can exercise the popups).
+
+            # Existing disabled button — preserved for users switching
+            # between stamped and unstamped cameras.
             col = layout.column()
             col.enabled = False
             col.operator("forge.send_to_flame", icon='EXPORT')
+
+            # NEW (Phase 04.4 D-07): enabled fallback button — opens
+            # the choose-Action dialog. Operator's poll() returns True
+            # when active object is a CAMERA, so this row enables/
+            # disables automatically based on selection.
+            layout.operator(
+                "forge.send_to_flame_choose_action",
+                icon='EXPORT')
 
 
 # =============================================================================
@@ -349,7 +606,11 @@ class VIEW3D_PT_forge_sender(bpy.types.Panel):
 # =============================================================================
 
 
-_CLASSES = (FORGE_OT_send_to_flame, VIEW3D_PT_forge_sender)
+_CLASSES = (
+    FORGE_OT_send_to_flame,
+    FORGE_OT_send_to_flame_choose_action,
+    VIEW3D_PT_forge_sender,
+)
 
 
 def register():
