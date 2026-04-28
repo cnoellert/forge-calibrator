@@ -38,10 +38,23 @@ Flame↔Blender round-trip must preserve that fidelity end-to-end.**
 
 ## Install
 
-- Run `./install.sh` (macOS/Linux; requires the forge conda env). Idempotent —
-  safe to re-run for incremental updates. The installer purges stale `.pyc`
-  bytecode across `camera_match/`, `forge_core/`, and `forge_flame/` to prevent
-  Flame from serving outdated modules between deploys.
+### One-time prerequisite — `forge` conda env
+
+```bash
+conda env create -f forge-env.yml
+# or (if `forge` already exists with stale deps):
+conda env update -f forge-env.yml --prune
+```
+
+The env carries Python 3.11 + numpy + opencv-python. `install.sh` looks for it
+at `$HOME/miniconda3/envs/forge` by default; override with `FORGE_ENV=<path>`.
+
+### Per-machine install
+
+- Run `./install.sh` (macOS/Linux). Idempotent — safe to re-run for
+  incremental updates. The installer purges stale `.pyc` bytecode across
+  `camera_match/`, `forge_core/`, and `forge_flame/` to prevent Flame from
+  serving outdated modules between deploys.
 - Install the Blender addon: in Blender → Edit → Preferences → Add-ons →
   Install from file → select `tools/blender/forge_sender-v1.3.4.zip` → enable
   "Forge: Send Camera to Flame".

@@ -18,8 +18,21 @@ keyframes preserved. No alt-tab to Flame's batch menu for the return trip.
 
 ### For pipeline TDs
 
-Run `./install.sh` from the repo root. The installer performs preflight checks before
-deploying anything:
+**One-time:** create the forge conda env from the repo recipe:
+
+```bash
+conda env create -f forge-env.yml
+# or, if `forge` already exists with stale deps:
+conda env update -f forge-env.yml --prune
+```
+
+The env carries Python 3.11 + numpy + opencv-python (cv2 for Camera-Match
+overlay rendering, numpy for the solver). `install.sh` looks for it at
+`$HOME/miniconda3/envs/forge` by default; override with
+`FORGE_ENV=<absolute path> ./install.sh`.
+
+**Per machine:** run `./install.sh` from the repo root. The installer performs
+preflight checks before deploying anything:
 
 - forge conda environment (`$FORGE_ENV`, defaults to `~/miniconda3/envs/forge`)
 - Wiretap CLI at `/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame`
