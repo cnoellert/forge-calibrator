@@ -856,17 +856,17 @@ def _merge_curves(
         any_keyed = any(c.times for c in (tx, ty, tz, rx, ry, rz, fov))
 
     if not any_keyed:
-        frame = frame_offset
-        # Clip AFTER the offset so the comparison is against the
-        # user-facing plate frame number. Symmetric with the keyed
-        # path below; in practice the static case rarely trips either
-        # guard (a static camera in an offset-inverted batch is
-        # degenerate), but apply for defensive correctness. STRICT
-        # ``<`` preserves the INCLUSIVE lower bound — ``frame ==
-        # frame_start`` is kept. Filter order matches the signature
-        # order (``frame_start`` first, then ``frame_end``).
-        if frame_start is not None and frame < frame_start:
-            return []
+        # Static-camera fallback. The keyed path emits the FBX KTime 0
+        # pre-roll at ``frame_offset`` (= start_frame - 1, then dropped
+        # by the frame_start guard) and the first real sample at
+        # ``frame_offset + 1`` = start_frame. There is no pre-roll for a
+        # static camera, so emit the single fallback at start_frame
+        # directly: pre-260427-uat the static-fallback used
+        # ``frame = frame_offset`` and was always dropped by the
+        # ``frame < frame_start`` guard, producing ``frames=[]`` in the
+        # standard hook call (frame_offset=start_frame-1, frame_start=start_frame).
+        # When frame_start is None (no batch info), fall back to frame_offset.
+        frame = frame_start if frame_start is not None else frame_offset
         if frame_end is not None and frame > frame_end:
             return []
         sp = cam.static_position

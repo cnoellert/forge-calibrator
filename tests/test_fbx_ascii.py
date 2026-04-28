@@ -1639,6 +1639,85 @@ class TestFbxToV5JsonFrameStart:
         )
 
 
+class TestMergeCurvesStaticFallbackFrameStart:
+    """Static-fallback path of ``_merge_curves`` when no animation curves
+    exist on the camera. Regression for GAP-04.4-UAT-06 (2026-04-27): the
+    static-fallback emitted at ``frame = frame_offset`` (= start_frame - 1
+    in the standard hook call), then immediately dropped that frame
+    against the ``frame < frame_start`` guard, producing ``frames=[]``
+    and tripping the Blender bake script's "no frames in JSON" error.
+
+    Pre-fix the static-fallback was effectively unusable for any caller
+    that passed both ``frame_offset = start_frame - 1`` and
+    ``frame_start = start_frame`` — the standard hook pairing. Live-UAT
+    surfaced this on a Camera-scope right-click of a static aim-rig
+    camera in action11; Flame's ``export_fbx(bake_animation=True)``
+    produced an FBX with empty AnimationStack/Layer blocks, so the
+    static-fallback was the only path that could emit a frame, and it
+    dropped it.
+    """
+
+    def _camera_no_curves(self):
+        """Construct an in-memory _CameraExtract with no animation
+        curve IDs — exercises the ``not any_keyed`` branch."""
+        from forge_flame.fbx_ascii import _CameraExtract  # noqa: E402
+        return _CameraExtract(
+            name="Default",
+            model_id=1,
+            node_attr_id=0,
+            field_of_view=40.0,
+            film_width_inches=0.944,
+            film_height_inches=0.629,
+            static_position=(10.0, 20.0, 30.0),
+            static_rotation=(1.0, 2.0, 3.0),
+        )
+
+    def test_static_fallback_emits_at_frame_start_when_set(self):
+        """Pre-fix: ``frame_offset=1000, frame_start=1001`` → frames=[]
+        because ``frame_offset < frame_start`` always. Post-fix: emit
+        at ``frame_start`` so the lone static frame survives the
+        INCLUSIVE-lower-bound clip."""
+        from forge_flame.fbx_ascii import _merge_curves  # noqa: E402
+        cam = self._camera_no_curves()
+        frames = _merge_curves(
+            cam, root=[], frame_rate="24 fps",
+            frame_offset=1000, frame_start=1001,
+        )
+        assert len(frames) == 1, (
+            f"static-fallback must emit one frame at frame_start when "
+            f"frame_start is set; got {frames!r}"
+        )
+        assert frames[0]["frame"] == 1001, (
+            f"static-fallback frame should be frame_start (1001), not "
+            f"frame_offset (1000); got {frames[0]['frame']!r}"
+        )
+
+    def test_static_fallback_falls_back_to_frame_offset_when_no_start(self):
+        """When frame_start is None, preserve pre-fix behaviour: emit at
+        frame_offset (typically 0). Caller has no batch-frame info, so
+        a zero-based emit is the correct default."""
+        from forge_flame.fbx_ascii import _merge_curves  # noqa: E402
+        cam = self._camera_no_curves()
+        frames = _merge_curves(
+            cam, root=[], frame_rate="24 fps",
+            frame_offset=0, frame_start=None,
+        )
+        assert len(frames) == 1
+        assert frames[0]["frame"] == 0
+
+    def test_static_fallback_respects_frame_end_clip(self):
+        """frame_end clip still applies: emit at frame_start, but if
+        frame_end < frame_start, return []. (Degenerate batch — no real
+        batch will set this, but the guard must still fire.)"""
+        from forge_flame.fbx_ascii import _merge_curves  # noqa: E402
+        cam = self._camera_no_curves()
+        frames = _merge_curves(
+            cam, root=[], frame_rate="24 fps",
+            frame_offset=1000, frame_start=1001, frame_end=1000,
+        )
+        assert frames == []
+
+
 # =============================================================================
 # Group 9: fbx_to_v5_json — frame_rate top-level key emit (Plan 04.1-02)
 # =============================================================================
