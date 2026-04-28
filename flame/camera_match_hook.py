@@ -896,7 +896,18 @@ def _open_camera_match(clip):
             return out
 
         def _plane_basis(self):
-            """Return two unit world-axis vectors that span the VP-defined plane."""
+            """Return two unit world-axis vectors that span the VP-defined plane,
+            plus the +world-direction of the missing third axis.
+
+            The third axis is always the +direction of the missing world-axis
+            letter, NOT cross(a, b). cross(a, b) is sign-flipped on anti-cyclic
+            letter pairs (X-Z, Y-X, Z-Y) — using it here would draw the
+            third-axis arrow in the OPPOSITE direction from what its
+            "+missing-letter" label downstream (line ~1040) implies. The
+            solver's own world-axis math (forge_core/solver/solver.py:
+            axis_assignment_matrix) is on a different code path and is
+            unaffected by this overlay choice.
+            """
             import numpy as np
             # Axis index // 2: 0 → X family, 1 → Y, 2 → Z
             ax_vecs = [
@@ -904,10 +915,12 @@ def _open_camera_match(clip):
                 np.array([0.0, 1.0, 0.0]),  # Y
                 np.array([0.0, 0.0, 1.0]),  # Z
             ]
-            a = ax_vecs[self.ax1 // 2]
-            b = ax_vecs[self.ax2 // 2]
-            # Third axis is the out-of-plane direction (useful to indicate)
-            c = np.cross(a, b)
+            a_idx = self.ax1 // 2
+            b_idx = self.ax2 // 2
+            a = ax_vecs[a_idx]
+            b = ax_vecs[b_idx]
+            third_idx = ({0, 1, 2} - {a_idx, b_idx}).pop()
+            c = ax_vecs[third_idx]
             return a, b, c
 
         def _plane_label(self):
