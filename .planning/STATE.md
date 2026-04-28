@@ -2,16 +2,16 @@
 gsd_state_version: 1.0
 milestone: v6.3
 milestone_name: milestone
-status: executing
-stopped_at: Completed 04.4-04-PLAN.md (Wave 3 addon extension); Task 4 awaiting human UAT — 11 scenarios after v1.3.0 zip repackage + reinstall
-last_updated: "2026-04-27T19:10:17.275Z"
-last_activity: 2026-04-27 -- Phase 04.4 execution started
+status: between_phases
+stopped_at: Phase 04.4 complete (HUMAN-UAT pass + 6 GAP-04.4-UAT-* closures); cold-install verification on flame-01 surfaced 4 next-cycle todos to triage
+last_updated: "2026-04-28T15:48:22.645Z"
+last_activity: 2026-04-28
 progress:
   total_phases: 10
-  completed_phases: 7
+  completed_phases: 8
   total_plans: 26
-  completed_plans: 25
-  percent: 96
+  completed_plans: 26
+  percent: 100
 ---
 
 # Project State
@@ -21,22 +21,22 @@ progress:
 See: .planning/PROJECT.md (updated 2026-04-19)
 
 **Core value:** The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.
-**Current focus:** Phase 04.4 — tester-rollout-polish-forge-ui-style-on-multi-camera-picker-
+**Current focus:** Triage 4 cold-install todos surfaced on flame-01 (camera-scope NoneType regression, VP solver X+Z pair, preview channel-order cast, wiretap "No route to host"); 999.x backlog deferred until triage routes work into a numbered phase.
 
 ## Current Position
 
-Phase: 04.4 (tester-rollout-polish-forge-ui-style-on-multi-camera-picker-) — EXECUTING
-Plan: 1 of 7
-Status: Executing Phase 04.4
-Last activity: 2026-04-27 -- Phase 04.4 execution started
+Phase: 04.4 complete; between phases
+Plan: —
+Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
+Last activity: 2026-04-28 -- closed Phase 04.4
 
-Progress: [██████░░░░] 60% (3 of 5 phases complete)
+Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
 ## Performance Metrics
 
 **Velocity:**
 
-- Total plans completed: 13
+- Total plans completed: 20
 - Average duration: —
 - Total execution time: —
 
@@ -49,6 +49,7 @@ Progress: [██████░░░░] 60% (3 of 5 phases complete)
 | 03 | 2 | - | - |
 | 04 | 2 | - | - |
 | 04.3 | 1 | - | - |
+| 04.4 | 7 | - | - |
 
 **Recent Trend:**
 
