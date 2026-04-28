@@ -480,11 +480,17 @@ _sync_dir "$SOURCE_FORGE_FLAME"      "$FORGE_FLAME_DEST"      "forge_flame"
 # tree (bake, extract, forge_sender/) because Flame never imports from here.
 _sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
 
-# nuke pycache so Flame doesn't serve stale bytecode
-if [[ -d "$TARGET_PYCACHE" ]]; then
-  run "rm -rf \"$TARGET_PYCACHE\""
-  ok "cleared $TARGET_PYCACHE"
-fi
+# nuke pycache across camera_match + sibling forge_core/forge_flame trees so
+# Flame doesn't serve stale bytecode. Pre-260427 this only purged
+# camera_match/__pycache__; UAT GAP-04.4-UAT-04 (round 2) hit a stale .pyc in
+# forge_flame/__pycache__ that masked a Plan 04.4-07 source update and produced
+# a misleading 'NoneType' object is not callable in the hook callback. The
+# rsync --exclude above keeps dev-side .pyc out of the install, but Flame
+# regenerates .pyc at import time — so any stale .pyc that Flame wrote on its
+# previous boot can outlive a new source drop. See
+# memory/flame_install_pycache_gap.md.
+run "find \"$INSTALL_DIR\" \"$FORGE_CORE_DEST\" \"$FORGE_FLAME_DEST\" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true"
+ok "cleared __pycache__ across camera_match + forge_core + forge_flame"
 
 # ---- done ---------------------------------------------------------------------
 step "Done"
