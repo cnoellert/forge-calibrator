@@ -23,15 +23,27 @@ Flame↔Blender round-trip must preserve that fidelity end-to-end.**
   exits when Flame quits. No manual process management. See
   [docs/seamless-bridge.md#how-forge-bridge-autostart-works](docs/seamless-bridge.md#how-forge-bridge-autostart-works).
 - **Blender "Send to Flame" addon** — a one-click button in the Blender 3D viewport
-  N-panel (Forge tab) posts the edited camera back to the target Action. See
+  N-panel (Forge tab) posts the edited camera back to the target Action. Pick an
+  existing Action from a dropdown or create a new one inline. See
   [docs/seamless-bridge.md#install](docs/seamless-bridge.md#install) for install
   steps.
+- **Camera-node right-click in Action schematic** — right-click a Camera node
+  inside an Action's schematic editor → FORGE → Camera → Export Camera to
+  Blender, bypassing the picker. Works for both Camera and Camera 3D variants.
+- **Collision-guard on stamped-camera return-trip** — the rename block that
+  applies the Blender-side camera name to the imported Flame camera now skips
+  the rename when the target name is already taken by a sibling, preventing
+  the SIGSEGV that would otherwise occur on stamped-camera round-trips
+  through populated Actions.
 
 ## Install
 
-- Run `./install.sh` (macOS/Linux; requires the forge conda env).
+- Run `./install.sh` (macOS/Linux; requires the forge conda env). Idempotent —
+  safe to re-run for incremental updates. The installer purges stale `.pyc`
+  bytecode across `camera_match/`, `forge_core/`, and `forge_flame/` to prevent
+  Flame from serving outdated modules between deploys.
 - Install the Blender addon: in Blender → Edit → Preferences → Add-ons →
-  Install from file → select `tools/blender/forge_sender-v1.2.0.zip` → enable
+  Install from file → select `tools/blender/forge_sender-v1.3.4.zip` → enable
   "Forge: Send Camera to Flame".
 - See [docs/seamless-bridge.md#install](docs/seamless-bridge.md#install) for the
   detailed walkthrough covering preflight checks, what deploys where, and the full

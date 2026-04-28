@@ -51,12 +51,13 @@ without `--force`.
 ### For artists
 
 1. In Blender: Edit → Preferences → Add-ons → Install from file → select
-   `tools/blender/forge_sender-v1.2.0.zip` from your forge-calibrator checkout.
+   `tools/blender/forge_sender-v1.3.4.zip` from your forge-calibrator checkout.
 2. Enable **Forge: Send Camera to Flame** in the Add-ons list.
 3. Open the 3D viewport's N-panel (press N) — you should see a **Forge** tab with a
    **Send to Flame** button.
-4. Confirm the addon panel reports version `1.2.0`. (Older v1.0.0 / v1.1.x builds
-   carried bugs — Phase 04.3's aim-rig rotation fix shipped in v1.2.0.)
+4. Confirm the addon panel reports version `1.3.4`. (Older v1.0.x / v1.1.x / v1.2.x
+   builds carried bugs — Phase 04.3's aim-rig rotation fix shipped in v1.2.0;
+   Phase 04.4's choose-Action dropdown + collision-guard hot-fix ships in v1.3.4.)
 5. No further setup required. forge-bridge starts automatically when Flame boots.
 
 ## How forge-bridge autostart works
@@ -85,15 +86,33 @@ curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"
 
 1. In Flame: right-click the target Action → FORGE → Camera → **Export Camera to
    Blender**. Blender opens with the baked camera. No dialog prompts, no save-path
-   selection.
+   selection. (Or: right-click a Camera node directly inside the Action's
+   schematic → FORGE → Camera → Export Camera to Blender — bypasses the picker
+   when the Action has multiple cameras.)
 2. In Blender: edit the camera — move it, rotate it, scrub or add keyframes.
 3. Open the N-panel (N key) → **Forge** tab → click **Send to Flame**.
-4. On success, a popup reads `Sent to Flame: camera <name> in Action <action-name>`.
+4. If the camera was originally baked from a Flame Action, it ships back to that
+   same Action automatically (the bake stamps `forge_bake_action_name` /
+   `forge_bake_camera_name` into the .blend's custom properties). For
+   never-baked cameras, a dialog appears: pick a target Action from the
+   dropdown, or choose `-- Create New --` and type a name.
+5. On success, a popup reads `Sent to Flame: camera <name> in Action <action-name>`.
    The updated camera appears in the target Action in Flame with keyframes preserved.
 
 You never have to return to Flame's batch menu to trigger the import. If the popup
 shows an error instead of the success message, see [Troubleshooting](#troubleshooting)
 below.
+
+## Multi-camera Apply Camera flow
+
+When the line-tool calibration window is open and the target Action contains 2+
+non-Perspective cameras, clicking **Apply Camera** surfaces a FORGE-styled picker
+dialog (em-dash window title `FORGE — Select Camera`, double-click-to-accept,
+Enter accepts, Escape cancels). The dialog uses the FORGE palette (#282c34
+background, #E87E24 accent) — no Qt default `QInputDialog` appears anywhere in
+the hook flow.
+
+When the Action has 0 or 1 non-Perspective cameras, no dialog appears.
 
 ## Troubleshooting
 
@@ -192,6 +211,58 @@ that did not shut down cleanly, or an unrelated service — is holding port 9999
 3. Restart Flame — the bridge starts cleanly on the freed port.
 4. If the conflict recurs, check for a second Flame instance running on the same
    workstation.
+
+---
+
+### Symptom: Camera-node right-click on a Camera 3D shows no FORGE → Camera menu
+
+**Likely cause:** Pre-Phase-04.4 builds filtered cameras by exact-string match
+`item.type == "Camera"`, which excluded the `"Camera 3D"` type variant — the
+menu silently never appeared on 3D-camera right-clicks.
+
+**Fix:** Update to v6.3 (Phase 04.4 or later). The post-fix filter uses an
+explicit allowlist `("Camera", "Camera 3D")` in both
+`_scope_action_camera` and `_first_camera_in_action_selection`. After
+`./install.sh` and Flame restart, the menu surfaces on both Camera and
+Camera 3D right-clicks.
+
+---
+
+### Symptom: Right-click → Export Camera to Blender → "Failed to write FBX: 'NoneType' object is not callable"
+
+**Two distinct causes** share this error signature; rule out both before
+escalating.
+
+**Cause A — stale `__pycache__`:** Pre-260427 builds of `install.sh` only
+purged `camera_match/__pycache__`, not the sibling `forge_core/` and
+`forge_flame/` pycaches. Flame would load stale `.pyc` files for
+`forge_flame.fbx_io` even after a clean re-install, masking source updates
+and surfacing as a misleading NoneType error inside the export pipeline.
+
+**Fix:** Update to v6.3 (Phase 04.4 or later). The current `install.sh` runs
+a recursive `__pycache__` purge across all three sibling trees on every
+deploy. Existing installs can be force-cleaned manually:
+
+```bash
+find /opt/Autodesk/shared/python/forge_flame /opt/Autodesk/shared/python/forge_core \
+    -name __pycache__ -type d -exec rm -rf {} +
+# then restart Flame
+```
+
+**Cause B — `PyActionFamilyNode` wrapper:** When right-clicking a Camera
+inside an Action's schematic, Flame can occasionally expose the containing
+Action as `PyActionFamilyNode` (a base-class wrapper that lacks
+`export_fbx`). The post-Phase-04.4 fast-path filter in
+`_first_camera_in_action_selection` detects this — it requires
+`callable(getattr(parent, "export_fbx", None))` before accepting
+`cam.parent` as the resolution result. If the broken proxy is detected,
+the helper falls through to the `flame.batch.nodes` scan, which usually
+returns the healthy `PyActionNode` for the same name.
+
+**If you still see the error** after upgrading to v6.3 and re-installing,
+do a full Flame restart. The `PyActionFamilyNode` exposure can be a
+transient state from an earlier crash; a clean Flame boot consistently
+resolves it.
 
 ---
 
