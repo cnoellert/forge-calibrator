@@ -156,8 +156,11 @@ class _FakeCameraNode(_PyCoNode):
     scope helper must avoid.
     """
 
-    def __init__(self, name="Default"):
-        self.type = "Camera"
+    def __init__(self, name="Default", cam_type="Camera"):
+        # `cam_type` defaults to "Camera" so existing fixtures match the
+        # free-camera shape; pass cam_type="Camera 3D" to exercise the
+        # GAP-04.4-UAT-05 (3D-camera variant) allowlist branch.
+        self.type = cam_type
         self.name = _FakeAttr(name)
 
 
@@ -240,6 +243,49 @@ def test_scope_action_camera_handles_per_item_exception():
     assert _hook_module._scope_action_camera([bad, good]) is True
 
 
+def test_scope_action_camera_true_for_camera_3d():
+    """GAP-04.4-UAT-05: Flame distinguishes "Camera" (free) from
+    "Camera 3D" (3D rig). Both round-trip cleanly through
+    `action.export_fbx(only_selected_nodes=True)` (verified via bridge
+    probe 2026-04-27 on ACTION_TEST/Camera1 — 29429-byte FBX). The pre-
+    fix exact-string match `item.type == "Camera"` excluded Camera 3D
+    silently, so the FORGE → Camera menu never surfaced on a 3D camera
+    right-click. Post-fix uses an explicit allowlist
+    ``("Camera", "Camera 3D")`` so both variants get the menu.
+    """
+    if not _scope_helper_implemented():
+        pytest.skip(_WAVE1_SKIP_REASON)
+    item = _FakeCameraNode(name="Camera1", cam_type="Camera 3D")
+    assert _hook_module._scope_action_camera([item]) is True
+
+
+def test_first_camera_in_action_selection_accepts_camera_3d(monkeypatch):
+    """Companion to test_scope_action_camera_true_for_camera_3d:
+    `_first_camera_in_action_selection`'s selection filter must also
+    accept "Camera 3D" so the right-click handler can resolve the
+    cam → action pair after the menu surfaces. Pre-fix the same
+    exact-string match excluded 3D cameras at the resolution stage too,
+    so even with a hypothetical scope override the helper would return
+    (None, None).
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="Camera1", cam_type="Camera 3D")
+    cam.parent = None  # force fallback so we exercise the type filter
+
+    action_target = _FakeActionNode("OwningAction", child_nodes=[cam])
+
+    class _Batch:
+        nodes = [action_target]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
+    assert action_node is action_target
+    assert cam_node is cam
+
+
 # ---------------------------------------------------------------------------
 # Tests — _first_camera_in_action_selection rewrite (Plan 04.4-07 / GAP-1).
 # Two paths under test: (1) cam.parent works → fast path returns (parent, cam).
@@ -287,10 +333,24 @@ class _FakeActionNode:
     handles both shapes.
     """
 
-    def __init__(self, name, child_nodes):
+    _UNSET = object()
+
+    def __init__(self, name, child_nodes, export_fbx=_UNSET):
         self.type = _FakeAttr("Action")  # batch-context PyAttribute
         self.name = _FakeAttr(name)
         self.nodes = list(child_nodes)
+        # `export_fbx` is the discriminator the fast path uses to detect
+        # the broken proxy described in GAP-04.4-UAT-04 (round 2). A
+        # healthy PyActionNode exposes export_fbx as a callable; the
+        # broken hook-context proxy exposes it as None. Default to a
+        # no-op callable so existing fast-path fixtures match the
+        # healthy shape. Tests can pass `export_fbx=None` to simulate
+        # the broken proxy (sentinel _UNSET vs explicit None lets us
+        # distinguish "default" from "explicitly broken").
+        if export_fbx is _FakeActionNode._UNSET:
+            self.export_fbx = lambda *args, **kwargs: True
+        else:
+            self.export_fbx = export_fbx
 
 
 def test_first_camera_parent_works_returns_fast_path_tuple(monkeypatch):
@@ -323,6 +383,50 @@ def test_first_camera_parent_works_returns_fast_path_tuple(monkeypatch):
 
     action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
     assert action_node is fake_parent
+    assert cam_node is cam
+
+
+def test_first_camera_parent_with_broken_export_fbx_falls_back(monkeypatch):
+    """Fallback path #3: cam.parent returns an object with .nodes but
+    `.export_fbx is None` → helper falls through to batch.nodes scan.
+
+    This is the GAP-04.4-UAT-04 (round 2) live-UAT case: in hook
+    callback context on Flame 2026.2.1 arm64 macOS, cam.parent returns
+    a proxy whose .nodes is populated but whose .export_fbx is None.
+    The pre-fix fast-path filter (`hasattr(parent, "nodes")`) accepted
+    that proxy, so `action.export_fbx(...)` later in the export pipeline
+    raised `'NoneType' object is not callable`. The post-fix filter adds
+    `callable(getattr(parent, "export_fbx", None))` so the broken proxy
+    falls through to the scan, which returns the healthy PyActionNode
+    that batch.nodes exposes.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="MyCam")
+    # Broken proxy: .nodes present, .export_fbx is None (matches the
+    # live failure shape). Must be a different OBJECT than the healthy
+    # action_target so the identity check on cam_node still works
+    # downstream — the broken proxy's .nodes does NOT contain cam (we
+    # only test identity in the scan path, and the scan looks at
+    # batch.nodes not parent.nodes).
+    broken_parent = _FakeActionNode(
+        "BrokenProxy", child_nodes=[cam], export_fbx=None,
+    )
+    cam.parent = broken_parent
+
+    action_target = _FakeActionNode("HealthyAction", child_nodes=[cam])
+
+    class _Batch:
+        nodes = [action_target]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection([cam])
+    assert action_node is action_target, (
+        "broken-proxy fast-path must fall through to scan; got "
+        f"{action_node!r} (broken_parent={broken_parent!r})"
+    )
     assert cam_node is cam
 
 

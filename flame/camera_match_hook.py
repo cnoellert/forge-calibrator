@@ -1865,12 +1865,19 @@ def _scope_action_camera(selection):
     menu silently never appears. The Wave 0 test
     test_scope_action_camera_does_not_call_get_value_on_type guards
     against re-introducing the .get_value() call.
+
+    Camera variants (GAP-04.4-UAT-05, 2026-04-27): Flame distinguishes
+    `"Camera"` (free) from `"Camera 3D"` (3D rig). Both expose the same
+    position/rotation/fov/focal API and both round-trip cleanly through
+    `action.export_fbx(only_selected_nodes=True)` (verified via bridge
+    probe). Allowlist both type strings here so the menu surfaces on
+    either variant.
     """
     import flame
     for item in selection:
         try:
             if (isinstance(item, flame.PyCoNode)
-                    and item.type == "Camera"
+                    and item.type in ("Camera", "Camera 3D")
                     and item.name.get_value() != "Perspective"):
                 return True
         except Exception:
@@ -1916,7 +1923,7 @@ def _first_camera_in_action_selection(selection):
     for item in selection:
         try:
             if not (isinstance(item, flame.PyCoNode)
-                    and item.type == "Camera"
+                    and item.type in ("Camera", "Camera 3D")
                     and item.name.get_value() != "Perspective"):
                 continue
         except Exception:
@@ -1925,12 +1932,20 @@ def _first_camera_in_action_selection(selection):
         # Fast path: cam.parent. Wrapped because hook callback context
         # has been observed to produce a parent whose .nodes is missing
         # or whose chained API resolves to None (HUMAN-UAT GAP-1).
+        # Live UAT 2026-04-27 (GAP-04.4-UAT-04 round 2) showed that the
+        # broken proxy still exposes .nodes — only `.export_fbx is None`
+        # distinguishes it from a healthy PyActionNode. Without the
+        # export_fbx callable check, the fast path returns a parent that
+        # crashes downstream in `fbx_io.export_action_cameras_to_fbx` with
+        # `'NoneType' object is not callable` on `action.export_fbx(...)`.
         parent = None
         try:
             parent = item.parent
         except Exception:
             parent = None
-        if parent is not None and hasattr(parent, "nodes"):
+        if (parent is not None
+                and hasattr(parent, "nodes")
+                and callable(getattr(parent, "export_fbx", None))):
             return parent, item
 
         # Fallback: scan flame.batch.nodes for the Action whose .nodes
