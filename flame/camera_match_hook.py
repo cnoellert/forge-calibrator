@@ -1885,6 +1885,46 @@ def _scope_action_camera(selection):
     return False
 
 
+def _find_cam_in_action_nodes(action, cam_name):
+    """Return the first non-Perspective Camera in ``action.nodes`` whose
+    name matches ``cam_name``, or None if no match.
+
+    Used by ``_first_camera_in_action_selection`` Steps 2 and 3 to obtain
+    the camera wrapper from ``action.nodes`` after resolving the Action
+    by name. Downstream ``action.selected_nodes.set_value([cam])`` needs
+    the wrapper that lives in ``action.nodes`` — set_value silently
+    no-ops when handed a wrapper from a different context (e.g. the cam
+    object Flame surfaces in a hook-selection list), which produces an
+    empty FBX and cascades to "no cameras found named '<X>'" downstream.
+
+    `cam_name` may be None (caller couldn't read it) — in that case we
+    still return the first non-Perspective Camera in action.nodes as a
+    last-ditch fallback. This is best-effort; the caller still has the
+    diagnostic-write path on total failure.
+    """
+    if action is None or not hasattr(action, "nodes"):
+        return None
+    try:
+        for inode in action.nodes:
+            try:
+                t = inode.type
+                t_val = t.get_value() if hasattr(t, "get_value") else str(t)
+                if t_val not in ("Camera", "Camera 3D"):
+                    continue
+                n_name = (inode.name.get_value()
+                          if hasattr(inode.name, "get_value")
+                          else str(inode.name))
+                if n_name == "Perspective":
+                    continue
+                if cam_name is None or n_name == cam_name:
+                    return inode
+            except Exception:
+                continue
+    except Exception:
+        return None
+    return None
+
+
 def _first_camera_in_action_selection(selection):
     """Return (action_node, cam_node) for the first non-Perspective Camera
     in selection, or (None, None) if no such item.
@@ -1963,27 +2003,47 @@ def _first_camera_in_action_selection(selection):
                                else str(parent.name))
             except Exception:
                 parent_name = None
+        # Try to read cam_name early — needed for both Step 2 (find the
+        # cam inside promoted.nodes by name) and Step 3 (name match in
+        # batch.nodes scan). Selection wrappers and action.nodes wrappers
+        # may be different Python objects, so the downstream
+        # `action.selected_nodes.set_value([cam])` call requires the
+        # action.nodes wrapper — set_value silently no-ops when handed
+        # a wrapper that isn't in action.nodes (verified 2026-04-28: the
+        # FBX exported under those conditions has zero Model:: blocks
+        # and only the FBX SDK's stock 'Producer Perspective').
+        try:
+            cam_name = item.name.get_value()
+        except Exception:
+            cam_name = None
+
         if parent_name and hasattr(flame.batch, "get_node"):
             try:
                 promoted = flame.batch.get_node(parent_name)
             except Exception:
                 promoted = None
             if (promoted is not None
-                    and callable(getattr(promoted, "export_fbx", None))):
-                return promoted, item
+                    and callable(getattr(promoted, "export_fbx", None))
+                    and hasattr(promoted, "nodes")):
+                target_cam = _find_cam_in_action_nodes(promoted, cam_name)
+                if target_cam is not None:
+                    return promoted, target_cam
+                # Couldn't find the cam by name in promoted.nodes — that's
+                # surprising (the broken parent at least had a usable name
+                # so the action match is likely correct). Skip rather than
+                # return a wrapper that downstream can't select; Step 3
+                # (name match in batch.nodes scan) is the next attempt.
 
         # Step 3: flame.batch.nodes scan with identity-then-name match.
         # Identity match preserves disambiguation when two Actions share
         # a camera name. Name match handles the wrapper-instance mismatch
         # observed in hook callback context. parent_name (if known) is
         # used to disambiguate name matches across multiple Actions.
-        try:
-            cam_name = item.name.get_value()
-        except Exception:
-            cam_name = None
-
         identity_hit = None
-        name_hits = []      # list of (action_node, ambiguity_disambiguated)
+        # name_hits entries: (action_node, action_side_cam, disambiguated)
+        # action_side_cam is the wrapper from action.nodes — required by
+        # action.selected_nodes.set_value downstream.
+        name_hits = []
         try:
             for n in flame.batch.nodes:
                 try:
@@ -2007,7 +2067,7 @@ def _first_camera_in_action_selection(selection):
                     for inode in n.nodes:
                         # Identity first — exact match wins immediately.
                         if inode is item:
-                            identity_hit = n
+                            identity_hit = (n, inode)
                             break
                         # Name match candidate — only Cameras matching
                         # by name. Disambiguate via parent_name when set.
@@ -2026,7 +2086,7 @@ def _first_camera_in_action_selection(selection):
                                 and inode_name == cam_name):
                             disambiguated = (parent_name is not None
                                              and n_name == parent_name)
-                            name_hits.append((n, disambiguated))
+                            name_hits.append((n, inode, disambiguated))
                     if identity_hit is not None:
                         break
                 except Exception:
@@ -2035,16 +2095,16 @@ def _first_camera_in_action_selection(selection):
             pass
 
         if identity_hit is not None:
-            return identity_hit, item
+            return identity_hit  # already (action, action_side_cam)
         if name_hits:
             # Prefer disambiguated hit (Action whose name matches
             # cam.parent.name) over a generic name match. If multiple
             # disambiguated hits, take the first; if none, take the first
             # generic. Both cases beat the cryptic NoneType.
-            for cand, disambiguated in name_hits:
+            for cand_action, cand_cam, disambiguated in name_hits:
                 if disambiguated:
-                    return cand, item
-            return name_hits[0][0], item
+                    return cand_action, cand_cam
+            return name_hits[0][0], name_hits[0][1]
 
         # Total resolution failure — capture diagnostic context for the
         # forensic record before falling through to the caller's error

@@ -633,16 +633,27 @@ def test_first_camera_promotes_via_get_node_when_parent_export_fbx_missing(
     if not _first_camera_helper_has_fallback():
         pytest.skip(_GAP1_SKIP_REASON)
 
-    cam = _FakeCameraNode(name="MyCam")
+    # Selection cam (the wrapper Flame hands the hook callback) and
+    # action.nodes' cam wrapper — DIFFERENT Python objects representing
+    # the same underlying Flame camera. This mirrors the live shape
+    # observed 2026-04-28: action.selected_nodes.set_value silently
+    # no-ops when handed a wrapper that isn't in action.nodes, producing
+    # an empty FBX downstream. Helper MUST return the action.nodes
+    # wrapper.
+    cam_in_selection = _FakeCameraNode(name="MyCam")
+    cam_in_action_nodes = _FakeCameraNode(name="MyCam")
+
     # Broken parent: name reads, but export_fbx is None — exact shape
     # the live diag is expected to capture.
     broken_parent = _FakeActionNode(
-        "TargetAction", child_nodes=[cam], export_fbx=None,
+        "TargetAction", child_nodes=[], export_fbx=None,
     )
-    cam.parent = broken_parent
+    cam_in_selection.parent = broken_parent
 
     # The healthy wrapper that flame.batch.get_node should return.
-    healthy_wrapper = _FakeActionNode("TargetAction", child_nodes=[cam])
+    healthy_wrapper = _FakeActionNode(
+        "TargetAction", child_nodes=[cam_in_action_nodes],
+    )
 
     class _Batch:
         # Step 3 fallback would also surface this, but the test asserts
@@ -659,14 +670,22 @@ def test_first_camera_promotes_via_get_node_when_parent_export_fbx_missing(
     monkeypatch.setattr(_fake_flame, "batch", _Batch())
 
     action_node, cam_node = _hook_module._first_camera_in_action_selection(
-        [cam]
+        [cam_in_selection]
     )
     assert action_node is healthy_wrapper, (
         "Step 2 must promote the broken cam.parent via "
         "flame.batch.get_node(parent.name); got "
         f"{action_node!r}"
     )
-    assert cam_node is cam
+    # CRITICAL: return action.nodes' cam wrapper, NOT the selection's.
+    # action.selected_nodes.set_value([cam]) needs the action.nodes
+    # wrapper — set_value silently no-ops on foreign wrappers, leading
+    # to "no cameras found named 'X'" downstream.
+    assert cam_node is cam_in_action_nodes, (
+        "Step 2 must return the cam wrapper from action.nodes, not the "
+        "selection wrapper, because action.selected_nodes.set_value "
+        "silently no-ops on selection-side wrappers"
+    )
 
 
 def test_first_camera_falls_back_to_name_match_when_identity_fails(
@@ -714,9 +733,14 @@ def test_first_camera_falls_back_to_name_match_when_identity_fails(
         "name-match fallback must find the Action when wrapper identity "
         "between selection and action.nodes is broken"
     )
-    # Caller expects the SELECTION's cam back (so the caller's reference
-    # equality / ID checks stay coherent), not action.nodes' duplicate.
-    assert cam_node is cam_in_selection
+    # CRITICAL: return action.nodes' cam wrapper, NOT the selection's.
+    # action.selected_nodes.set_value([cam]) silently no-ops on the
+    # selection wrapper, producing an empty FBX (verified 2026-04-28
+    # on portofino: 4435-byte FBX with zero Model:: blocks).
+    assert cam_node is cam_in_action_nodes, (
+        "Step 3 name match must return action.nodes' cam wrapper "
+        "for downstream selected_nodes.set_value to actually select"
+    )
 
 
 def test_first_camera_name_match_disambiguates_via_parent_name(monkeypatch):
@@ -760,4 +784,6 @@ def test_first_camera_name_match_disambiguates_via_parent_name(monkeypatch):
         "ambiguous name match must prefer the Action whose name matches "
         f"cam.parent.name='action2'; got {action_node!r}"
     )
-    assert cam_node is cam_in_selection
+    # action2's cam_in_action2 wrapper, not the selection wrapper —
+    # required for set_value([cam]) to actually select downstream.
+    assert cam_node is cam_in_action2
