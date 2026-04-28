@@ -1,8 +1,8 @@
 ---
 slug: camera-scope-nonetype-flame01
-status: fixed_pending_live_verify
+status: fixed_pending_flame01_verify
 created: 2026-04-28T16:00:00Z
-updated: 2026-04-28T17:45:00Z
+updated: 2026-04-28T19:35:00Z
 resolved_commit: 1412555
 trigger: |
   Camera-scope export 'NoneType' object is not callable regression on cold-install — recurs despite Phase 04.4 fix (commits f1e8853 + c680636). See .planning/todos/pending/2026-04-27-camera-scope-export-nonetype-regression-on-cold-install.md for full diagnostic context.
@@ -194,6 +194,52 @@ reasoning_checkpoint: |
     silently corrupting solver output. Restoring the call (1412555)
     with a defensive try/except for version-safety resolves this.
 
+- timestamp: 2026-04-28T19:10:00Z
+  source: live-probe (portofino, macOS arm64, mid-session degraded)
+  finding: |
+    Mid-session retest at HEAD 1412555 reproduced the user-visible
+    failure with a clean dialog ("Right-click a Camera node inside an
+    Action's schematic..."). The diag JSON written by Step 3's failure
+    path showed three identical PyActionFamilyNode wrappers (id
+    16533679328) returned by cam.parent, flame.batch.get_node("action1"),
+    AND the flame.batch.nodes scan — all with `.export_fbx == None`.
+    Initially read this as proof the LAYER 2 hypothesis was wrong
+    (i.e. promote-by-name doesn't actually promote the wrapper class).
+    SELF-CORRECTION (see next evidence entry): this snapshot was a
+    degraded session-state artifact, not a durable invariant.
+  diag_json_excerpt: |
+    selection: PyCoNode "Default" (Camera)
+    parent: PyActionFamilyNode "action1", id 16533679328, export_fbx is None
+    promote_by_name_attempt: PyActionFamilyNode "action1", id 16533679328 (same object)
+    batch_nodes scan: PyActionFamilyNode "action1", id 16533679328 (same object)
+
+- timestamp: 2026-04-28T19:35:00Z
+  source: live-test (portofino, macOS arm64, fresh Flame restart)
+  finding: |
+    After full Flame restart (the prior session had crashed during a
+    Camera-scope export attempt), the SAME workflow on a fresh session
+    SUCCEEDED — Camera-scope export wrote a valid FBX, Blender launched
+    cleanly. Proves the cascade fixes are correct in a healthy session.
+    The mid-session degraded readings (prior evidence entry) were
+    session-state corruption, not a durable wrapper-class quirk. Phase
+    04.4's "transient state cleared by full Flame restart" hypothesis
+    holds; the recurrence on flame-01 cold-install was a different
+    instance of the same transient-state class (no prior session, but
+    likely the install.sh deploy + Flame's first-load state on RHEL 9
+    presented the same degraded wrapper shape).
+  pattern: |
+    PyActionFamilyNode-with-None-export_fbx is a degraded wrapper that
+    appears in hook callback context under at least two conditions:
+    (a) a Flame session has accumulated state corruption (often after a
+        crash or prolonged calibrator iteration); restart cures it.
+    (b) a fresh Flame session in a particular environment shape (e.g.
+        flame-01 RHEL 9 cold install with no prior session) — root
+        cause not yet isolated to a clean reproducer.
+    The cascade's 3-step resolution is correct but cannot rescue case
+    (a) once Flame has degraded; the only cure for (a) is restart. For
+    (b) we need flame-01 reverification at HEAD 1412555.
+  see_also: memory/flame_camera_scope_session_state_decay.md
+
 ## Eliminated
 
 - hypothesis: H2 — fallback returns None and caller doesn't gate
@@ -302,6 +348,18 @@ verification: |
   - 1412555: live portofino re-probe confirmed cam.target_mode is a
     real PyAttribute. Calibrator apply flow produces Free-rig camera
     with correct solver values. Suite green (430 passed, 2 skipped).
+  - END-TO-END (2026-04-28T19:35Z): live Camera-scope export on
+    portofino fresh Flame session at HEAD 1412555 succeeded — wrote a
+    valid FBX, Blender launched cleanly. This is the post-cascade
+    end-to-end verification that was missing from the doc reconciliation
+    in fc9a7df.
+
+  Mid-session caveat: a degraded-wrapper failure DID reproduce on
+  portofino during the same testing session (after several calibrator
+  iterations + a SIGSEGV). That failure showed PyActionFamilyNode for
+  cam.parent + flame.batch.get_node + flame.batch.nodes scan (same id,
+  no callable export_fbx). Clean Flame restart cured it. This pattern
+  is now captured in memory/flame_camera_scope_session_state_decay.md.
 
   flame-01 (RHEL 9 x86_64) live verification NOT YET RUN at HEAD 1412555.
 
@@ -312,39 +370,38 @@ files_changed:
 commit: 1412555
 
 next_steps: |
-  USER ACTION (flame-01 live verification at HEAD 1412555):
-  1. cd to forge-calibrator on flame-01, `git pull` to fetch 1412555.
+  flame-01 (RHEL 9 x86_64) live verification — the only remaining
+  unknown. Portofino end-to-end is green at HEAD 1412555.
+
+  USER ACTION on flame-01:
+  1. cd to forge-calibrator on flame-01, `git pull` to fetch HEAD
+     (1412555 + the doc commits — current HEAD is fc9a7df or later).
   2. `bash install.sh --force` (purges sibling pycaches per c680636).
-  3. Restart Flame.
+  3. Restart Flame fully (NOT a session reload — hook callbacks are
+     captured at registration time).
   4. Open a Batch with an Action that has a Camera, double-click into
      the Action's schematic, right-click the Camera → FORGE → Camera →
      Export Camera to Blender.
-  5. Three possible outcomes:
-     (a) Export succeeds and Blender opens / .blend path is surfaced →
-         fix complete. Also verify the calibrator apply flow: run Camera
-         Match on a clip, apply the solved camera, confirm the camera is
-         Free-rig with correct position/rotation/fov values. Then file the
-         todo as resolved and close this debug session.
-     (b) Dialog says "Right-click a Camera node inside an Action's
-         schematic. Perspective cameras are not supported." → export side
-         improved (not crashing) but wrapper-shape issue still prevents
-         the 3-step resolution from finding a usable Action. Check
-         /tmp/forge_camera_match_diag.json on flame-01 for hook-context
-         wrapper-class shapes. Re-open this session with
+  5. Two possible outcomes:
+     (a) Export succeeds → fix complete on flame-01. Also do one
+         calibrator apply pass to verify Free-rig (the LAYER 4 fix).
+         Then close this debug session and the matching todo.
+     (b) Any failure dialog → check /tmp/forge_camera_match_diag.json
+         on flame-01 for hook-context wrapper-class shapes. The diag
+         will discriminate between session-state decay (clean Flame
+         restart cures it — see memory/flame_camera_scope_session_state_decay.md)
+         and a durable wrapper-class quirk specific to RHEL 9 cold
+         install. Re-open this session with
          `/gsd-debug continue camera-scope-nonetype-flame01` and
          surface the diag JSON as new evidence.
-     (c) Same cryptic "Failed to write FBX: 'NoneType' object is not
-         callable" dialog → the 3-step resolution returned a broken
-         wrapper despite all guards. Check /tmp/forge_camera_match_diag.json
-         on flame-01. Re-open this session and investigate the diag output.
 
-  CONTINGENT (if outcome b or c on flame-01):
-  The diag JSON at /tmp/forge_camera_match_diag.json (or
-  FORGE_CAMERA_MATCH_DIAG_PATH if overridden) captures hook-callback-context
-  wrapper-class shapes that bridge cannot observe. Attach the JSON when
-  re-opening the session. The 3-step resolution was designed to handle
-  wrapper-class shape variation; if all three steps fail the diag will
-  show which step failed and what wrapper class was returned.
+  Note on session-state decay (added 2026-04-28 from portofino
+  retest): if the failure repros mid-session on a workstation that
+  previously worked, try a clean Flame restart FIRST before assuming
+  a code bug. Mid-session degradation can present the same diag-JSON
+  shape (PyActionFamilyNode everywhere, same wrapper id, no callable
+  export_fbx) as the flame-01 cold-install failure but is not a code
+  defect.
 
 phase_04_4_followup: |
   This is a true regression on Phase 04.4's GAP-04.4-UAT-04 closure

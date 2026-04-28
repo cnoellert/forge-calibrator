@@ -1,7 +1,15 @@
 ---
 created: 2026-04-27T20:00:00Z
+updated: 2026-04-28T19:45:00Z
 title: Camera-scope export NoneType regression recurs on cold-install (deeper than Phase 04.4 fix)
+status: portofino_verified_pending_flame01
 area: hook
+debug_session: .planning/debug/camera-scope-nonetype-flame01.md
+resolved_commits:
+  - 70b3b79  # symmetric callable guard in batch.nodes fallback
+  - 9bd5bd0  # 3-step resolution + on-failure diag JSON
+  - bacdc2c  # return action.nodes' cam wrapper, not selection wrapper
+  - 1412555  # restore cam.target_mode.set_value(False) — silent calibrator regression
 files:
   - flame/camera_match_hook.py:1881  # _first_camera_in_action_selection
   - flame/camera_match_hook.py:2295  # _export_camera_to_blender (Action-scope)
@@ -9,7 +17,19 @@ files:
   - forge_flame/fbx_io.py:152        # action.export_fbx call site
 ---
 
-## Problem
+## Status (2026-04-28T19:45Z)
+
+**Portofino fresh-session end-to-end VERIFIED at HEAD 1412555.**
+Camera-scope right-click → FORGE → Camera → Export Camera to Blender writes a valid FBX, Blender launches cleanly. The 4-commit cascade (`70b3b79` → `9bd5bd0` → `bacdc2c` → `1412555`) is the complete fix.
+
+A mid-session reproduction during today's testing temporarily made it look like the cascade was wrong — the diag JSON showed `PyActionFamilyNode` everywhere with `None` export_fbx. Self-correction: that was session-state decay, not a code bug. Clean Flame restart cured it. Pattern captured in `memory/flame_camera_scope_session_state_decay.md`.
+
+**Remaining unknown:** flame-01 (RHEL 9 x86_64) cold-install retest at HEAD. Procedure documented in the debug session's `next_steps`. If outcome (a) — close this todo. If outcome (b) — diag JSON ships back, debug session reopens.
+
+---
+
+## Original problem (kept for context)
+
 
 Right-click on a Camera node inside an Action's schematic → FORGE → Camera →
 Export Camera to Blender → Tier-1 dialog **"Failed to write FBX: 'NoneType'
