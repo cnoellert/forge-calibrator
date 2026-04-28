@@ -2,8 +2,8 @@
 slug: camera-scope-nonetype-flame01
 status: fixed_pending_live_verify
 created: 2026-04-28T16:00:00Z
-updated: 2026-04-28T16:25:00Z
-resolved_commit: 70b3b79
+updated: 2026-04-28T17:45:00Z
+resolved_commit: 1412555
 trigger: |
   Camera-scope export 'NoneType' object is not callable regression on cold-install — recurs despite Phase 04.4 fix (commits f1e8853 + c680636). See .planning/todos/pending/2026-04-27-camera-scope-export-nonetype-regression-on-cold-install.md for full diagnostic context.
 goal: find_and_fix
@@ -12,9 +12,13 @@ related_todos:
 related_phases:
   - 04.4 (GAP-04.4-UAT-04 — premature closure)
 related_commits:
-  - f1e8853   # callable(getattr(parent, "export_fbx", None)) hardening
+  - f1e8853   # callable(getattr(parent, "export_fbx", None)) hardening (Phase 04.4-07, fast path only)
   - c680636   # install.sh recursive __pycache__ purge across camera_match + forge_core + forge_flame
   - 5926742   # diagnostic instrumentation removal (closure commit — instrumentation no longer in tree)
+  - 70b3b79   # FIX 1: mirror callable-export_fbx guard into batch.nodes fallback scan (symmetric guard)
+  - 9bd5bd0   # FIX 2: 3-step resolution — direct parent → promote-by-name → batch.nodes name-match; adds diag JSON
+  - bacdc2c   # FIX 3: return action.nodes' cam wrapper not selection wrapper (fixes silent empty FBX)
+  - 1412555   # FIX 4: restore cam.target_mode.set_value(False) in calibrator apply (fixes silent solver corruption)
 ---
 
 # Debug Session: camera-scope-nonetype-flame01
@@ -56,11 +60,12 @@ on 127.0.0.1:9999.
   reproduces immediately on Camera-scope right-click. User reports
   "same as we've been battling".
 - 2026-04-28: filing this debug session as the next-cycle follow-up
-  to the prematurely-closed GAP-04.4-UAT-04.
+  to the prematurely-closed GAP-04.4-UAT-04. Cascade of 4 additional
+  fixes landed across the day (portofino-driven); HEAD is 1412555.
 
-### Reproduction (current best guess — needs flame-01 reconfirmation)
+### Reproduction (current best guess — needs flame-01 reconfirmation at HEAD 1412555)
 1. Clean RHEL 9 Flame workstation, no prior forge install
-2. `git clone` forge-calibrator at HEAD `5b47653` or later
+2. `git clone` forge-calibrator at HEAD `1412555` or later
 3. `conda env create -f forge-env.yml`
 4. `bash install.sh --force`
 5. Launch Flame 2026.2.1
@@ -76,50 +81,12 @@ status unknown.
 ## Current Focus
 
 hypothesis: |
-  H1 (asymmetric-fix): the Phase 04.4 hardening was applied to the
-  fast path in `_first_camera_in_action_selection` but NOT to the
-  `flame.batch.nodes` fallback scan. On flame-01 the fast path
-  rejects a stably-broken cam.parent proxy, the fallback runs, finds
-  an Action wrapper whose `.export_fbx is None`, and returns it
-  unchecked. Downstream `action.export_fbx(...)` at fbx_io.py:152
-  raises 'NoneType' object is not callable.
+  RESOLVED (all four hypotheses confirmed and fixed). See Resolution
+  for the full cascade root-cause narrative.
 
-  H2 (RULED OUT) — see Eliminated section.
-  H3 (third bypass path) — UNLIKELY; no such path in the post-04.4
-  source; left as an open possibility pending flame-01 evidence.
-test: |
-  Two complementary tests:
-  (T1) Static reproduction in pytest — extend the existing broken-
-       proxy regression in tests/test_camera_match_hook.py to also
-       cover the case where `flame.batch.nodes` returns a wrapper
-       with `.export_fbx is None`. Should currently FAIL (return the
-       broken wrapper), prove the bug at code level without flame-01.
-  (T2) Live flame-01 evidence — re-instrument the pre-call diagnostic
-       block (removed in 5926742) so the next failure on flame-01
-       captures `type(cam.parent).__name__`, `type(returned_action).__name__`,
-       and `callable(getattr(returned_action, "export_fbx", None))`.
-       Single-shot log to /tmp/forge_export_camera_pre_call.log.
-expecting: |
-  T1 fails on current main (proves H1 at the code level).
-  T2 on flame-01 shows: returned_action came from the fallback path,
-     callable(export_fbx) is False, type(.).__name__ likely
-     "PyActionFamilyNode" or similar base-class wrapper.
 next_action: |
-  Two viable next moves — orchestrator to surface choice to user:
-  (A) Ship the symmetry fix BLIND (mirror the callable-export_fbx
-      filter into the fallback + add a regression test). Low risk,
-      tests prove behavior at code level. May not fully fix flame-01
-      if BOTH paths return broken wrappers (then user gets the clean
-      "Right-click a Camera node inside an Action's schematic..."
-      dialog instead of the cryptic NoneType — better UX, but still
-      doesn't bake).
-  (B) Re-instrument first, ship fix after flame-01 evidence confirms
-      the fallback wrapper-class shape. Higher confidence, longer
-      cycle (needs user to drive flame-01 forge-bridge probe).
-  Recommendation: (A) with a contingent (B) — symmetry fix is correct
-  regardless of platform, lands a regression test, and improves
-  worst-case UX. If symptom persists on flame-01 after the fix, we
-  re-instrument with one less hypothesis to discriminate.
+  flame-01 live verification at HEAD 1412555. See next_steps.
+
 reasoning_checkpoint: |
   Two facts that surprised me on first read of the todo and which a
   fresh agent should pressure-test:
@@ -132,6 +99,11 @@ reasoning_checkpoint: |
     delta we haven't isolated. Wrapper-class identity may be
     platform-dependent — e.g. PyAction subclassing PyActionFamilyNode
     on Linux but not macOS, or vice versa.
+  Both facts remain true and inform why flame-01 verification still
+  matters — the 3-step resolution was designed to handle wrapper-class
+  shape variation across platform/context, so if flame-01 still fails
+  we have the diag JSON at /tmp/forge_camera_match_diag.json to
+  capture the hook-callback-context shapes.
 
 ## Evidence
 
@@ -191,6 +163,37 @@ reasoning_checkpoint: |
     routes through the fallback by default. Either way, the missing
     guard in the fallback is the proximate cause.
 
+- timestamp: 2026-04-28T17:00:00Z
+  source: live-probe (portofino, macOS arm64, hook callback context)
+  finding: |
+    Portofino reproduction confirmed that even after the symmetric guard
+    (70b3b79), the export returned True but the written FBX was empty:
+    4435 bytes, no Model:: blocks, no NodeAttribute blocks, only the
+    FBX SDK's stock 'Producer Perspective' default. Downstream error:
+    "no cameras found named 'Default'". Root cause: the 3-step resolution
+    in 9bd5bd0 was resolving the correct Action but returning the
+    SELECTION's cam wrapper rather than the cam wrapper from
+    action.nodes. Flame's action.selected_nodes.set_value([cam]) silently
+    no-ops when handed a wrapper not in action.nodes — the cam selection
+    is dropped before export_fbx runs. The exported FBX therefore contains
+    no camera geometry matching the requested name.
+
+- timestamp: 2026-04-28T17:30:00Z
+  source: live-probe (portofino, macOS arm64, calibrator apply flow)
+  finding: |
+    After the export-side fixes landed, a second regression surface
+    appeared in the calibrator apply flow: the solved camera was applied
+    with wrong values. Probe confirmed: cam.target_mode is a real
+    PyAttribute (get_value() = False). Commit 19e6d17 (04.2-02) had
+    deleted the `cam.target_mode.set_value(False)` call after a probe
+    that incorrectly reported target_mode as None — that probe was run
+    in a context where the attribute was not visible. Without the
+    explicit Free-rig forcing, Flame's creation path now produces a
+    Target-rig camera; position/rotation/fov are then interpreted
+    relative to an aim target rather than as absolute world transforms,
+    silently corrupting solver output. Restoring the call (1412555)
+    with a defensive try/except for version-safety resolves this.
+
 ## Eliminated
 
 - hypothesis: H2 — fallback returns None and caller doesn't gate
@@ -205,81 +208,147 @@ reasoning_checkpoint: |
 ## Resolution
 
 root_cause: |
-  Asymmetric Phase 04.4-07 fix. The hardening at
-  flame/camera_match_hook.py:1948 added
-  `callable(getattr(parent, "export_fbx", None))` to the FAST-PATH
-  filter only. The flame.batch.nodes fallback scan at lines 1955-1969
-  had no equivalent guard — it filtered on type-string "Action" and
-  hasattr(n, "nodes") only. On the dev workstation, the broken-proxy
-  state cleared on Flame restart so the fast path returned a healthy
-  parent and the fallback was never exercised under broken-proxy
-  conditions. On flame-01 cold-install (RHEL 9 x86_64) the broken-
-  proxy shape is stable (no prior session to clear), the fast path
-  correctly rejects it, the fallback runs, finds an Action wrapper
-  whose .export_fbx is None, and returns it unchecked. Downstream
-  `action.export_fbx(...)` at forge_flame/fbx_io.py:152 then raises
-  `'NoneType' object is not callable`.
+  MULTI-LAYER cascade rooted in wrapper-class identity instability
+  across hook-callback context and bridge-probe context on Flame 2026.2.1.
+  Four distinct failure layers were found and fixed in order:
+
+  LAYER 1 (70b3b79 — symmetric callable guard):
+  Phase 04.4-07 hardened the fast path in `_first_camera_in_action_selection`
+  with `callable(getattr(parent, "export_fbx", None))` but left the
+  `flame.batch.nodes` fallback scan unguarded. On flame-01 cold-install
+  (RHEL 9 x86_64) the broken-proxy shape is stable; the fast path rejects
+  it and the fallback returns an unchecked Action wrapper with
+  `.export_fbx == None`. Downstream `action.export_fbx(...)` at
+  forge_flame/fbx_io.py:152 raises 'NoneType' object is not callable.
+  Fix: mirror the callable guard into the fallback scan.
+
+  LAYER 2 (9bd5bd0 — 3-step resolution with get_node-by-name promotion):
+  Even with the symmetric guard, bridge probes saw a healthy state but
+  the hook callback context continued to fail. Bridge runs off-main-thread
+  and cannot observe the hook callback context. The wrapper instance
+  returned by cam.parent in the hook callback is a degraded base wrapper
+  (PyActionFamilyNode without .export_fbx); flame.batch.get_node(parent_name)
+  returns the specialized PyActionNode wrapper that bridge sees as healthy.
+  The 2-step fallback (direct parent → batch.nodes scan) was insufficient
+  because wrapper identity is NOT preserved between the hook selection and
+  action.nodes — `inode is item` returns False for the same logical camera.
+  Fix: 3-step resolution: (1) direct parent + callable filter, (2) promote
+  by name via flame.batch.get_node, (3) batch.nodes scan with identity-then-
+  name match using parent_name for disambiguation. On total failure, write
+  /tmp/forge_camera_match_diag.json capturing hook-context wrapper-class shapes.
+
+  LAYER 3 (bacdc2c — return action.nodes' cam wrapper not selection wrapper):
+  Steps 2 and 3 resolved the correct Action but returned the SELECTION's cam
+  wrapper (a different Python object from action.nodes' copy). Flame's
+  action.selected_nodes.set_value([cam]) silently no-ops when handed a wrapper
+  not in action.nodes — the camera selection is dropped, export_fbx runs with
+  no camera selection, and the written FBX is empty (4435 bytes, no Model:: or
+  NodeAttribute blocks, only the stock 'Producer Perspective' default). The
+  "no cameras found named 'Default'" downstream error was the diagnostic clue.
+  Fix: extract `_find_cam_in_action_nodes` helper; Steps 2 and 3 now look up
+  the cam by name inside action.nodes after resolving the Action.
+
+  LAYER 4 (1412555 — restore cam.target_mode.set_value(False) in calibrator apply):
+  A separate silent corruption in the calibrator apply flow. Commit 19e6d17
+  (04.2-02) deleted `cam.target_mode.set_value(False)` after a probe incorrectly
+  reported target_mode as None (probe ran in a context where the attribute was
+  not visible). Live re-probe 2026-04-28 on Flame 2026.2.1 confirmed cam.target_mode
+  is a real PyAttribute (get_value() = False). Without the explicit Free-rig
+  forcing, Flame's creation path produces a Target-rig camera; position/rotation/fov
+  are interpreted relative to an aim target, silently corrupting solver output.
+  Fix: restore the call with a defensive try/except for version-safety.
 
 fix: |
-  flame/camera_match_hook.py — add the same callable-export_fbx guard
-  to the fallback scan loop. After the `hasattr(n, "nodes")` check,
-  also `if not callable(getattr(n, "export_fbx", None)): continue`.
-  Comment cross-references Phase 04.4-07 to make the symmetry intent
-  explicit. Worst case (BOTH paths reject everything) the helper now
-  returns (None, item) and the caller surfaces the clean
-  "Right-click a Camera node..." dialog instead of the cryptic
-  NoneType — strict UX improvement either way.
+  Four commits, all on flame/camera_match_hook.py and tests/test_camera_match_hook.py:
+
+  70b3b79 — Symmetric callable guard: after `hasattr(n, "nodes")` in the
+    fallback scan, also `if not callable(getattr(n, "export_fbx", None)): continue`.
+    Worst case (both paths reject everything) → (None, cam) → caller shows the
+    clean "Right-click a Camera node..." dialog.
+
+  9bd5bd0 — 3-step resolution in `_first_camera_in_action_selection`:
+    Step 1: cam.parent direct (existing fast path, callable-export_fbx filter).
+    Step 2: promote by name — flame.batch.get_node(parent_name) — returns
+      the specialized PyActionNode wrapper even when bridge can't observe the
+      hook callback context.
+    Step 3: flame.batch.nodes scan with identity-then-name match; parent_name
+      disambiguates same-named cams across Actions.
+    On total failure: write /tmp/forge_camera_match_diag.json (overridable via
+    FORGE_CAMERA_MATCH_DIAG_PATH) capturing hook-context wrapper-class shapes.
+
+  bacdc2c — `_find_cam_in_action_nodes(action, cam_name)` helper: after Steps 2/3
+    resolve the Action, look up the cam by name inside action.nodes and return
+    THAT wrapper. Step 1 unchanged (cam.parent → parent.nodes wrapper identity
+    holds when parent is healthy, which is the Step 1 precondition).
+
+  1412555 — Restore `cam.target_mode.set_value(False)` in calibrator apply flow,
+    wrapped in try/except for version-safety. Forces Free-rig unconditionally so
+    position/rotation/fov are absolute world transforms as the solver expects.
 
 verification: |
-  Static / pytest only — flame-01 evidence not yet captured.
-  - tests/test_camera_match_hook.py: new test
+  All verification through portofino (macOS arm64, Flame 2026.2.1):
+  - 70b3b79: static + pytest only. Regression test
     `test_first_camera_fallback_skips_action_with_broken_export_fbx`
-    covers two cases (only-broken in batch.nodes → (None, cam);
-    broken+healthy same cam by identity → returns healthy). Test
-    FAILS on pre-fix HEAD, PASSES on post-fix HEAD (manually
-    verified via `git stash`).
-  - Full suite green: 427 passed, 2 skipped (pre-existing live-
-    flame/network-gated skips).
+    FAILS pre-fix, PASSES post-fix.
+  - 9bd5bd0: live portofino probe confirmed the 3-step resolution
+    surfaces the healthy specialized PyActionNode wrapper from the
+    hook callback context. 3 new regression tests: Step 2 promotion,
+    Step 3 name-match, Step 3 parent_name disambiguation. Suite green
+    (430 passed, 2 skipped).
+  - bacdc2c: live portofino test confirmed action.export_fbx returns
+    True AND FBX contains the expected Model:: + NodeAttribute blocks.
+    Tests updated to assert action.nodes wrapper return. Suite green
+    (430 passed, 2 skipped).
+  - 1412555: live portofino re-probe confirmed cam.target_mode is a
+    real PyAttribute. Calibrator apply flow produces Free-rig camera
+    with correct solver values. Suite green (430 passed, 2 skipped).
+
+  flame-01 (RHEL 9 x86_64) live verification NOT YET RUN at HEAD 1412555.
 
 files_changed:
-  - flame/camera_match_hook.py            # symmetry fix + cross-ref comment
-  - tests/test_camera_match_hook.py       # new regression test (~76 lines)
+  - flame/camera_match_hook.py     # all four commits; primary file across the cascade
+  - tests/test_camera_match_hook.py  # 70b3b79 (+76 lines), 9bd5bd0 (+147 lines), bacdc2c (tests updated)
 
-commit: 70b3b79
+commit: 1412555
 
 next_steps: |
-  USER ACTION (flame-01 live verification):
-  1. cd to forge-calibrator on flame-01, `git pull` to fetch 70b3b79.
+  USER ACTION (flame-01 live verification at HEAD 1412555):
+  1. cd to forge-calibrator on flame-01, `git pull` to fetch 1412555.
   2. `bash install.sh --force` (purges sibling pycaches per c680636).
   3. Restart Flame.
   4. Open a Batch with an Action that has a Camera, double-click into
      the Action's schematic, right-click the Camera → FORGE → Camera →
      Export Camera to Blender.
   5. Three possible outcomes:
-     (a) Export succeeds → fix complete, file matching todo as
-         resolved + close this debug session.
+     (a) Export succeeds and Blender opens / .blend path is surfaced →
+         fix complete. Also verify the calibrator apply flow: run Camera
+         Match on a clip, apply the solved camera, confirm the camera is
+         Free-rig with correct position/rotation/fov values. Then file the
+         todo as resolved and close this debug session.
      (b) Dialog says "Right-click a Camera node inside an Action's
-         schematic. Perspective cameras are not supported." → fix
-         IMPROVED UX but the underlying wrapper-shape problem on
-         RHEL 9 is real; need a third resolution path. Re-open this
-         session with `/gsd-debug continue camera-scope-nonetype-flame01`
-         and pursue Path B (re-instrument).
+         schematic. Perspective cameras are not supported." → export side
+         improved (not crashing) but wrapper-shape issue still prevents
+         the 3-step resolution from finding a usable Action. Check
+         /tmp/forge_camera_match_diag.json on flame-01 for hook-context
+         wrapper-class shapes. Re-open this session with
+         `/gsd-debug continue camera-scope-nonetype-flame01` and
+         surface the diag JSON as new evidence.
      (c) Same cryptic "Failed to write FBX: 'NoneType' object is not
-         callable" → diagnosis was wrong; re-instrument and
-         re-investigate from scratch.
+         callable" dialog → the 3-step resolution returned a broken
+         wrapper despite all guards. Check /tmp/forge_camera_match_diag.json
+         on flame-01. Re-open this session and investigate the diag output.
 
   CONTINGENT (if outcome b or c on flame-01):
-  Re-add the lightweight diagnostic block (removed in 5926742) so
-  flame-01 can capture type(action).__name__,
-  type(cam.parent).__name__, callable(getattr(parent, "export_fbx",
-  None)), and the fallback-scan result. Single-shot log to
-  /tmp/forge_export_camera_pre_call.log. Then either add a third
-  resolution path (e.g. flame.batch.get_node by name) or escalate
-  to Autodesk support with the wrapper-class survey.
+  The diag JSON at /tmp/forge_camera_match_diag.json (or
+  FORGE_CAMERA_MATCH_DIAG_PATH if overridden) captures hook-callback-context
+  wrapper-class shapes that bridge cannot observe. Attach the JSON when
+  re-opening the session. The 3-step resolution was designed to handle
+  wrapper-class shape variation; if all three steps fail the diag will
+  show which step failed and what wrapper class was returned.
 
 phase_04_4_followup: |
   This is a true regression on Phase 04.4's GAP-04.4-UAT-04 closure
-  (the closure was premature). Suggest the user file this against
-  v6.4 milestone or as a 04.4-08 hotfix plan after live verification
-  on flame-01 succeeds — purely a planning decision; investigation
-  + fix work is done.
+  (the closure was premature). The full 4-commit cascade (70b3b79 through
+  1412555) constitutes the complete fix. Suggest filing this as a 04.4-08
+  hotfix after live verification on flame-01 succeeds — purely a planning
+  decision; all investigation and fix work is done.
