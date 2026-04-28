@@ -6,3 +6,6 @@ __pycache__/
 dist/
 build/
 .DS_Store
+
+# Claude Code local state
+.claude/
