@@ -538,3 +538,79 @@ def test_first_camera_skips_perspective_and_continues(monkeypatch):
     )
     assert action_node is action_target
     assert cam_node is real_cam
+
+
+def test_first_camera_fallback_skips_action_with_broken_export_fbx(monkeypatch):
+    """Symmetry fix: the flame.batch.nodes fallback scan must filter out
+    Action wrappers whose .export_fbx is None — same contract the fast
+    path enforces at line 1948.
+
+    Failure mode this guards against (flame-01 cold-install regression,
+    2026-04-27): cam.parent returns a stably-broken proxy whose
+    .export_fbx is None → fast-path filter correctly rejects → fallback
+    runs → flame.batch.nodes also surfaces a same-broken Action wrapper
+    that "owns" the cam by identity → without the symmetric filter the
+    fallback returns the broken wrapper unchecked → downstream
+    `action.export_fbx(...)` raises 'NoneType' object is not callable.
+
+    With the symmetric guard, the fallback rejects the broken wrapper
+    too. If no healthy wrapper is found, the helper returns (None, item)
+    and the caller surfaces the clean "Right-click a Camera node..."
+    dialog instead of the cryptic NoneType error. If a healthy
+    same-cam wrapper exists alongside the broken one, the fallback
+    skips the broken one and returns the healthy one.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    # Two cams here — one for the broken-wrapper case, one shared
+    # between broken+healthy wrappers (covers both code paths in one
+    # fixture without state leakage).
+    cam_only_broken = _FakeCameraNode(name="OrphanCam")
+    cam_only_broken.parent = None  # force fallback
+
+    broken_only = _FakeActionNode(
+        "BrokenOnly", child_nodes=[cam_only_broken], export_fbx=None,
+    )
+
+    class _BatchOnlyBroken:
+        nodes = [broken_only]
+
+    monkeypatch.setattr(_fake_flame, "batch", _BatchOnlyBroken())
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [cam_only_broken]
+    )
+    assert action_node is None, (
+        "fallback must skip Action with .export_fbx=None; "
+        f"got {action_node!r} (broken={broken_only!r})"
+    )
+    assert cam_node is cam_only_broken, (
+        "(None, cam) is the existing 'no containing Action found' shape; "
+        "the caller's dialog gate then surfaces the clean error"
+    )
+
+    # Second case: broken + healthy both surface the same cam → return
+    # the healthy one. Order matters: list the broken first so a naive
+    # implementation (no filter) would return it.
+    cam_shared = _FakeCameraNode(name="SharedCam")
+    cam_shared.parent = None  # force fallback
+
+    broken_first = _FakeActionNode(
+        "BrokenFirst", child_nodes=[cam_shared], export_fbx=None,
+    )
+    healthy_second = _FakeActionNode(
+        "HealthySecond", child_nodes=[cam_shared],
+    )
+
+    class _BatchBrokenThenHealthy:
+        nodes = [broken_first, healthy_second]
+
+    monkeypatch.setattr(_fake_flame, "batch", _BatchBrokenThenHealthy())
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [cam_shared]
+    )
+    assert action_node is healthy_second, (
+        "fallback must SKIP the broken wrapper and return the healthy one; "
+        f"got {action_node!r}"
+    )
+    assert cam_node is cam_shared

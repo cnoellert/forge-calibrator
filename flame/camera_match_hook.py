@@ -1951,6 +1951,16 @@ def _first_camera_in_action_selection(selection):
         # Fallback: scan flame.batch.nodes for the Action whose .nodes
         # contains this cam. Identity comparison (`inode is item`) so two
         # Actions with same-named cameras stay disambiguated.
+        #
+        # Mirror the fast-path callable-export_fbx filter so a broken
+        # base-class proxy surfaced by flame.batch.nodes (observed on
+        # flame-01 cold-install — RHEL 9 x86_64) is rejected here too.
+        # Without this guard the fallback could return a wrapper whose
+        # .export_fbx is None, and downstream
+        # `action.export_fbx(...)` at forge_flame/fbx_io.py:152 would
+        # raise `'NoneType' object is not callable` — the exact
+        # regression we shipped Phase 04.4-07 to fix on the fast-path
+        # side. Symmetric guard keeps that contract on both paths.
         try:
             for n in flame.batch.nodes:
                 try:
@@ -1959,6 +1969,8 @@ def _first_camera_in_action_selection(selection):
                     if type_val != "Action":
                         continue
                     if not hasattr(n, "nodes"):
+                        continue
+                    if not callable(getattr(n, "export_fbx", None)):
                         continue
                     for inode in n.nodes:
                         if inode is item:
