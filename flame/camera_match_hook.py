@@ -1524,6 +1524,25 @@ def _open_camera_match(clip):
                     cam = action.nodes[0]
                     created_new_action = True
 
+                # Force Free rig mode. Without this, Flame's default creation
+                # path produces a Target-rig camera whose `position` /
+                # `rotation` / `fov` are interpreted relative to an aim
+                # target rather than as absolute world transforms — the
+                # calibrator's solver outputs world-frame Free-rig values,
+                # so Target-rig defaults silently corrupt the result.
+                # Reverts the 04.2-02 deletion (commit 19e6d17): that
+                # commit's probe missed `target_mode` in `cam.attributes`,
+                # but live re-probe 2026-04-28 confirmed the attribute is
+                # a real PyAttribute on Flame 2026.2.1 (cam.attributes
+                # listing includes "target_mode" at position 13). Defensive
+                # try/except in case the attribute is genuinely missing on
+                # other Flame versions — Free-rig is the long-running
+                # default contract, not a hard requirement.
+                try:
+                    cam.target_mode.set_value(False)
+                except Exception:
+                    pass
+
                 # Camera transform — solver now returns the full world position,
                 # computed so that world origin projects to the origin control
                 # pixel at a fixed distance along the view ray.
