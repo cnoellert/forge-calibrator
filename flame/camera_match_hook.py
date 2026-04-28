@@ -1889,35 +1889,46 @@ def _first_camera_in_action_selection(selection):
     """Return (action_node, cam_node) for the first non-Perspective Camera
     in selection, or (None, None) if no such item.
 
-    Two-step resolution per RESEARCH §P-02 Open Question OQ-2:
+    Three-step resolution (extended 2026-04-28 after live diag on portofino
+    + flame-01 reproduced the GAP-04.4-UAT-04 'NoneType' regression on
+    cam.parent + on the identity-comparison fallback):
 
-    1. Fast path: try ``cam.parent`` — verified live via forge-bridge probe
-       2026-04-25 from a bridge-context REPL. Preserved with try/except so
-       that any raise (or a parent that doesn't expose .nodes) silently
-       falls through to step 2 instead of bubbling up to the caller.
+    1. Fast path: try ``cam.parent`` directly. Filter requires the parent
+       to be non-None, expose ``.nodes``, AND have ``callable(.export_fbx)``.
+       In hook callback context the cam.parent wrapper is sometimes
+       degraded to the ``PyActionFamilyNode`` base class (without
+       ``.export_fbx``) even though the bridge thread sees the
+       specialized ``PyActionNode``. This filter rejects the degraded
+       wrapper.
 
-    2. Fallback: scan ``flame.batch.nodes`` for the PyActionNode whose
-       ``.nodes`` contains ``cam_node`` (identity comparison, not name
-       equality — name equality would be ambiguous if two Actions both
-       hold a 'Camera1'). Mirrors the iteration shape in
-       ``_find_action_cameras`` (line ~1812) and the duck-typed
-       PyAttribute-vs-str ``.type`` handling in
-       ``_first_action_in_selection`` (line ~1843).
+    2. Promote-by-name path (NEW 2026-04-28): if the fast path's parent is
+       degraded but its ``.name`` is still readable, use
+       ``flame.batch.get_node(parent_name)`` to look up the specialized
+       wrapper. Bridge probe 2026-04-28 confirmed ``flame.batch.get_node``
+       returns the healthy ``PyActionNode`` (``export_fbx_callable: true``)
+       even when the iteration in step 3 surfaces wrappers that don't
+       match by Python identity.
 
-    Why both paths: the fast path is verified in bridge context and saves
-    the linear scan. UAT 2026-04-27 (HUMAN-UAT GAP-04.4-UAT-01) confirmed
-    that in actual hook callback context on Flame 2026.2.1 arm64 macOS,
-    ``cam.parent`` returns an object whose chained API resolves to None
-    so ``parent.export_fbx`` raises ``'NoneType' object is not callable``.
-    The fallback scan handles that by going through ``flame.batch.nodes``
-    — the same iteration shape ``_find_action_cameras`` uses
-    successfully in production today.
+    3. Scan fallback: walk ``flame.batch.nodes`` for an Action that
+       contains the cam. Try Python identity first (``inode is item``)
+       to preserve disambiguation when two Actions share a camera name.
+       If identity match fails (wrapper instances differ between hook
+       selection and ``action.nodes`` — observed across hook-callback
+       boundary on flame-01 RHEL 9 + portofino macOS arm64 2026-04-28),
+       fall through to a name match. Disambiguation prefers an Action
+       whose name matches ``cam.parent.name`` if any.
+
+    On total failure (all three steps return no Action), write a
+    diagnostic JSON to ``/tmp/forge_camera_match_diag.json`` capturing the
+    hook-context wrapper-class shapes so the next failure carries its own
+    forensic evidence — bridge thread can't see hook context, so the
+    instrumentation has to live here.
 
     Pitfall 1 (RESEARCH §P-02): on the action-schematic side, ``item.type``
     is a plain Python str — NEVER call ``.get_value()`` on it. The
     duck-typed PyAttribute handling applies only to ``flame.batch.nodes``
-    items inside the fallback (where the batch-context shape exposes
-    ``.type`` as a PyAttribute).
+    items inside step 3 (where the batch-context shape exposes ``.type``
+    as a PyAttribute).
     """
     import flame
     for item in selection:
@@ -1929,15 +1940,7 @@ def _first_camera_in_action_selection(selection):
         except Exception:
             continue
 
-        # Fast path: cam.parent. Wrapped because hook callback context
-        # has been observed to produce a parent whose .nodes is missing
-        # or whose chained API resolves to None (HUMAN-UAT GAP-1).
-        # Live UAT 2026-04-27 (GAP-04.4-UAT-04 round 2) showed that the
-        # broken proxy still exposes .nodes — only `.export_fbx is None`
-        # distinguishes it from a healthy PyActionNode. Without the
-        # export_fbx callable check, the fast path returns a parent that
-        # crashes downstream in `fbx_io.export_action_cameras_to_fbx` with
-        # `'NoneType' object is not callable` on `action.export_fbx(...)`.
+        # Step 1: cam.parent direct (fast path).
         parent = None
         try:
             parent = item.parent
@@ -1948,35 +1951,114 @@ def _first_camera_in_action_selection(selection):
                 and callable(getattr(parent, "export_fbx", None))):
             return parent, item
 
-        # Fallback: scan flame.batch.nodes for the Action whose .nodes
-        # contains this cam. Identity comparison (`inode is item`) so two
-        # Actions with same-named cameras stay disambiguated.
-        #
-        # Mirror the fast-path callable-export_fbx filter so a broken
-        # base-class proxy surfaced by flame.batch.nodes (observed on
-        # flame-01 cold-install — RHEL 9 x86_64) is rejected here too.
-        # Without this guard the fallback could return a wrapper whose
-        # .export_fbx is None, and downstream
-        # `action.export_fbx(...)` at forge_flame/fbx_io.py:152 would
-        # raise `'NoneType' object is not callable` — the exact
-        # regression we shipped Phase 04.4-07 to fix on the fast-path
-        # side. Symmetric guard keeps that contract on both paths.
+        # Step 2: promote-by-name. cam.parent may be a degraded base-class
+        # proxy in hook context — its .name still reads cleanly even when
+        # .export_fbx is None. flame.batch.get_node(parent_name) returns
+        # the specialized PyActionNode wrapper.
+        parent_name = None
+        if parent is not None:
+            try:
+                parent_name = (parent.name.get_value()
+                               if hasattr(parent.name, "get_value")
+                               else str(parent.name))
+            except Exception:
+                parent_name = None
+        if parent_name and hasattr(flame.batch, "get_node"):
+            try:
+                promoted = flame.batch.get_node(parent_name)
+            except Exception:
+                promoted = None
+            if (promoted is not None
+                    and callable(getattr(promoted, "export_fbx", None))):
+                return promoted, item
+
+        # Step 3: flame.batch.nodes scan with identity-then-name match.
+        # Identity match preserves disambiguation when two Actions share
+        # a camera name. Name match handles the wrapper-instance mismatch
+        # observed in hook callback context. parent_name (if known) is
+        # used to disambiguate name matches across multiple Actions.
+        try:
+            cam_name = item.name.get_value()
+        except Exception:
+            cam_name = None
+
+        identity_hit = None
+        name_hits = []      # list of (action_node, ambiguity_disambiguated)
         try:
             for n in flame.batch.nodes:
                 try:
                     t = n.type
-                    type_val = t.get_value() if hasattr(t, "get_value") else str(t)
+                    type_val = (t.get_value()
+                                if hasattr(t, "get_value")
+                                else str(t))
                     if type_val != "Action":
                         continue
                     if not hasattr(n, "nodes"):
                         continue
                     if not callable(getattr(n, "export_fbx", None)):
                         continue
+                    n_name = None
+                    try:
+                        n_name = (n.name.get_value()
+                                  if hasattr(n.name, "get_value")
+                                  else str(n.name))
+                    except Exception:
+                        n_name = None
                     for inode in n.nodes:
+                        # Identity first — exact match wins immediately.
                         if inode is item:
-                            return n, item
+                            identity_hit = n
+                            break
+                        # Name match candidate — only Cameras matching
+                        # by name. Disambiguate via parent_name when set.
+                        try:
+                            inode_t = inode.type
+                            inode_t_val = (inode_t.get_value()
+                                           if hasattr(inode_t, "get_value")
+                                           else str(inode_t))
+                            inode_name = (inode.name.get_value()
+                                          if hasattr(inode.name, "get_value")
+                                          else str(inode.name))
+                        except Exception:
+                            continue
+                        if (cam_name is not None
+                                and inode_t_val in ("Camera", "Camera 3D")
+                                and inode_name == cam_name):
+                            disambiguated = (parent_name is not None
+                                             and n_name == parent_name)
+                            name_hits.append((n, disambiguated))
+                    if identity_hit is not None:
+                        break
                 except Exception:
                     continue
+        except Exception:
+            pass
+
+        if identity_hit is not None:
+            return identity_hit, item
+        if name_hits:
+            # Prefer disambiguated hit (Action whose name matches
+            # cam.parent.name) over a generic name match. If multiple
+            # disambiguated hits, take the first; if none, take the first
+            # generic. Both cases beat the cryptic NoneType.
+            for cand, disambiguated in name_hits:
+                if disambiguated:
+                    return cand, item
+            return name_hits[0][0], item
+
+        # Total resolution failure — capture diagnostic context for the
+        # forensic record before falling through to the caller's error
+        # dialog. Bridge thread can't see hook context, so we write the
+        # JSON here. Best-effort; never raise.
+        try:
+            _dump_camera_resolution_diag(
+                selection=selection,
+                item=item,
+                parent=parent,
+                parent_name=parent_name,
+                cam_name=cam_name,
+                flame_module=flame,
+            )
         except Exception:
             pass
 
@@ -1989,6 +2071,124 @@ def _first_camera_in_action_selection(selection):
         return None, item
 
     return None, None
+
+
+def _dump_camera_resolution_diag(*, selection, item, parent, parent_name,
+                                 cam_name, flame_module):
+    """Write a one-shot JSON diagnostic to /tmp/forge_camera_match_diag.json
+    capturing the hook-callback-context wrapper-class shape at the moment
+    `_first_camera_in_action_selection` failed to find a usable Action.
+
+    Bridge-thread probes can't observe hook callback context — wrapper
+    classes and identity invariants observed there don't generalise to
+    the main-thread hook callback. This dump runs INSIDE the hook so
+    its readings reflect the actual failing state. Overwrite-on-write;
+    one file per failed resolution. Never raises.
+    """
+    import json
+    import os
+    import time
+
+    def _safe(call, default="<err>"):
+        try:
+            return call()
+        except Exception as e:
+            return f"<err: {e!r}>"
+
+    def _node_summary(n):
+        return {
+            "class": type(n).__name__,
+            "mro": [c.__name__ for c in type(n).__mro__],
+            "type": _safe(lambda: (n.type.get_value()
+                                   if hasattr(n.type, "get_value")
+                                   else str(n.type))),
+            "name": _safe(lambda: (n.name.get_value()
+                                   if hasattr(n.name, "get_value")
+                                   else str(n.name))),
+            "has_nodes": hasattr(n, "nodes"),
+            "has_export_fbx_attr": hasattr(n, "export_fbx"),
+            "export_fbx_is_None": getattr(n, "export_fbx", "__missing__") is None,
+            "export_fbx_callable": callable(getattr(n, "export_fbx", None)),
+            "export_fbx_repr": repr(getattr(n, "export_fbx", "__missing__"))[:160],
+            "id": id(n),
+        }
+
+    diag = {
+        "schema": "forge_camera_match_diag.v1",
+        "timestamp": time.time(),
+        "context": "hook_callback (_first_camera_in_action_selection)",
+        "flame_attrs": [a for a in dir(flame_module)
+                        if "Action" in a or "Camera" in a],
+        "selection": [],
+        "parent": None,
+        "parent_name": parent_name,
+        "cam_name": cam_name,
+        "batch_nodes": [],
+        "promote_by_name_attempt": None,
+    }
+
+    for sel in selection:
+        info = {"class": type(sel).__name__,
+                "mro": [c.__name__ for c in type(sel).__mro__],
+                "id": id(sel)}
+        info["type"] = _safe(lambda: (sel.type.get_value()
+                                       if hasattr(sel.type, "get_value")
+                                       else str(sel.type)))
+        info["name"] = _safe(lambda: (sel.name.get_value()
+                                       if hasattr(sel.name, "get_value")
+                                       else str(sel.name)))
+        diag["selection"].append(info)
+
+    if parent is not None:
+        p_info = _node_summary(parent)
+        p_info["is_item_parent_attr"] = True
+        diag["parent"] = p_info
+
+    # If we have a parent_name, retry the get_node call here so the diag
+    # records what the API returned at the moment of failure (may differ
+    # from what step 2 saw if state mutates between calls).
+    if parent_name and hasattr(flame_module.batch, "get_node"):
+        try:
+            promoted = flame_module.batch.get_node(parent_name)
+            if promoted is None:
+                diag["promote_by_name_attempt"] = {"result": "None"}
+            else:
+                p_summary = _node_summary(promoted)
+                p_summary["promoted_for_name"] = parent_name
+                diag["promote_by_name_attempt"] = p_summary
+        except Exception as e:
+            diag["promote_by_name_attempt"] = {"error": repr(e)}
+
+    try:
+        for n in flame_module.batch.nodes:
+            info = _node_summary(n)
+            try:
+                if info.get("type") == "Action" and info["has_nodes"]:
+                    info["children"] = []
+                    for child in n.nodes:
+                        info["children"].append({
+                            "class": type(child).__name__,
+                            "type": _safe(lambda: (child.type.get_value()
+                                                    if hasattr(child.type, "get_value")
+                                                    else str(child.type))),
+                            "name": _safe(lambda: (child.name.get_value()
+                                                    if hasattr(child.name, "get_value")
+                                                    else str(child.name))),
+                            "id": id(child),
+                            "is_selection_item": child is item,
+                        })
+            except Exception as e:
+                info["children_err"] = repr(e)
+            diag["batch_nodes"].append(info)
+    except Exception as e:
+        diag["batch_nodes_err"] = repr(e)
+
+    out_path = os.environ.get(
+        "FORGE_CAMERA_MATCH_DIAG_PATH",
+        "/tmp/forge_camera_match_diag.json",
+    )
+    with open(out_path, "w") as f:
+        json.dump(diag, f, indent=2, default=str)
 
 
 def _scan_first_clip_metadata():

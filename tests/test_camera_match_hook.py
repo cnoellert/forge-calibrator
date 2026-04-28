@@ -614,3 +614,150 @@ def test_first_camera_fallback_skips_action_with_broken_export_fbx(monkeypatch):
         f"got {action_node!r}"
     )
     assert cam_node is cam_shared
+
+
+def test_first_camera_promotes_via_get_node_when_parent_export_fbx_missing(
+    monkeypatch,
+):
+    """Step 2 (NEW 2026-04-28): cam.parent is a degraded base-class proxy
+    whose .name still reads cleanly but whose .export_fbx is None →
+    helper falls through fast path → calls flame.batch.get_node(parent_name)
+    → returns the specialized PyActionNode (callable .export_fbx).
+
+    This is the live failure mode reproduced on portofino + flame-01:
+    cam.parent in hook callback context is the family-base wrapper class,
+    even though flame.batch.get_node returns the specialized class with
+    a working export_fbx. Prior to this step the helper had no way to
+    cross from the broken parent to the healthy wrapper.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam = _FakeCameraNode(name="MyCam")
+    # Broken parent: name reads, but export_fbx is None — exact shape
+    # the live diag is expected to capture.
+    broken_parent = _FakeActionNode(
+        "TargetAction", child_nodes=[cam], export_fbx=None,
+    )
+    cam.parent = broken_parent
+
+    # The healthy wrapper that flame.batch.get_node should return.
+    healthy_wrapper = _FakeActionNode("TargetAction", child_nodes=[cam])
+
+    class _Batch:
+        # Step 3 fallback would also surface this, but the test asserts
+        # Step 2 fired first (promote-by-name). Only the broken proxy is
+        # in nodes here so Step 3's identity comparison would NOT find
+        # the healthy one — Step 2 is the only path that can succeed.
+        nodes = [broken_parent]
+
+        def get_node(self, name):
+            if name == "TargetAction":
+                return healthy_wrapper
+            return None
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [cam]
+    )
+    assert action_node is healthy_wrapper, (
+        "Step 2 must promote the broken cam.parent via "
+        "flame.batch.get_node(parent.name); got "
+        f"{action_node!r}"
+    )
+    assert cam_node is cam
+
+
+def test_first_camera_falls_back_to_name_match_when_identity_fails(
+    monkeypatch,
+):
+    """Step 3 expansion (NEW 2026-04-28): wrapper identity is not
+    preserved between hook selection and action.nodes — the cam item
+    surfaced in selection is a different Python object than the one
+    inside action.nodes, so `inode is item` returns False even though
+    both refer to the same underlying Flame node. After identity match
+    fails for every Action, the helper falls through to a name match.
+
+    This complements the Step 2 path: Step 2 covers the case where
+    cam.parent has a usable .name. Step 3 name-match covers the case
+    where cam.parent is None / unreadable AND identity comparison fails.
+
+    Disambiguation: if multiple Actions hold same-named cameras, prefer
+    the Action whose name matches cam.parent.name. If parent_name is
+    not available, take the first hit (UX is "pick a sensible Action"
+    not "fail cryptically").
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    # Selection cam (the wrapper Flame hands the hook)
+    cam_in_selection = _FakeCameraNode(name="Default")
+    cam_in_selection.parent = None  # force fallback past Step 2
+
+    # action.nodes' wrapper for the same logical camera — DIFFERENT object
+    cam_in_action_nodes = _FakeCameraNode(name="Default")
+
+    target_action = _FakeActionNode(
+        "RealAction", child_nodes=[cam_in_action_nodes],
+    )
+
+    class _Batch:
+        nodes = [target_action]
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [cam_in_selection]
+    )
+    assert action_node is target_action, (
+        "name-match fallback must find the Action when wrapper identity "
+        "between selection and action.nodes is broken"
+    )
+    # Caller expects the SELECTION's cam back (so the caller's reference
+    # equality / ID checks stay coherent), not action.nodes' duplicate.
+    assert cam_node is cam_in_selection
+
+
+def test_first_camera_name_match_disambiguates_via_parent_name(monkeypatch):
+    """Step 3 disambiguation: when two Actions both hold a 'Default'
+    camera (the live state observed on portofino — action1 + action2
+    both have Default + Perspective), the name match is ambiguous. The
+    helper must prefer the Action whose name matches cam.parent.name.
+    """
+    if not _first_camera_helper_has_fallback():
+        pytest.skip(_GAP1_SKIP_REASON)
+
+    cam_in_selection = _FakeCameraNode(name="Default")
+    # Broken parent: callable export_fbx is False so Step 1 rejects.
+    # parent.name = "action2" — disambiguates which Action to prefer.
+    broken_parent = _FakeActionNode(
+        "action2", child_nodes=[], export_fbx=None,
+    )
+    cam_in_selection.parent = broken_parent
+
+    # Two actions with same-named cameras. action1 is NOT the right one;
+    # action2 (matching parent_name) IS.
+    cam_in_action1 = _FakeCameraNode(name="Default")
+    action1 = _FakeActionNode("action1", child_nodes=[cam_in_action1])
+    cam_in_action2 = _FakeCameraNode(name="Default")
+    action2 = _FakeActionNode("action2", child_nodes=[cam_in_action2])
+
+    class _Batch:
+        # Both actions in batch, action1 listed first to ensure that a
+        # naive "first hit wins" implementation would pick the wrong one.
+        nodes = [action1, action2]
+
+        # No get_node: forces Step 3 (Step 2 would otherwise short-circuit
+        # via flame.batch.get_node(parent_name)).
+
+    monkeypatch.setattr(_fake_flame, "batch", _Batch())
+
+    action_node, cam_node = _hook_module._first_camera_in_action_selection(
+        [cam_in_selection]
+    )
+    assert action_node is action2, (
+        "ambiguous name match must prefer the Action whose name matches "
+        f"cam.parent.name='action2'; got {action_node!r}"
+    )
+    assert cam_node is cam_in_selection
