@@ -1,15 +1,32 @@
 ---
 created: 2026-04-27T20:30:00Z
-updated: 2026-04-29T01:30:00Z
-status: fixed_pending_visual_uat
+updated: 2026-04-29T17:55:00Z
+status: closed_uat_passed
 passoff: .planning/PASSOFF-channel-order-2026-04-28.md
 title: Camera Calibrator preview shows wrong channel order (magenta cast on green/brown plates)
 area: image-pipeline
 files:
-  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (channel_order param + bit-depth-keyed BRG/GBR auto-detect)
+  - forge_core/image/buffer.py        # decode_raw_rgb_buffer — channel_order API + bit-depth-keyed perm + bd=10/12 paths
   - tests/test_image_buffer.py        # regression coverage (parametric per-bit-depth + explicit-override coverage)
-  - flame/camera_match_hook.py:223   # raw-buffer call site (no change needed; auto-detect picks up new defaults)
+  - flame/camera_match_hook.py        # raw-buffer call site + unsupported-bit-depth dialog branch
 ---
+
+## Closed 2026-04-29 — UAT passed on portofino
+
+Final menu-flow visual UAT through the actual Camera Match menu on portofino confirmed
+clean preview (no color cast, no media-path error) on all five active batch clips
+covering bit_depth ∈ {10, 12, 16}:
+
+- `testImage` (bd=10) — DPX method A BE DWORD unpack
+- `testImage10bit` (bd=10) — same path
+- `testImage12bit` (bd=12) — uint16 ÷65535
+- `C002_260302_C005` (bd=16 ACEScg) — float16 BRG
+- `A005C008_120101_NQ96` (bd=16 ACEScg) — float16 BRG
+
+Closing fix landed across two quick tasks:
+
+- `260428-q8c` (`6a6df75`) — `channel_order: Literal["RGB","GBR","BRG"]` API + per-bit-depth auto-detect (8/16/32)
+- `260429-ebd` (`c25e542`) — bd=10 + bd=12 decode paths + unsupported-bit-depth dialog branch
 
 ## Status (2026-04-29 fix landed)
 
