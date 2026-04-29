@@ -202,7 +202,23 @@ def _read_source_frame(clip, target_frame=None, source_colourspace=None):
     Frame indexing: target_frame is in clip-source frame numbering (e.g.
     1001..4667 for start_frame=1001).
 
-    Returns (img_rgb_uint8, width, height) or (None, None, None) on failure."""
+    Returns (img_rgb_uint8, width, height) on success.
+
+    On failure returns ``(None, reason, None)`` where ``reason`` is:
+        - ``None`` — Wiretap / extract_frame_bytes failure (media path
+          inaccessible, missing node_id, CLI exec failed, etc.)
+        - ``"unsupported_bit_depth:{bd}"`` — Wiretap delivered bytes BUT
+          ``decode_raw_rgb_buffer`` rejected the buffer because the
+          bit_depth is not in {8, 10, 12, 16, 32} (or the buffer was
+          truncated). Callers must check ``isinstance(width, str)``
+          before treating the second tuple slot as an int.
+
+    The overload of the second slot (int width OR str reason code) is
+    deliberate: every other caller in the file already early-returns on
+    ``img_rgb is None``, so the change is backward-compatible. Only
+    ``_open_camera_match`` reads the second slot on the failure path
+    (to branch the dialog message — see flame/camera_match_hook.py near
+    line 305)."""
     _ensure_forge_core_on_path()
     from forge_flame.wiretap import extract_frame_bytes
     from forge_core.image.buffer import (
@@ -219,12 +235,16 @@ def _read_source_frame(clip, target_frame=None, source_colourspace=None):
     if img is not None:
         return img, int(img.shape[1]), int(img.shape[0])
 
-    # Raw buffer path: Wiretap's bottom-up, GBR-ordered float (or uint8) dump.
+    # Raw buffer path: Wiretap's bottom-up, channel-order-quirked float (or
+    # uint8) dump. None here means either the bit_depth isn't in our supported
+    # set {8, 10, 12, 16, 32} or the buffer is truncated. Surface a reason
+    # code in the second tuple slot so the caller can show an actionable
+    # dialog ("unsupported bit-depth" vs "media path inaccessible").
     arr = decode_raw_rgb_buffer(raw, w, h, bit_depth)
     if arr is None:
         print(f"decode_raw_rgb_buffer rejected buffer "
               f"({len(raw)} bytes, {w}x{h}, bit_depth={bit_depth})")
-        return None, None, None
+        return None, f"unsupported_bit_depth:{bit_depth}", None
 
     # uint8 → already display-encoded (Rec.709 video / sRGB JPG). Pass through.
     import numpy as np
@@ -305,10 +325,23 @@ def _open_camera_match(clip):
     img_rgb, img_w, img_h = _read_source_frame(
         clip, source_colourspace=initial_source_cs)
     if img_rgb is None:
+        # img_w carries either None (media-path / Wiretap failure) or a
+        # reason code string ("unsupported_bit_depth:{bd}" — decoder
+        # rejected the buffer). Branch the dialog message accordingly so
+        # the user gets an actionable error, not the generic "media path"
+        # text on a clip whose media is fine but whose bit-depth isn't
+        # supported. See _read_source_frame's docstring for the contract.
+        if isinstance(img_w, str) and img_w.startswith("unsupported_bit_depth:"):
+            bd = img_w.split(":", 1)[1]
+            message = (f"Camera Calibrator does not yet support "
+                       f"{bd}-bit clips. Supported bit-depths: 8, 10, 12, 16, 32. "
+                       f"If this clip really is one of those, please file a bug.")
+        else:
+            message = ("Could not read frame from clip source. "
+                       "Check the clip's media path is accessible.")
         flame.messages.show_in_dialog(
             title="Camera Calibrator",
-            message="Could not read frame from clip source. "
-                    "Check the clip's media path is accessible.",
+            message=message,
             type="error", buttons=["OK"])
         return
     tmp_dir = None  # no longer needed — we read media directly off disk
