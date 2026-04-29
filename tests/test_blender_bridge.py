@@ -112,6 +112,127 @@ class TestResolveBlenderBin:
         assert "FORGE_BLENDER_BIN" in msg
         assert "Tried:" in msg
 
+    # ---------------------------------------------------------------------
+    # Glob / expanduser resolution (260429-fk5)
+    # ---------------------------------------------------------------------
+
+    def test_glob_expansion_finds_versioned_linux_binary(self, tmp_path, monkeypatch):
+        """A `*` in a default candidate path must glob-match a real install."""
+        monkeypatch.delenv("FORGE_BLENDER_BIN", raising=False)
+        monkeypatch.setenv("PATH", "")
+
+        target_dir = tmp_path / "blender-4.5"
+        target_dir.mkdir()
+        target = target_dir / "blender"
+        target.write_text("#!/bin/sh\n")
+        target.chmod(0o755)
+
+        pattern = str(tmp_path / "blender-*" / "blender")
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS", {sys.platform: [pattern]})
+
+        assert resolve_blender_bin() == str(target)
+
+    def test_glob_multi_match_prefers_highest_sorted(self, tmp_path, monkeypatch):
+        """When multiple versioned dirs match the glob, the highest-sorted wins."""
+        monkeypatch.delenv("FORGE_BLENDER_BIN", raising=False)
+        monkeypatch.setenv("PATH", "")
+
+        for ver in ("4.4", "4.5"):
+            d = tmp_path / f"blender-{ver}"
+            d.mkdir()
+            b = d / "blender"
+            b.write_text("#!/bin/sh\n")
+            b.chmod(0o755)
+
+        pattern = str(tmp_path / "blender-*" / "blender")
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS", {sys.platform: [pattern]})
+
+        result = resolve_blender_bin()
+        assert result.endswith(os.path.join("blender-4.5", "blender")), \
+            f"expected blender-4.5 to win sort; got {result}"
+
+    def test_env_override_still_beats_glob_match(self, tmp_path, monkeypatch):
+        """FORGE_BLENDER_BIN must take priority over any glob-matched default."""
+        # Glob match candidate
+        glob_dir = tmp_path / "blender-4.5"
+        glob_dir.mkdir()
+        glob_bin = glob_dir / "blender"
+        glob_bin.write_text("#!/bin/sh\n")
+        glob_bin.chmod(0o755)
+
+        # Env override candidate (different binary)
+        override_bin = tmp_path / "override-blender"
+        override_bin.write_text("#!/bin/sh\n")
+        override_bin.chmod(0o755)
+
+        monkeypatch.setenv("FORGE_BLENDER_BIN", str(override_bin))
+        pattern = str(tmp_path / "blender-*" / "blender")
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS", {sys.platform: [pattern]})
+
+        assert resolve_blender_bin() == str(override_bin)
+
+    def test_path_fallback_when_all_globs_miss(self, tmp_path, monkeypatch):
+        """If every glob misses on disk, PATH fallback still fires."""
+        monkeypatch.delenv("FORGE_BLENDER_BIN", raising=False)
+
+        # A glob with no matches
+        pattern = str(tmp_path / "no-such-*" / "blender")
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS", {sys.platform: [pattern]})
+
+        # Real blender on PATH
+        bindir = tmp_path / "bin"
+        bindir.mkdir()
+        path_blender = bindir / "blender"
+        path_blender.write_text("#!/bin/sh\n")
+        path_blender.chmod(0o755)
+        monkeypatch.setenv("PATH", str(bindir))
+
+        assert resolve_blender_bin() == str(path_blender)
+
+    def test_darwin_glob_resolves_versioned_app_bundle(self, tmp_path, monkeypatch):
+        """Darwin-style versioned `Blender X.Y.app` bundle is discovered via glob."""
+        monkeypatch.delenv("FORGE_BLENDER_BIN", raising=False)
+        monkeypatch.setenv("PATH", "")
+
+        macos_dir = tmp_path / "Blender 4.5.app" / "Contents" / "MacOS"
+        macos_dir.mkdir(parents=True)
+        target = macos_dir / "Blender"
+        target.write_text("#!/bin/sh\n")
+        target.chmod(0o755)
+
+        pattern = str(tmp_path / "Blender*.app" / "Contents" / "MacOS" / "Blender")
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS", {sys.platform: [pattern]})
+
+        result = resolve_blender_bin()
+        assert result.endswith(os.path.join(
+            "Blender 4.5.app", "Contents", "MacOS", "Blender")), \
+            f"expected versioned .app bundle path; got {result}"
+
+    def test_expanduser_handles_tilde_paths(self, tmp_path, monkeypatch):
+        """A `~/...` candidate must expand against $HOME at resolve time."""
+        monkeypatch.delenv("FORGE_BLENDER_BIN", raising=False)
+        monkeypatch.setenv("PATH", "")
+        monkeypatch.setenv("HOME", str(tmp_path))
+
+        apps_dir = tmp_path / "Apps" / "blender-4.5"
+        apps_dir.mkdir(parents=True)
+        target = apps_dir / "blender"
+        target.write_text("#!/bin/sh\n")
+        target.chmod(0o755)
+
+        monkeypatch.setattr(
+            blender_bridge, "_DEFAULT_BLENDER_BINS",
+            {sys.platform: ["~/Apps/blender-*/blender"]})
+
+        result = resolve_blender_bin()
+        assert os.path.realpath(result) == os.path.realpath(str(target)), \
+            f"expected expanduser-resolved path under tmp HOME; got {result}"
+
 
 # =============================================================================
 # Script resolution
