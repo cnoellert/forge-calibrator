@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-04-29 -- Completed quick task 260429-ebd: 10-bit + 12-bit decode support + unsupported-bit-depth dialog
+Last activity: 2026-04-29 -- Completed quick task 260429-fk5: glob-expand Blender binary defaults to cover /opt/ sideloads
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -113,6 +113,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260421-c1w | Fix FBX bake pre-roll frame shift (frame_start clip + offset-1) | 2026-04-21 | 61b3e8c | [260421-c1w-fix-fbx-bake-pre-roll-frame-shift-frame-](./quick/260421-c1w-fix-fbx-bake-pre-roll-frame-shift-frame-/) |
 | 260428-q8c | Fix Wiretap channel-order decoding to be per-bit-depth (channel_order={RGB,GBR,BRG} keyed off bit_depth) | 2026-04-29 | 6a6df75 | [260428-q8c-fix-wiretap-channel-order-decoding-to-be](./quick/260428-q8c-fix-wiretap-channel-order-decoding-to-be/) |
 | 260429-ebd | Add 10-bit + 12-bit decode support to decode_raw_rgb_buffer + bit-depth-unsupported warning | 2026-04-29 | c25e542 | [260429-ebd-add-10-bit-12-bit-decode-support-to-deco](./quick/260429-ebd-add-10-bit-12-bit-decode-support-to-deco/) |
+| 260429-fk5 | Glob-expand Blender binary defaults to cover /opt/ sideloads + backlog UI todo | 2026-04-29 | 969198d | [260429-fk5-glob-expand-blender-binary-defaults-to-c](./quick/260429-fk5-glob-expand-blender-binary-defaults-to-c/) |
 
 ## Deferred Items
 
