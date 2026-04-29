@@ -106,7 +106,7 @@ def decode_raw_rgb_buffer(
     height: int,
     bit_depth: int,
     channels: int = 3,
-    gbr_order: bool = True,
+    gbr_order: Optional[bool] = None,
     bottom_up: bool = True,
 ) -> Optional[np.ndarray]:
     """Decode a raw pixel buffer of known geometry into an ndarray.
@@ -120,9 +120,17 @@ def decode_raw_rgb_buffer(
         width, height: Expected pixel dimensions.
         bit_depth: 8/16/32 (maps to uint8/float16/float32).
         channels: Number of channels in the payload (default 3 = RGB).
-        gbr_order: If True, swap channels from GBR to RGB. Default True
-            matches Wiretap's ``rgb_float_le`` tag — which is empirically
-            lying: the bytes are actually in GBR order.
+        gbr_order: If True, swap channels from GBR to RGB. If None
+            (default), auto-detect from bit_depth: 8-bit Wiretap dumps
+            (transcoded MXF / proxy) are tagged ``rgb_float_le`` but
+            empirically arrive in GBR order, so they need the swap.
+            Float dumps (16-bit half / 32-bit float, typically EXR-
+            sourced ACEScg plates) are correctly tagged AND laid out
+            as RGB, so they must NOT be swapped — applying the swap on
+            float buffers introduces the well-known magenta-on-greens
+            cast that motivated this gating. Verified 2026-04-28 against
+            an A005C008 ACEScg plate (4448×3096 float16) on portofino.
+            Pass an explicit True/False to override (used by tests).
         bottom_up: If True, flip vertically. Default True matches Wiretap's
             OpenGL-convention (origin bottom-left) buffers.
 
@@ -135,6 +143,8 @@ def decode_raw_rgb_buffer(
     dtype = _BIT_DEPTH_TO_DTYPE.get(bit_depth)
     if dtype is None:
         return None
+    if gbr_order is None:
+        gbr_order = (bit_depth == 8)
     sample_size = np.dtype(dtype).itemsize
     expected = width * height * channels * sample_size
     if len(raw_bytes) < expected:

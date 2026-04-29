@@ -1,14 +1,34 @@
 ---
 created: 2026-04-27T20:30:00Z
+resolved: 2026-04-29T00:30:00Z
+status: fixed_pending_visual_uat
 title: Camera Calibrator preview shows wrong channel order (magenta cast on green/brown plates)
 area: image-pipeline
 files:
-  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer
-  - forge_core/image/buffer.py:152   # gbr_order swap
-  - forge_core/image/buffer.py:64    # apply_ocio_or_passthrough
-  - flame/camera_match_hook.py:222   # raw-buffer call site
-  - forge_flame/wiretap.py            # extract_frame_bytes
+  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (gbr_order auto-detect)
+  - tests/test_image_buffer.py        # regression coverage (4 new tests)
+  - flame/camera_match_hook.py:222   # raw-buffer call site (no change needed)
 ---
+
+## Resolution (2026-04-29)
+
+Bridge probes on portofino confirmed the channel-order swap is **bit-depth-dependent**, not blanket-correct as the previous default assumed:
+
+- 8-bit uint8 (testImage probe, `5184×3456`): payload arrives in GBR order, swap is REQUIRED. Pixel 0 reads `(R=154, G=118, B=98)` only after the swap, matching warm-brown stairs.
+- float16 (A005C008_120101_NQ96 ACEScg probe, `4448×3096`): payload arrives correctly tagged AND laid out as RGB. Swap was the bug — applying `[2, 0, 1]` on a green-shadow pixel `(0.016, 0.041, 0.025)` produces `(0.025, 0.016, 0.041)` (B-dominant), which through OCIO Rec.709 + sRGB display transform presents as the canonical magenta-on-greens cast.
+
+`decode_raw_rgb_buffer` now defaults `gbr_order=None` and auto-detects: True on uint8, False on float16/float32. The hook's call site doesn't pass the kwarg, so the new auto behavior applies transparently. Tests and custom callers can still force the swap on/off explicitly.
+
+Test suite green: 434 passed, 2 skipped (4 new regression tests added).
+
+Pattern captured in `memory/forge_wiretap_channel_order_by_bit_depth.md`.
+
+**Pending visual UAT:** open the calibrator on `A005C008_120101_NQ96` (or any ACEScg float plate) and confirm the magenta cast is gone. If it is — close this todo. If anything looks wrong, the explicit override `gbr_order=True` is still available as a one-line revert.
+
+---
+
+## Original problem (kept for context)
+
 
 ## Problem
 

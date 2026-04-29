@@ -120,6 +120,56 @@ class TestDecodeRawBuffer:
         out = decode_raw_rgb_buffer(raw, 4, 3, 8)
         assert out.flags["C_CONTIGUOUS"]
 
+    def test_gbr_order_auto_swaps_for_uint8(self):
+        """gbr_order=None (default) infers True for 8-bit Wiretap dumps
+        because they are tagged ``rgb_float_le`` but actually arrive in
+        GBR order (transcoded MXF / proxy buffers). Auto-detect path."""
+        raw, src = self._make_buffer(5, 4, header_bytes=16)
+        out_auto = decode_raw_rgb_buffer(raw, 5, 4, 8, bottom_up=False)
+        expected_swapped = src[..., [2, 0, 1]]
+        np.testing.assert_array_equal(out_auto, expected_swapped)
+
+    def test_gbr_order_auto_does_not_swap_for_float16(self):
+        """gbr_order=None (default) infers False for float16 because
+        EXR-sourced ACEScg plates arrive correctly tagged AND laid out
+        as RGB. Applying the GBR swap on float buffers is what produced
+        the magenta-on-greens cast on A005C008 (4448x3096 float16) —
+        verified 2026-04-28 on portofino."""
+        h, w = 3, 4
+        src = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
+        raw = b"\x00" * 16 + src.tobytes()
+        out_auto = decode_raw_rgb_buffer(raw, w, h, 16, bottom_up=False)
+        # No swap applied: output channels match source channels.
+        np.testing.assert_array_equal(out_auto, src)
+
+    def test_gbr_order_auto_does_not_swap_for_float32(self):
+        """Same as float16 — float32 is on the EXR-RGB-tagged-correctly
+        path and must not have the GBR swap applied by default."""
+        h, w = 3, 4
+        src = np.random.rand(h, w, 3).astype(np.float32)
+        raw = b"\x00" * 16 + src.tobytes()
+        out_auto = decode_raw_rgb_buffer(raw, w, h, 32, bottom_up=False)
+        np.testing.assert_allclose(out_auto, src)
+
+    def test_explicit_gbr_order_overrides_auto(self):
+        """Callers (tests, custom callers) can still force the swap on
+        or off by passing gbr_order explicitly. Auto-detect only fires
+        when gbr_order is None."""
+        h, w = 3, 4
+        src = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
+        raw = b"\x00" * 16 + src.tobytes()
+        # Force True on float: swap fires (would be the buggy path).
+        out_force_true = decode_raw_rgb_buffer(
+            raw, w, h, 16, gbr_order=True, bottom_up=False
+        )
+        np.testing.assert_array_equal(out_force_true, src[..., [2, 0, 1]])
+        # Force False on uint8: swap suppressed.
+        raw8, src8 = self._make_buffer(5, 4, header_bytes=16)
+        out_force_false = decode_raw_rgb_buffer(
+            raw8, 5, 4, 8, gbr_order=False, bottom_up=False
+        )
+        np.testing.assert_array_equal(out_force_false, src8)
+
 
 # =============================================================================
 # Container sniff + decode
