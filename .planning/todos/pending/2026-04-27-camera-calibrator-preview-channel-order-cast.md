@@ -1,14 +1,28 @@
 ---
 created: 2026-04-27T20:30:00Z
-resolved: 2026-04-29T00:30:00Z
-status: fixed_pending_visual_uat
+updated: 2026-04-29T00:55:00Z
+status: partial_fix_landed_not_yet_correct
+passoff: .planning/PASSOFF-channel-order-2026-04-28.md
 title: Camera Calibrator preview shows wrong channel order (magenta cast on green/brown plates)
 area: image-pipeline
 files:
-  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (gbr_order auto-detect)
-  - tests/test_image_buffer.py        # regression coverage (4 new tests)
+  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (gbr_order auto-detect — INSUFFICIENT for float)
+  - tests/test_image_buffer.py        # regression coverage (4 new tests — assume no-swap on float, also wrong)
   - flame/camera_match_hook.py:222   # raw-buffer call site (no change needed)
 ---
+
+## Status (2026-04-29 passoff)
+
+The bit-depth-gated `gbr_order` auto-detect (commit `0dcd772`) **DID NOT fully fix the bug.** It correctly handles the 8-bit path (`testImage` verified) but the float16 path (`A005C008_120101_NQ96` ACEScg) still renders with luminance-dependent hue shift — visible as teal car body where it should be warm-silver, plus pink/red highlights and wrong-colored mountains. Compared to image 32 (Flame's native viewport rendering of the same clip), the calibrator preview has clearly mis-ordered channels even after today's fix.
+
+Bridge probes (all 6 channel permutations through OCIO ACEScg→sRGB on the same body-side region) suggest the float buffer is in **GRB order** (ch0=G, ch1=R, ch2=B), needing a `[1, 0, 2]` swap — NOT the no-swap default the current fix applies. This is unverified against a second clip and was not committed.
+
+See `.planning/PASSOFF-channel-order-2026-04-28.md` for full investigation state, OCIO probe outputs, PNG diagnostic artifacts on `/tmp/`, and resume path for the next session.
+
+---
+
+## Original problem (kept for context)
+
 
 ## Resolution (2026-04-29)
 
