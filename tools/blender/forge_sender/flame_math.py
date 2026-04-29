@@ -95,6 +95,98 @@ _R_Z2Y = Matrix.Rotation(math.radians(90), 4, 'X').transposed()
 # =============================================================================
 
 
+def _iter_action_fcurves(action, anim_data=None):
+    """Version-tolerant fcurves walk for Blender 4.5..5.x slotted Actions.
+
+    WHY this exists: Blender 4.4 (Mar 2025) introduced Slotted Actions —
+    an Action is no longer a flat collection of fcurves but a layered
+    tree of Action -> ActionLayer -> ActionStrip -> ActionChannelbag ->
+    FCurve, and one Action can drive multiple data-blocks via slots.
+    Blender 4.4 retained `action.fcurves` as a back-compat proxy, but
+    Blender 5.0 (Oct 2025) REMOVED it entirely. flame-01 (Blender 5.1)
+    crashes the addon's "Send to Flame" operator with
+    ``AttributeError: 'Action' object has no attribute 'fcurves'``;
+    this helper is the fix.
+
+    Three-tier strategy:
+
+      * Tier 1 — official helper: when ``anim_data.action_slot`` is
+        bound, use ``bpy_extras.anim_utils.action_get_channelbag_for_slot``
+        to find the right channelbag and yield its fcurves. This is the
+        common case for forge-produced .blends (bake_camera.py creates
+        single-slot Actions via keyframe_insert).
+
+      * Tier 2 — manual slotted walk: when no slot is bound (rare —
+        non-forge-produced .blend, or auto-assignment couldn't pick a
+        unique slot), iterate every channelbag of every strip of every
+        layer and emit all fcurves. May include cross-slot fcurves on a
+        multi-slot Action; Tier 1 above is the always-fires path that
+        prevents that for forge's own writes.
+
+      * Tier 3 — legacy proxy: ``action.fcurves`` direct access. Covers
+        Blender 4.5 actions still in legacy-proxy mode (created in 4.3
+        and loaded into 4.4/4.5). Harmless dead code on Blender 5.0+
+        because the attr no longer exists; intentional — removing it
+        would break 4.5 legacy-mode actions.
+
+    Args:
+        action: the bpy.types.Action data-block, or None.
+        anim_data: the bpy.types.AnimData hosting the action binding
+            (cam.animation_data or cam.data.animation_data). The helper
+            reads ``anim_data.action_slot`` to drive Tier 1; pass None
+            to skip Tier 1 outright.
+
+    Yields:
+        bpy.types.FCurve instances. Empty iterator on a None action,
+        an empty slotted action, or an action whose layers/fcurves are
+        all empty.
+
+    See memory/blender_slotted_actions_fcurves_api.md for the full
+    migration spec, version cutoffs, and writer-side rationale (the
+    bake_camera.py keyframe_insert path needs no change because Blender
+    auto-creates slot/layer/strip/channelbag plumbing on first insert).
+
+    Sources:
+        developer.blender.org/docs/release_notes/4.4/upgrading/slotted_actions/
+        developer.blender.org/docs/release_notes/5.0/python_api/
+    """
+    if action is None:
+        return
+
+    # Tier 1: official helper, when a slot is bound.
+    slot = getattr(anim_data, "action_slot", None) if anim_data else None
+    if slot is not None:
+        try:
+            from bpy_extras import anim_utils
+            cbag = anim_utils.action_get_channelbag_for_slot(action, slot)
+        except (ImportError, AttributeError):
+            cbag = None
+        if cbag is not None:
+            for fc in cbag.fcurves:
+                yield fc
+            return
+
+    # Tier 2: manual slotted walk (no slot bound, or helper missing).
+    layers = getattr(action, "layers", None)
+    if layers:
+        emitted = False
+        for layer in layers:
+            for strip in getattr(layer, "strips", ()):
+                for cbag in getattr(strip, "channelbags", ()):
+                    for fc in cbag.fcurves:
+                        emitted = True
+                        yield fc
+        if emitted:
+            return
+
+    # Tier 3: legacy-mode action.fcurves (4.4/4.5 back-compat proxy).
+    # Harmless dead code on Blender 5.0+ where the attr was removed.
+    legacy = getattr(action, "fcurves", None)
+    if legacy:
+        for fc in legacy:
+            yield fc
+
+
 def _camera_keyframe_set(cam: bpy.types.Object) -> list:
     """Return a sorted list of unique integer frame numbers on which the
     camera (object or its data) has any keyframe.
@@ -102,14 +194,18 @@ def _camera_keyframe_set(cam: bpy.types.Object) -> list:
     Walks both the object-level action (location/rotation/scale) and the
     camera-data-level action (lens, sensor, etc.) because we keyframe
     both in bake_camera.py. Falls back to the scene's current frame if
-    no animation data is present (single static bake)."""
+    no animation data is present (single static bake).
+
+    Uses ``_iter_action_fcurves`` to stay version-tolerant across the
+    Blender 4.4 slotted-actions migration; see that helper's docstring
+    and memory/blender_slotted_actions_fcurves_api.md for context."""
     frames = set()
 
     def _drain(anim):
         if anim is None or anim.action is None:
             return
-        for fcurve in anim.action.fcurves:
-            for kp in fcurve.keyframe_points:
+        for fc in _iter_action_fcurves(anim.action, anim_data=anim):
+            for kp in fc.keyframe_points:
                 frames.add(int(round(kp.co[0])))
 
     _drain(cam.animation_data)

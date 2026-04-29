@@ -43,41 +43,63 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..",
 
 # Forge env on macOS has neither bpy nor mathutils. flame_math imports
 # both at module scope (`import bpy` + `from mathutils import Matrix`),
-# so we stub both BEFORE importing flame_math. The iterator tests don't
-# touch any real bpy / mathutils API surface — they're pure-Python
-# duck-typed tests against the fake hierarchy declared below. Live API
-# verification is the manual UAT gate (FCV-08, FCV-09).
-def _install_fake_bpy_and_mathutils() -> None:
+# so we stub both BEFORE importing flame_math, then REMOVE the stubs
+# from sys.modules afterwards so they don't leak into other test
+# modules' collection (test_forge_sender_flame_math.py uses
+# pytest.importorskip("bpy") and would mistakenly proceed against our
+# stub). flame_math itself keeps a reference to the stubs via its
+# module-level `import bpy` / `from mathutils import Matrix` lines, so
+# `flame_math.bpy.context` still works inside _camera_keyframe_set's
+# fallback. The iterator tests are duck-typed and don't exercise that
+# fallback path. Live API verification is the manual UAT gate
+# (FCV-08, FCV-09).
+def _import_flame_math_with_stubs():
+    fake_bpy = types.ModuleType("bpy")
+    fake_bpy.context = types.SimpleNamespace(
+        scene=types.SimpleNamespace(frame_current=0)
+    )
+    # bpy.types.Object is referenced only as a type annotation
+    # (`cam: bpy.types.Object`); under `from __future__ import
+    # annotations` the annotation is never evaluated, so an empty
+    # types module is enough.
+    fake_bpy.types = types.SimpleNamespace(Object=object, Camera=object)
+
+    fake_mathutils = types.ModuleType("mathutils")
+
+    # flame_math computes _R_Z2Y at module-import time via
+    # Matrix.Rotation(...).transposed(). We give Matrix.Rotation a stub
+    # that returns a placeholder object with .transposed() — the value
+    # is never inspected by the iterator tests.
+    class _StubMatrix:
+        @staticmethod
+        def Rotation(_angle, _size, _axis):
+            class _Rot:
+                def transposed(self):
+                    return self
+            return _Rot()
+    fake_mathutils.Matrix = _StubMatrix
+
+    # Track which keys we add so we can clean up exactly what we added,
+    # without disturbing pre-existing entries.
+    added_keys = []
     if "bpy" not in sys.modules:
-        fake_bpy = types.ModuleType("bpy")
-        fake_bpy.context = types.SimpleNamespace(
-            scene=types.SimpleNamespace(frame_current=0)
-        )
-        # bpy.types.Object is referenced only as a type annotation
-        # (`cam: bpy.types.Object`); under `from __future__ import
-        # annotations` the annotation is never evaluated, so an empty
-        # types module is enough.
-        fake_bpy.types = types.SimpleNamespace(Object=object,
-                                               Camera=object)
         sys.modules["bpy"] = fake_bpy
+        added_keys.append("bpy")
     if "mathutils" not in sys.modules:
-        fake_mathutils = types.ModuleType("mathutils")
-        # flame_math computes _R_Z2Y at module-import time via
-        # Matrix.Rotation(...).transposed(). We give Matrix.Rotation
-        # a stub that returns a placeholder object with .transposed()
-        # — the value is never inspected by the iterator tests.
-        class _StubMatrix:
-            @staticmethod
-            def Rotation(_angle, _size, _axis):
-                class _Rot:
-                    def transposed(self):
-                        return self
-                return _Rot()
-        fake_mathutils.Matrix = _StubMatrix
         sys.modules["mathutils"] = fake_mathutils
+        added_keys.append("mathutils")
+
+    try:
+        import flame_math  # noqa: F401  (imported for its side effects + cache)
+    finally:
+        # Drop the stubs so other test modules' importorskip("bpy") etc.
+        # see the env's real (absent) state. flame_math itself keeps
+        # references to the stubs via its closure on `import bpy`.
+        for key in added_keys:
+            sys.modules.pop(key, None)
 
 
-_install_fake_bpy_and_mathutils()
+_import_flame_math_with_stubs()
 
 
 # =============================================================================
