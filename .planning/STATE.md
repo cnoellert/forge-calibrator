@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-04-29 -- Completed quick task 260429-fk5: glob-expand Blender binary defaults to cover /opt/ sideloads
+Last activity: 2026-04-29 -- Completed quick task 260429-gde: version-tolerant fcurves walk for Blender slotted-actions API (5.x compat fix in flame_math.py)
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -114,6 +114,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260428-q8c | Fix Wiretap channel-order decoding to be per-bit-depth (channel_order={RGB,GBR,BRG} keyed off bit_depth) | 2026-04-29 | 6a6df75 | [260428-q8c-fix-wiretap-channel-order-decoding-to-be](./quick/260428-q8c-fix-wiretap-channel-order-decoding-to-be/) |
 | 260429-ebd | Add 10-bit + 12-bit decode support to decode_raw_rgb_buffer + bit-depth-unsupported warning | 2026-04-29 | c25e542 | [260429-ebd-add-10-bit-12-bit-decode-support-to-deco](./quick/260429-ebd-add-10-bit-12-bit-decode-support-to-deco/) |
 | 260429-fk5 | Glob-expand Blender binary defaults to cover /opt/ sideloads + backlog UI todo | 2026-04-29 | 969198d | [260429-fk5-glob-expand-blender-binary-defaults-to-c](./quick/260429-fk5-glob-expand-blender-binary-defaults-to-c/) |
+| 260429-gde | Version-tolerant fcurves walk for Blender slotted-actions API (5.x compat fix in flame_math.py) | 2026-04-29 | f064824 | [260429-gde-version-tolerant-fcurves-walk-for-blende](./quick/260429-gde-version-tolerant-fcurves-walk-for-blende/) |
 
 ## Deferred Items
 
