@@ -37,6 +37,7 @@ Scripts (in order of preference):
 
 from __future__ import annotations
 
+import glob
 import os
 import shutil
 import subprocess
@@ -48,14 +49,24 @@ from typing import List, Optional
 # Defaults
 # =============================================================================
 
-# Where Blender typically lives on supported platforms. First hit wins.
+# Where Blender typically lives on supported platforms. Each entry is a path
+# pattern that supports `~` (expanduser) and `*` (glob) — `resolve_blender_bin`
+# expands and globs each candidate and returns the first executable match.
+# Multi-match results are sorted in DESCENDING order so newer versioned
+# installs (Blender 4.5 > Blender 4.4) win without manual configuration.
 _DEFAULT_BLENDER_BINS = {
     "darwin": [
         "/Applications/Blender.app/Contents/MacOS/Blender",
+        "/Applications/Blender*.app/Contents/MacOS/Blender",
+        "~/Applications/Blender.app/Contents/MacOS/Blender",
+        "~/Applications/Blender*.app/Contents/MacOS/Blender",
     ],
     "linux": [
         "/usr/bin/blender",
         "/usr/local/bin/blender",
+        "/opt/blender/blender",
+        "/opt/blender-*/blender",
+        "~/Apps/blender-*/blender",
     ],
 }
 
@@ -88,9 +99,17 @@ def resolve_blender_bin() -> str:
             return override
 
     for candidate in _DEFAULT_BLENDER_BINS.get(sys.platform, []):
+        # Record the raw user-facing pattern (with `~`/`*` intact) so the
+        # error message preserves what's configured, not its expansion.
         tried.append(candidate)
-        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
-            return candidate
+        expanded = os.path.expanduser(candidate)
+        # glob.glob returns [path] for an existing literal path with no
+        # wildcards and [] for non-existent paths — one code path covers
+        # both literal and glob candidates.
+        matches = sorted(glob.glob(expanded), reverse=True)
+        for match in matches:
+            if os.path.isfile(match) and os.access(match, os.X_OK):
+                return match
 
     on_path = shutil.which("blender")
     tried.append("`which blender` (PATH)")
