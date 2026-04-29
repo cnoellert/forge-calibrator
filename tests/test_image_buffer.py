@@ -96,7 +96,11 @@ class TestDecodeRawBuffer:
         assert decode_raw_rgb_buffer(tiny, 100, 100, 8) is None
 
     def test_unknown_bit_depth_returns_none(self):
-        assert decode_raw_rgb_buffer(b"\x00" * 1000, 4, 4, bit_depth=12) is None
+        # bd=12 is now supported (260429-ebd); bd=14 stands in as the
+        # "unmapped depth" coverage gap so the unsupported-bit-depth dialog
+        # branch in flame/camera_match_hook.py:_open_camera_match has a
+        # corresponding decoder return-None path that can be exercised.
+        assert decode_raw_rgb_buffer(b"\x00" * 1000, 4, 4, bit_depth=14) is None
 
     def test_float32_bit_depth(self):
         h, w = 3, 4
@@ -192,6 +196,150 @@ class TestDecodeRawBuffer:
             np.testing.assert_allclose(out, expected)
         else:
             np.testing.assert_array_equal(out, expected)
+
+    # =========================================================================
+    # 12-bit (uint16, BRG, /65535 normalize)
+    # =========================================================================
+    #
+    # Wiretap delivers 12-bit clips as full-range uint16 (verified live on
+    # portofino against testImage12bit, 5184x3456, 2026-04-29 — see
+    # 260429-ebd-SUMMARY.md). The 12-bit source values are spread across the
+    # full uint16 range (max observed 64508 ≈ 65535), NOT zero-padded into the
+    # high 12 bits. So normalization is /65535.0, not /4095.0. This was a
+    # deviation from the plan's "/4095" assumption — bridge probe disagreed
+    # with the docstring guess and the data won.
+
+    def _make_buffer_12bit(self, w, h, header_bytes=0):
+        """Build a deterministic uint16 BRG buffer where each pixel encodes
+        its (row, col) position scaled into the uint16 range. Source channel
+        order in the raw buffer is B,R,G (matches Wiretap's 12-bit layout);
+        decoder must permute back to R,G,B via [1, 2, 0]."""
+        src = np.zeros((h, w, 3), dtype=np.uint16)
+        for y in range(h):
+            for x in range(w):
+                # Distinct values per channel so flips/perms are visible.
+                src[y, x, 0] = (x * 257) % 65536          # B in source layout
+                src[y, x, 1] = (y * 513 + 1000) % 65536   # R in source layout
+                src[y, x, 2] = (x * 113 + y * 199) % 65536  # G in source layout
+        header = bytes(header_bytes)
+        return header + src.tobytes(), src
+
+    def test_bit_depth_12_round_trip(self):
+        """bd=12: synth uint16 BRG buffer, decode with channel_order=None
+        (auto-resolves to BRG), confirm float32 (h,w,3) array equal to
+        (src/65535.0)[..., [1,2,0]] within 1e-6."""
+        raw, src = self._make_buffer_12bit(5, 4, header_bytes=16)
+        out = decode_raw_rgb_buffer(raw, 5, 4, 12, bottom_up=False)
+        assert out is not None
+        assert out.dtype == np.float32
+        assert out.shape == (4, 5, 3)
+        expected = (src.astype(np.float32) / 65535.0)[..., [1, 2, 0]]
+        np.testing.assert_allclose(out, expected, atol=1e-6)
+
+    def test_bit_depth_12_strips_header_via_tail_slice(self):
+        """bd=12 header-strip via tail-slicing; result identical to no-header
+        case. Mirrors test_strips_leading_header_via_tail_slice for uint8."""
+        raw_with_hdr, _ = self._make_buffer_12bit(4, 3, header_bytes=16)
+        raw_no_hdr,   _ = self._make_buffer_12bit(4, 3, header_bytes=0)
+        a = decode_raw_rgb_buffer(raw_with_hdr, 4, 3, 12, bottom_up=False)
+        b = decode_raw_rgb_buffer(raw_no_hdr,   4, 3, 12, bottom_up=False)
+        np.testing.assert_array_equal(a, b)
+
+    def test_bit_depth_12_explicit_channel_order_overrides_auto(self):
+        """Force channel_order='RGB' on a 12-bit buffer to bypass the BRG
+        auto-default. Output values still divided by 65535.0; just no perm."""
+        raw, src = self._make_buffer_12bit(5, 4, header_bytes=16)
+        out = decode_raw_rgb_buffer(raw, 5, 4, 12, channel_order="RGB", bottom_up=False)
+        expected = src.astype(np.float32) / 65535.0
+        np.testing.assert_allclose(out, expected, atol=1e-6)
+
+    def test_bit_depth_12_does_not_clamp_out_of_range(self):
+        """Sanity: the decoder normalizes by uint16 max (65535) but does NOT
+        clip. A synthesized uint16=65535 normalizes to exactly 1.0; no
+        downstream clamping happens in this layer (OCIO / passthrough does)."""
+        # Single 1x1 pixel at uint16 max in all 3 channels.
+        src = np.full((1, 1, 3), 65535, dtype=np.uint16)
+        raw = b"\x00" * 16 + src.tobytes()
+        out = decode_raw_rgb_buffer(raw, 1, 1, 12, channel_order="RGB", bottom_up=False)
+        np.testing.assert_allclose(out, np.full((1, 1, 3), 1.0, dtype=np.float32))
+
+    # =========================================================================
+    # 10-bit (DPX method A, big-endian DWORD, R/G/B in bits 31-22 / 21-12 / 11-2)
+    # =========================================================================
+    #
+    # Bridge-probed against testImage10bit on portofino (2026-04-29). Of the
+    # four candidate unpack schemes (R210 BE, r210 LE, DPX method A BE, DPX
+    # method A LE), only DPX method A BE produces spatially-coherent
+    # gradients across all three channels (whole-frame stats: R∈[0,1007],
+    # G∈[0,943], B∈[0,923] on warm-brown stair test image). The two LSBs of
+    # each DWORD are padding. See 260429-ebd-SUMMARY.md for the 4-DWORD probe
+    # data and full discrimination logic.
+
+    def _pack_10bit_dpx_methodA_be(self, src_rgb):
+        """Encode an (h, w, 3) array of 10-bit values [0, 1023] into a DPX
+        method-A big-endian packed DWORD buffer. Inverse of the decoder.
+
+        Per pixel: DWORD = (R << 22) | (G << 12) | (B << 2), high-byte first.
+        """
+        h, w, _ = src_rgb.shape
+        r = src_rgb[..., 0].astype(np.uint32) & 0x3ff
+        g = src_rgb[..., 1].astype(np.uint32) & 0x3ff
+        b = src_rgb[..., 2].astype(np.uint32) & 0x3ff
+        dwords = (r << 22) | (g << 12) | (b << 2)
+        # Big-endian DWORD layout matches the bridge-probed scheme.
+        return dwords.astype(">u4").reshape(h, w).tobytes()
+
+    def _make_buffer_10bit(self, w, h, header_bytes=0):
+        """Build a packed 10-bit buffer with each pixel encoding its position
+        so flips/perms are detectable. Returns (raw_bytes, src_rgb_uint16)
+        where src_rgb_uint16 contains the unpacked R,G,B 10-bit values for
+        comparison against the decoder output."""
+        src = np.zeros((h, w, 3), dtype=np.uint16)
+        for y in range(h):
+            for x in range(w):
+                src[y, x, 0] = (x * 17 + y * 3) % 1024     # R
+                src[y, x, 1] = (y * 13 + 100) % 1024       # G
+                src[y, x, 2] = (x + y + 200) % 1024        # B
+        payload = self._pack_10bit_dpx_methodA_be(src)
+        header = bytes(header_bytes)
+        return header + payload, src
+
+    def test_bit_depth_10_round_trip(self):
+        """bd=10: pack a known 10-bit RGB pattern using DPX method A BE,
+        decode with bd=10, confirm float32 (h,w,3) equals (src/1023.0)
+        within one 10-bit step (1/1023 ≈ 9.78e-4)."""
+        raw, src = self._make_buffer_10bit(8, 6, header_bytes=16)
+        out = decode_raw_rgb_buffer(raw, 8, 6, 10, bottom_up=False)
+        assert out is not None
+        assert out.dtype == np.float32
+        assert out.shape == (6, 8, 3)
+        expected = src.astype(np.float32) / 1023.0
+        np.testing.assert_allclose(out, expected, atol=1e-3)
+
+    def test_bit_depth_10_strips_header_via_tail_slice(self):
+        """bd=10 header-strip via tail-slicing; result identical to no-header
+        case. Wiretap's 10-bit raw buffer carries a leading ~16-byte header."""
+        raw_with_hdr, _ = self._make_buffer_10bit(4, 3, header_bytes=16)
+        raw_no_hdr,   _ = self._make_buffer_10bit(4, 3, header_bytes=0)
+        a = decode_raw_rgb_buffer(raw_with_hdr, 4, 3, 10, bottom_up=False)
+        b = decode_raw_rgb_buffer(raw_no_hdr,   4, 3, 10, bottom_up=False)
+        np.testing.assert_array_equal(a, b)
+
+    # =========================================================================
+    # Coverage gap: unmapped bit_depth → None (locks the unsupported-bit-depth
+    # dialog branch in _open_camera_match's testability)
+    # =========================================================================
+
+    def test_bit_depth_14_returns_none(self):
+        """bd=14 is unmapped; decoder must return None so the hook can show
+        the 'unsupported_bit_depth' dialog branch (vs the generic media-path
+        error). Locks the explicit fall-through behavior even though it would
+        also be implied by the absence of bd=14 in _BIT_DEPTH_TO_DTYPE — we
+        want a regression-protected assertion."""
+        # Buffer is large enough that an over-eager dispatch would NOT trip on
+        # the size check; the rejection must come from the bit-depth lookup.
+        big = b"\x00" * (4 * 4 * 6 + 16)
+        assert decode_raw_rgb_buffer(big, 4, 4, bit_depth=14) is None
 
 
 # =============================================================================
