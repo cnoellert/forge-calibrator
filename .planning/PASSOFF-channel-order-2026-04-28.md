@@ -79,3 +79,38 @@ Read this file. Then either:
 - (b) Just ship the GRB swap on float and visually UAT on portofino across 2-3 plates. If correct, lock it in.
 
 The bridge is at `127.0.0.1:9999` and was working at end of this session. The relevant clip is `A005C008_120101_NQ96` in the active batch on portofino.
+
+---
+
+## Resolution (2026-04-29)
+
+Empirical bridge probes against four batch clips on portofino, with visual UAT through
+Flame Player's Rec.709 / ACES SDR view, established the per-bit-depth channel-order layout:
+
+| bit_depth | format_tag       | raw layout | perm to recover RGB | verifying clip            |
+|-----------|------------------|------------|---------------------|---------------------------|
+| 8         | rgb              | G B R      | GBR [2, 0, 1]       | testImage                 |
+| 10        | rgb              | R G B      | RGB (no-op)         | testImage10bit            |
+| 12        | rgb_le           | B R G u16  | BRG [1, 2, 0]       | testImage12bit            |
+| 16-float  | rgb_float_le     | B R G f16  | BRG [1, 2, 0]       | C002_260302_C005 (ACEScg) |
+| 32-float  | rgb_float_le     | B R G f32  | BRG [1, 2, 0]       | (assumed; no clip)        |
+
+The previous fix (`0dcd772`) was wrong on float — "no-swap-on-float" produced the
+G-dominant teal cast visible in image 31. The float layout is BRG, not RGB. The earlier
+GRB-for-float hypothesis from this passoff was also wrong; visual UAT through the Flame
+Player monitor (which the OCIO-only probes lacked) made BRG unambiguous.
+
+**Code change:** replaced `gbr_order: Optional[bool]` with
+`channel_order: Optional[Literal["RGB", "GBR", "BRG"]]`, with auto-detect
+`_DEFAULT_CHANNEL_ORDER = {8: "GBR", 16: "BRG", 32: "BRG"}`. Existing call sites
+(`flame/camera_match_hook.py:223`, `forge_flame/wiretap.py`) pass no kwargs and pick up
+the corrected auto-detect transparently. Test suite green via
+`pytest tests/ -p no:pytest-blender`.
+
+**32-bit float caveat:** assumed-BRG (consistent with float16 layout); no 32-bit clip
+in batch to verify against. Revisit if a 32-bit plate ever shows up and the cast is wrong.
+
+**Pending:** final visual UAT through the Camera Match menu flow on portofino across
+all four clips. Then the todo at
+`.planning/todos/pending/2026-04-27-camera-calibrator-preview-channel-order-cast.md`
+moves to `done/`.

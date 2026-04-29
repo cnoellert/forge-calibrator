@@ -8,12 +8,14 @@ Three concerns, one module:
    start with any known container signature. Used when Wiretap (or any other
    source) hands back a standard image file for soft-imported stills.
 
-2. ``decode_raw_rgb_buffer(raw_bytes, w, h, bit_depth, gbr_order=True,
+2. ``decode_raw_rgb_buffer(raw_bytes, w, h, bit_depth, channel_order=None,
    bottom_up=True)`` — strip trailing header, reshape to (h, w, 3), optionally
-   flip vertically and swap channels. Defaults match Flame's Wiretap raw
-   buffer quirks (bottom-up OpenGL orientation, GBR despite the rgb_float_le
-   format tag). Any caller feeding a differently-quirked buffer can pass
-   ``gbr_order=False`` or ``bottom_up=False``.
+   flip vertically and apply a bit-depth-keyed channel permutation. Defaults
+   match Flame's Wiretap raw buffer quirks (bottom-up OpenGL orientation, and
+   a per-bit-depth channel layout: 8-bit arrives GBR, float16/float32 arrive
+   BRG — see ``_DEFAULT_CHANNEL_ORDER`` below). Any caller feeding a
+   differently-quirked buffer can pass an explicit ``channel_order`` or
+   ``bottom_up=False``.
 
 3. ``apply_ocio_or_passthrough(float_rgb, processor)`` — apply an OCIO CPU
    processor in place and quantise to uint8, or clip+quantise with no
@@ -27,7 +29,7 @@ functions after extracting bytes via the Wiretap CLI.
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Literal, Optional
 import numpy as np
 
 
@@ -100,13 +102,23 @@ _BIT_DEPTH_TO_DTYPE = {
 }
 
 
+# Bit-depth → channel-order auto-detect. Verified empirically 2026-04-28 on portofino
+# (testImage / testImage10bit / testImage12bit / C002_260302_C005). 10/12-bit decode
+# paths are not wired up today (see _BIT_DEPTH_TO_DTYPE) but the table is here so
+# whoever extends them has the layout in one place.
+_DEFAULT_CHANNEL_ORDER = {8: "GBR", 16: "BRG", 32: "BRG"}
+# 32-bit float is assumed-BRG (consistent with float16); revisit if a 32-bit
+# plate ever shows up in batch and the cast is wrong.
+_PERMS = {"RGB": None, "GBR": [2, 0, 1], "BRG": [1, 2, 0]}
+
+
 def decode_raw_rgb_buffer(
     raw_bytes: bytes,
     width: int,
     height: int,
     bit_depth: int,
     channels: int = 3,
-    gbr_order: Optional[bool] = None,
+    channel_order: Optional[Literal["RGB", "GBR", "BRG"]] = None,
     bottom_up: bool = True,
 ) -> Optional[np.ndarray]:
     """Decode a raw pixel buffer of known geometry into an ndarray.
@@ -120,17 +132,31 @@ def decode_raw_rgb_buffer(
         width, height: Expected pixel dimensions.
         bit_depth: 8/16/32 (maps to uint8/float16/float32).
         channels: Number of channels in the payload (default 3 = RGB).
-        gbr_order: If True, swap channels from GBR to RGB. If None
-            (default), auto-detect from bit_depth: 8-bit Wiretap dumps
-            (transcoded MXF / proxy) are tagged ``rgb_float_le`` but
-            empirically arrive in GBR order, so they need the swap.
-            Float dumps (16-bit half / 32-bit float, typically EXR-
-            sourced ACEScg plates) are correctly tagged AND laid out
-            as RGB, so they must NOT be swapped — applying the swap on
-            float buffers introduces the well-known magenta-on-greens
-            cast that motivated this gating. Verified 2026-04-28 against
-            an A005C008 ACEScg plate (4448×3096 float16) on portofino.
-            Pass an explicit True/False to override (used by tests).
+        channel_order: Channel-order recovery permutation. One of:
+            - "RGB": no swap (channels already in RGB order)
+            - "GBR": swap [2, 0, 1] (raw layout is G,B,R → recover R,G,B)
+            - "BRG": swap [1, 2, 0] (raw layout is B,R,G → recover R,G,B)
+            If None (default), auto-detect from bit_depth via
+            _DEFAULT_CHANNEL_ORDER: {8: "GBR", 16: "BRG", 32: "BRG"}.
+
+            Empirical layout map (verified 2026-04-28 on portofino through
+            Flame Player Rec.709/ACES SDR view):
+
+                | bit_depth | tag           | raw layout | perm        |
+                |-----------|---------------|------------|-------------|
+                | 8         | rgb           | G B R      | GBR [2,0,1] |  testImage
+                | 10        | rgb           | R G B      | RGB no-op   |  testImage10bit
+                | 12        | rgb_le        | B R G u16  | BRG [1,2,0] |  testImage12bit
+                | 16-float  | rgb_float_le  | B R G f16  | BRG [1,2,0] |  C002_260302_C005
+                | 32-float  | rgb_float_le  | B R G f32  | BRG [1,2,0] |  (assumed; no clip)
+
+            10/12-bit dtype isn't wired up in _BIT_DEPTH_TO_DTYPE today; the
+            table records the layout for whoever extends those paths. The
+            previous "blanket GBR-on-float" default produced the canonical
+            magenta-on-greens cast; the "GBR-on-uint8, no-swap-on-float"
+            interim default produced a G-dominant teal cast on ACEScg plates.
+            BRG-on-float is the correct recovery — verified visually against
+            C002_260302_C005 (4448x3096 float16 ACEScg) on portofino.
         bottom_up: If True, flip vertically. Default True matches Wiretap's
             OpenGL-convention (origin bottom-left) buffers.
 
@@ -143,8 +169,9 @@ def decode_raw_rgb_buffer(
     dtype = _BIT_DEPTH_TO_DTYPE.get(bit_depth)
     if dtype is None:
         return None
-    if gbr_order is None:
-        gbr_order = (bit_depth == 8)
+    if channel_order is None:
+        channel_order = _DEFAULT_CHANNEL_ORDER.get(bit_depth, "RGB")
+    perm = _PERMS[channel_order]
     sample_size = np.dtype(dtype).itemsize
     expected = width * height * channels * sample_size
     if len(raw_bytes) < expected:
@@ -154,15 +181,14 @@ def decode_raw_rgb_buffer(
     arr = np.frombuffer(payload, dtype=dtype).reshape(height, width, channels)
 
     # Order of operations matters when both flags are set: flip first, then
-    # channel swap. The flip is just a view stride reversal so it's free;
-    # the fancy-indexing swap forces a copy that we then contiguous-ify so
+    # channel permute. The flip is just a view stride reversal so it's free;
+    # the fancy-indexing permute forces a copy that we then contiguous-ify so
     # Qt / OCIO get a tight buffer.
     if bottom_up:
         arr = arr[::-1]
-    if gbr_order:
-        # Swap GBR → RGB (equivalent to [2, 0, 1] in the last axis).
-        arr = arr[..., [2, 0, 1]]
-    if bottom_up or gbr_order:
+    if perm is not None:
+        arr = arr[..., perm]
+    if bottom_up or perm is not None:
         arr = np.ascontiguousarray(arr)
     return arr
 

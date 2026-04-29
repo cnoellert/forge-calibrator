@@ -3,9 +3,9 @@ Unit tests for forge_core.image.buffer — the pure pixel-transform helpers
 extracted from the hook's _read_source_frame.
 
 The important assertions:
-    - decode_raw_rgb_buffer flips vertically AND swaps GBR→RGB when both
-      flags are set (Wiretap defaults). Flipping ALONE or swapping alone
-      must NOT accidentally do both.
+    - decode_raw_rgb_buffer flips vertically AND applies the bit-depth-keyed
+      channel permutation when both flags are set (Wiretap defaults).
+      Flipping ALONE or permuting alone must NOT accidentally do both.
     - Header-stripping works via tail-slicing regardless of header length.
     - apply_ocio_or_passthrough produces identical uint8 output whether
       processor is None or raises — both fall back to clip+quantise.
@@ -38,7 +38,7 @@ from forge_core.image.buffer import (
 
 
 class TestDecodeRawBuffer:
-    """decode_raw_rgb_buffer: strip header, reshape, flip, swap channels."""
+    """decode_raw_rgb_buffer: strip header, reshape, flip, permute channels."""
 
     def _make_buffer(self, w, h, header_bytes=0):
         """Build a deterministic GBR buffer where each pixel encodes its
@@ -59,34 +59,35 @@ class TestDecodeRawBuffer:
     def test_strips_leading_header_via_tail_slice(self):
         raw_with_hdr, _ = self._make_buffer(4, 3, header_bytes=16)
         raw_no_hdr,   _ = self._make_buffer(4, 3, header_bytes=0)
-        # gbr_order=False + bottom_up=False: we only care that the payload
+        # channel_order="RGB" + bottom_up=False: we only care that the payload
         # identified by tail-slicing is the same with or without header.
-        a = decode_raw_rgb_buffer(raw_with_hdr, 4, 3, 8, gbr_order=False, bottom_up=False)
-        b = decode_raw_rgb_buffer(raw_no_hdr,   4, 3, 8, gbr_order=False, bottom_up=False)
+        a = decode_raw_rgb_buffer(raw_with_hdr, 4, 3, 8, channel_order="RGB", bottom_up=False)
+        b = decode_raw_rgb_buffer(raw_no_hdr,   4, 3, 8, channel_order="RGB", bottom_up=False)
         np.testing.assert_array_equal(a, b)
 
     def test_no_transforms_preserves_layout(self):
         raw, src = self._make_buffer(5, 4, header_bytes=16)
-        out = decode_raw_rgb_buffer(raw, 5, 4, 8, gbr_order=False, bottom_up=False)
+        out = decode_raw_rgb_buffer(raw, 5, 4, 8, channel_order="RGB", bottom_up=False)
         np.testing.assert_array_equal(out, src)
 
     def test_bottom_up_flip_only(self):
         raw, src = self._make_buffer(5, 4, header_bytes=16)
-        out = decode_raw_rgb_buffer(raw, 5, 4, 8, gbr_order=False, bottom_up=True)
+        out = decode_raw_rgb_buffer(raw, 5, 4, 8, channel_order="RGB", bottom_up=True)
         np.testing.assert_array_equal(out, src[::-1])
 
     def test_gbr_swap_only(self):
         raw, src = self._make_buffer(5, 4, header_bytes=16)
-        out = decode_raw_rgb_buffer(raw, 5, 4, 8, gbr_order=True, bottom_up=False)
+        out = decode_raw_rgb_buffer(raw, 5, 4, 8, channel_order="GBR", bottom_up=False)
         # GBR → RGB means take source channels [2, 0, 1] into [0, 1, 2].
         expected = src[..., [2, 0, 1]]
         np.testing.assert_array_equal(out, expected)
 
-    def test_wiretap_default_flips_and_swaps(self):
-        """Both flags ON is the Wiretap default. Verifies the combined
-        operation does both transforms correctly, not one or the other."""
+    def test_wiretap_default_uint8_flips_and_gbr_swaps(self):
+        """Both flags ON is the Wiretap default for uint8. Verifies the
+        combined operation does both transforms correctly, not one or the
+        other. uint8 still auto-resolves to GBR via _DEFAULT_CHANNEL_ORDER."""
         raw, src = self._make_buffer(5, 4, header_bytes=16)
-        out = decode_raw_rgb_buffer(raw, 5, 4, 8)  # defaults: both True
+        out = decode_raw_rgb_buffer(raw, 5, 4, 8)  # defaults: bottom_up=True, channel_order=None→GBR
         expected = src[::-1][..., [2, 0, 1]]
         np.testing.assert_array_equal(out, expected)
 
@@ -101,7 +102,7 @@ class TestDecodeRawBuffer:
         h, w = 3, 4
         src = np.random.rand(h, w, 3).astype(np.float32)
         raw = b"\x00" * 16 + src.tobytes()
-        out = decode_raw_rgb_buffer(raw, w, h, 32, gbr_order=False, bottom_up=False)
+        out = decode_raw_rgb_buffer(raw, w, h, 32, channel_order="RGB", bottom_up=False)
         assert out.dtype == np.float32
         np.testing.assert_allclose(out, src)
 
@@ -109,7 +110,7 @@ class TestDecodeRawBuffer:
         h, w = 3, 4
         src = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
         raw = b"\x00" * 16 + src.tobytes()
-        out = decode_raw_rgb_buffer(raw, w, h, 16, gbr_order=False, bottom_up=False)
+        out = decode_raw_rgb_buffer(raw, w, h, 16, channel_order="RGB", bottom_up=False)
         assert out.dtype == np.float16
         np.testing.assert_array_equal(out, src)
 
@@ -120,8 +121,8 @@ class TestDecodeRawBuffer:
         out = decode_raw_rgb_buffer(raw, 4, 3, 8)
         assert out.flags["C_CONTIGUOUS"]
 
-    def test_gbr_order_auto_swaps_for_uint8(self):
-        """gbr_order=None (default) infers True for 8-bit Wiretap dumps
+    def test_channel_order_auto_swaps_uint8_via_gbr(self):
+        """channel_order=None auto-resolves to 'GBR' for 8-bit Wiretap dumps
         because they are tagged ``rgb_float_le`` but actually arrive in
         GBR order (transcoded MXF / proxy buffers). Auto-detect path."""
         raw, src = self._make_buffer(5, 4, header_bytes=16)
@@ -129,46 +130,68 @@ class TestDecodeRawBuffer:
         expected_swapped = src[..., [2, 0, 1]]
         np.testing.assert_array_equal(out_auto, expected_swapped)
 
-    def test_gbr_order_auto_does_not_swap_for_float16(self):
-        """gbr_order=None (default) infers False for float16 because
-        EXR-sourced ACEScg plates arrive correctly tagged AND laid out
-        as RGB. Applying the GBR swap on float buffers is what produced
-        the magenta-on-greens cast on A005C008 (4448x3096 float16) —
-        verified 2026-04-28 on portofino."""
+    def test_channel_order_auto_brg_swaps_for_float16(self):
+        """channel_order=None auto-resolves to 'BRG' for float16 because Wiretap's
+        float buffers (EXR-sourced ACEScg) are laid out B,R,G in memory.
+        Verified 2026-04-28 against C002_260302_C005 (4448x3096 float16) on portofino;
+        BRG is the perm that produced the only natural-looking output through
+        Flame Player's Rec.709/ACES SDR view."""
         h, w = 3, 4
         src = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
         raw = b"\x00" * 16 + src.tobytes()
         out_auto = decode_raw_rgb_buffer(raw, w, h, 16, bottom_up=False)
-        # No swap applied: output channels match source channels.
-        np.testing.assert_array_equal(out_auto, src)
+        expected = src[..., [1, 2, 0]]
+        np.testing.assert_array_equal(out_auto, expected)
 
-    def test_gbr_order_auto_does_not_swap_for_float32(self):
-        """Same as float16 — float32 is on the EXR-RGB-tagged-correctly
-        path and must not have the GBR swap applied by default."""
+    def test_channel_order_auto_brg_swaps_for_float32(self):
+        """Same as float16 — float32 auto-resolves to 'BRG' via
+        _DEFAULT_CHANNEL_ORDER. Assumed-consistent with float16 layout
+        (no 32-bit clip available to verify, but the Wiretap raw-buffer
+        path is shared)."""
         h, w = 3, 4
         src = np.random.rand(h, w, 3).astype(np.float32)
         raw = b"\x00" * 16 + src.tobytes()
         out_auto = decode_raw_rgb_buffer(raw, w, h, 32, bottom_up=False)
-        np.testing.assert_allclose(out_auto, src)
+        expected = src[..., [1, 2, 0]]
+        np.testing.assert_allclose(out_auto, expected)
 
-    def test_explicit_gbr_order_overrides_auto(self):
-        """Callers (tests, custom callers) can still force the swap on
-        or off by passing gbr_order explicitly. Auto-detect only fires
-        when gbr_order is None."""
+    def test_explicit_channel_order_overrides_auto(self):
+        """Callers can force any of RGB/GBR/BRG explicitly. Auto-detect only
+        fires when channel_order is None."""
         h, w = 3, 4
-        src = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
-        raw = b"\x00" * 16 + src.tobytes()
-        # Force True on float: swap fires (would be the buggy path).
-        out_force_true = decode_raw_rgb_buffer(
-            raw, w, h, 16, gbr_order=True, bottom_up=False
-        )
-        np.testing.assert_array_equal(out_force_true, src[..., [2, 0, 1]])
-        # Force False on uint8: swap suppressed.
+        src_f = (np.random.rand(h, w, 3) * 0.5).astype(np.float16)
+        raw_f = b"\x00" * 16 + src_f.tobytes()
+        # Force RGB on float (bypass the BRG default).
+        out_rgb = decode_raw_rgb_buffer(raw_f, w, h, 16, channel_order="RGB", bottom_up=False)
+        np.testing.assert_array_equal(out_rgb, src_f)
+        # Force GBR on float (legacy buggy path; sanity-check the perm wiring).
+        out_gbr = decode_raw_rgb_buffer(raw_f, w, h, 16, channel_order="GBR", bottom_up=False)
+        np.testing.assert_array_equal(out_gbr, src_f[..., [2, 0, 1]])
+        # Force RGB on uint8 (bypass the GBR default).
         raw8, src8 = self._make_buffer(5, 4, header_bytes=16)
-        out_force_false = decode_raw_rgb_buffer(
-            raw8, 5, 4, 8, gbr_order=False, bottom_up=False
-        )
-        np.testing.assert_array_equal(out_force_false, src8)
+        out_rgb_u8 = decode_raw_rgb_buffer(raw8, 5, 4, 8, channel_order="RGB", bottom_up=False)
+        np.testing.assert_array_equal(out_rgb_u8, src8)
+        # Force BRG on uint8 (sanity-check the BRG perm on integer dtype).
+        out_brg_u8 = decode_raw_rgb_buffer(raw8, 5, 4, 8, channel_order="BRG", bottom_up=False)
+        np.testing.assert_array_equal(out_brg_u8, src8[..., [1, 2, 0]])
+
+    @pytest.mark.parametrize("bit_depth,expected_perm,dtype_factory", [
+        (8,  [2, 0, 1], lambda h, w: np.random.randint(0, 256, (h, w, 3), dtype=np.uint8)),
+        (16, [1, 2, 0], lambda h, w: (np.random.rand(h, w, 3) * 0.5).astype(np.float16)),
+        (32, [1, 2, 0], lambda h, w: np.random.rand(h, w, 3).astype(np.float32)),
+    ])
+    def test_default_channel_order_per_bit_depth(self, bit_depth, expected_perm, dtype_factory):
+        """_DEFAULT_CHANNEL_ORDER maps 8→GBR, 16→BRG, 32→BRG. Each call with
+        channel_order=None must produce the matching permutation."""
+        h, w = 3, 4
+        src = dtype_factory(h, w)
+        raw = b"\x00" * 16 + src.tobytes()
+        out = decode_raw_rgb_buffer(raw, w, h, bit_depth, bottom_up=False)
+        expected = src[..., expected_perm]
+        if src.dtype.kind == "f":
+            np.testing.assert_allclose(out, expected)
+        else:
+            np.testing.assert_array_equal(out, expected)
 
 
 # =============================================================================

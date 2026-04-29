@@ -1,15 +1,28 @@
 ---
 created: 2026-04-27T20:30:00Z
-updated: 2026-04-29T00:55:00Z
-status: partial_fix_landed_not_yet_correct
+updated: 2026-04-29T01:30:00Z
+status: fixed_pending_visual_uat
 passoff: .planning/PASSOFF-channel-order-2026-04-28.md
 title: Camera Calibrator preview shows wrong channel order (magenta cast on green/brown plates)
 area: image-pipeline
 files:
-  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (gbr_order auto-detect — INSUFFICIENT for float)
-  - tests/test_image_buffer.py        # regression coverage (4 new tests — assume no-swap on float, also wrong)
-  - flame/camera_match_hook.py:222   # raw-buffer call site (no change needed)
+  - forge_core/image/buffer.py:103   # decode_raw_rgb_buffer (channel_order param + bit-depth-keyed BRG/GBR auto-detect)
+  - tests/test_image_buffer.py        # regression coverage (parametric per-bit-depth + explicit-override coverage)
+  - flame/camera_match_hook.py:223   # raw-buffer call site (no change needed; auto-detect picks up new defaults)
 ---
+
+## Status (2026-04-29 fix landed)
+
+Per-bit-depth channel_order API landed: 8→GBR, 16→BRG, 32→BRG (assumed). Replaces the
+broken `gbr_order` boolean from `0dcd772`. Visual UAT on portofino against four clips
+(testImage, testImage10bit, testImage12bit, C002_260302_C005) confirmed the layout map
+through Flame Player Rec.709/ACES SDR view; pre-commit unit tests green via
+`pytest tests/ -p no:pytest-blender`.
+
+Final menu-flow visual UAT through the actual Camera Match menu on portofino still
+pending — DO NOT move this todo to `done/` until that's confirmed. See
+`.planning/PASSOFF-channel-order-2026-04-28.md` "Resolution (2026-04-29)" for the
+verified table and code-change summary.
 
 ## Status (2026-04-29 passoff)
 
