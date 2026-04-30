@@ -64,13 +64,14 @@ without `--force`.
 ### For artists
 
 1. In Blender: Edit → Preferences → Add-ons → Install from file → select
-   `tools/blender/forge_sender-v1.3.4.zip` from your forge-calibrator checkout.
+   `tools/blender/forge_sender-v1.3.5.zip` from your forge-calibrator checkout.
 2. Enable **Forge: Send Camera to Flame** in the Add-ons list.
 3. Open the 3D viewport's N-panel (press N) — you should see a **Forge** tab with a
    **Send to Flame** button.
-4. Confirm the addon panel reports version `1.3.4`. (Older v1.0.x / v1.1.x / v1.2.x
+4. Confirm the addon panel reports version `1.3.5`. (Older v1.0.x / v1.1.x / v1.2.x
    builds carried bugs — Phase 04.3's aim-rig rotation fix shipped in v1.2.0;
-   Phase 04.4's choose-Action dropdown + collision-guard hot-fix ships in v1.3.4.)
+   Phase 04.4's choose-Action dropdown + collision-guard hot-fix shipped in v1.3.4;
+   v1.3.5 added Blender 5.x compatibility for the removed `Action.fcurves` API.)
 5. No further setup required. forge-bridge starts automatically when Flame boots.
 
 ## How forge-bridge autostart works

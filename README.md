@@ -56,7 +56,7 @@ at `$HOME/miniconda3/envs/forge` by default; override with `FORGE_ENV=<path>`.
   `camera_match/`, `forge_core/`, and `forge_flame/` to prevent Flame from
   serving outdated modules between deploys.
 - Install the Blender addon: in Blender → Edit → Preferences → Add-ons →
-  Install from file → select `tools/blender/forge_sender-v1.3.4.zip` → enable
+  Install from file → select `tools/blender/forge_sender-v1.3.5.zip` → enable
   "Forge: Send Camera to Flame".
 - See [docs/seamless-bridge.md#install](docs/seamless-bridge.md#install) for the
   detailed walkthrough covering preflight checks, what deploys where, and the full
