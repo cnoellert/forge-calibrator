@@ -15,11 +15,11 @@ day-session passoff (the round-trip blocker on Blender 5.1) — closed.
 
 | Quick | Description | Code commits | Build commit | Docs/closure commits |
 |-------|-------------|--------------|--------------|----------------------|
-| `260429-gde` | Version-tolerant fcurves walk for Blender slotted-actions API (5.x compat fix in `flame_math.py`) | `a3cf531` `f064824` | `543f458` (zip repackage) | `bc21b3e` `f27219d` `7cabf0f` `7ee89a9` |
+| `260429-gde` | Version-tolerant fcurves walk for Blender slotted-actions API (5.x compat fix in `flame_math.py`) | `a3cf531` `f064824` | `543f458` (zip repackage) | `bc21b3e` `f27219d` `7cabf0f` `7ee89a9` `36cf922` (passoff) `9319dbd` (user-docs sync) |
 
 **Tests:** 457 passed, 2 skipped (was 450/2 — +7 new `TestIterActionFcurves` cases). No regressions.
 
-**Push state:** `origin/main` is in sync with `main` at `7ee89a9`.
+**Push state:** `origin/main` is in sync with `main` at `9319dbd`.
 
 **Pending todos closed:** 1 (`2026-04-29-blender-51-slotted-actions-fcurves-api-migration.md` →
 `completed/closed_uat_passed`).
@@ -87,6 +87,31 @@ necessary but not sufficient — the deployment artifact has to track it.
 **Worth a memory crumb?** Probably yes. Filing as a follow-up note
 rather than a separate todo since it's planning-process advice, not a
 code bug. (Candidate path: `memory/blender_addon_zip_must_track_source.md`.)
+
+## User-docs sync (the third-order miss)
+
+After UAT pass on both machines, user asked whether install docs were
+current. They weren't. `README.md:59` and `docs/seamless-bridge.md:67`
+still pointed at `tools/blender/forge_sender-v1.3.4.zip` — which had been
+deleted in `543f458`. A tester following those docs would have hit
+"file does not exist" in Blender's installer.
+
+Patched in `9319dbd`:
+- Both zip references bumped to `forge_sender-v1.3.5.zip`
+- Artist version-check bullet bumped from `1.3.4` to `1.3.5`
+- Changelog blurb extended with: "v1.3.5 added Blender 5.x compatibility
+  for the removed `Action.fcurves` API"
+
+Audit also confirmed the rest of the user-facing docs are accurate:
+"Using Send to Flame" workflow, "How forge-bridge autostart works",
+"Multi-camera Apply Camera flow", and all troubleshooting symptoms still
+match the shipped behavior.
+
+**This compounds the deployment-lesson takeaway above.** Source patch +
+zip repackage + user-docs version bump are all the same logical change
+when an addon's bl_info version moves. A future quick-task plan that
+touches `tools/blender/forge_sender/` should bake all three into the
+task list — not catch them as serial deviations.
 
 ## UAT confirmation
 
@@ -166,6 +191,8 @@ not code. Lowest priority.
 ## Reference: full commit list since 5d8989b (day-session passoff)
 
 ```
+9319dbd docs(quick-260429-gde): bump README + seamless-bridge install steps to forge_sender v1.3.5
+36cf922 docs(passoff): 2026-04-29 evening — 260429-gde shipped, round-trip clean on portofino + flame-01
 7ee89a9 docs(todos): full closure on slotted-actions todo — flame-01 UAT also passed
 7cabf0f docs(todos): add closure note + fix-commit log to slotted-actions todo
 f27219d docs(todos): close Blender 5.1 slotted-actions fcurves todo — UAT passed on portofino
@@ -175,6 +202,7 @@ f064824 fix(quick-260429-gde): version-tolerant fcurves walk for Blender slotted
 a3cf531 test(quick-260429-gde): add failing tests for _iter_action_fcurves three-tier walk
 ```
 
-7 commits: 1 test, 1 fix, 1 docs (PLAN/RESEARCH/SUMMARY/STATE),
+9 commits: 1 test, 1 fix, 1 docs (PLAN/RESEARCH/SUMMARY/STATE),
 1 build (zip repackage), 3 todo-closure passes (initial close, closure
-note, full-machine closure).
+note, full-machine closure), 1 evening passoff, 1 user-docs sync
+(README + seamless-bridge.md install steps).
