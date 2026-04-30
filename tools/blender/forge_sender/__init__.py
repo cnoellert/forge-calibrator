@@ -61,12 +61,22 @@ from . import flame_math, preflight, transport
 bl_info = {
     "name": "Forge: Send Camera to Flame",
     "author": "forge-calibrator",
-    "version": (1, 3, 4),
+    "version": (1, 3, 5),
     "blender": (4, 5, 0),
     "location": "View3D > Sidebar > Forge",
     "description": "Send the active Flame-baked camera back to its source Action in Flame.",
     "category": "Import-Export",
 }
+# v1.3.5 (2026-04-29): Blender 5.x compat — Action.fcurves was removed
+#                      in 5.0 alongside the slotted-actions migration
+#                      (4.4+). flame_math._drain now goes through
+#                      _iter_action_fcurves() which uses
+#                      bpy_extras.anim_utils.action_get_channelbag_for_slot
+#                      for bound slots and falls back to a manual
+#                      layers/strips/channelbags walk, then to legacy
+#                      action.fcurves on 4.5 actions still in proxy mode.
+#                      Fixes flame-01 + portofino "Send to Flame" crash on
+#                      Blender 5.1. Source fix in commit f064824.
 # v1.3.4 (2026-04-27): Phase 04.4 UAT fix #3 — actual root cause: the
 #                      EnumProperty items callback receives an RNA struct
 #                      as `self`, not the operator's Python class instance,
