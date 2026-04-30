@@ -1,7 +1,7 @@
 ---
 created: 2026-04-29T18:30:00Z
-updated: 2026-04-29T19:30:00Z
-status: closed_uat_passed_portofino
+updated: 2026-04-29T20:00:00Z
+status: closed_uat_passed
 priority: high
 area: blender-addon
 title: forge_sender addon breaks on Blender 5.1 — Action.fcurves removed (slotted-actions migration)
@@ -15,21 +15,15 @@ files:
   - tools/blender/forge_sender/flame_math.py    # _iter_action_fcurves + rewritten _drain (three-tier walk)
   - tests/test_forge_sender_flame_math.py       # FCV-01..FCV-07 (bpy-free duck-typed)
   - tools/blender/forge_sender-v1.3.5.zip       # repackaged zip with the fix (v1.3.4 deleted)
-remaining:
-  - flame-01 reinstall + UAT — still on the v1.3.4 zip (or whichever predates 543f458)
 ---
 
-## Closed 2026-04-29 — UAT passed on portofino
+## Closed 2026-04-29 — UAT passed on portofino + flame-01
 
-Bake → Send to Flame round-trip succeeded on portofino with Blender 5.1
-after reinstalling `forge_sender-v1.3.5.zip`. AttributeError gone, keyframes
-preserved.
-
-**flame-01 status:** still pending — the same v1.3.5 reinstall has not yet
-been done on flame-01. That machine was the original repro site; cure is
-identical (uninstall v1.3.4, install v1.3.5 from `tools/blender/`, restart
-Blender). When that lands, this todo can be considered fully done across
-both machines.
+Bake → Send to Flame round-trip clean on Blender 5.1 on both machines
+after reinstalling `forge_sender-v1.3.5.zip`. AttributeError gone,
+keyframes preserved both directions (Flame → Blender → Flame). Original
+repro site (flame-01) confirmed by user as "working perfect backwards
+and forwards."
 
 **Memory crumb:** `memory/blender_slotted_actions_fcurves_api.md` written
 during the fix (auto-memory dir). Indexed in `MEMORY.md`.
