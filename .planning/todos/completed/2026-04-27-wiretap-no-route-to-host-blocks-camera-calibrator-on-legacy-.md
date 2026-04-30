@@ -1,5 +1,7 @@
 ---
 created: 2026-04-27T01:25:33.446Z
+updated: 2026-04-30T00:00:00Z
+status: closed_environmental
 title: Wiretap "No route to host" blocks Camera Calibrator on legacy clips
 area: general
 files:
@@ -7,6 +9,24 @@ files:
   - forge_flame/wiretap.py:148-175
   - forge_core/image/buffer.py
 ---
+
+## Closed 2026-04-30 — environmental, not code
+
+User confirmed the "No route to host" error on portofino was a transient
+network/autofs hiccup affecting the remote storage host — same shape as
+the original 2026-04-26 diagnosis (autofs entry to `flame-01` was not
+mounted at probe time). Once the host was reachable again the clip read
+worked without code changes.
+
+No defensive fallback shipped. The triage list in the **Solution**
+section below remains valid guidance if the symptom recurs in production
+on a clip whose storage host is genuinely offline — start with step 1
+("confirm which host is unreachable") and escalate from there. The
+existing memory crumb `memory/flame_wiretap_no_route_after_sigsegv.md`
+already captures the diagnostic flow; broadening it for the
+network-unreachable variant was deferred — the symptom is the same and
+the cure (`ping`/restore the host, then retry) is generic-enough not to
+need a forge-specific lesson.
 
 ## Problem
 
