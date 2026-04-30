@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-04-30 -- Completed quick task 260430-ddi: matchbox calibrator architecture spike — Path A/B not viable, Snapshot path (PyExporter) recommended
+Last activity: 2026-04-30 -- Completed quick task 260430-e5y: PyExporter().export() smoke-test — WORKED, 25-LOC recipe ready for Wiretap replacement
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -116,6 +116,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260429-fk5 | Glob-expand Blender binary defaults to cover /opt/ sideloads + backlog UI todo | 2026-04-29 | 969198d | [260429-fk5-glob-expand-blender-binary-defaults-to-c](./quick/260429-fk5-glob-expand-blender-binary-defaults-to-c/) |
 | 260429-gde | Version-tolerant fcurves walk for Blender slotted-actions API (5.x compat fix in flame_math.py) | 2026-04-29 | f064824 | [260429-gde-version-tolerant-fcurves-walk-for-blende](./quick/260429-gde-version-tolerant-fcurves-walk-for-blende/) |
 | 260430-ddi | Matchbox calibrator architecture spike — Path A/B not viable, Snapshot path (PyExporter) recommended | 2026-04-30 | research-only | [260430-ddi-spike-matchbox-calibrator-architecture-t](./quick/260430-ddi-spike-matchbox-calibrator-architecture-t/) |
+| 260430-e5y | PyExporter().export() smoke-test — WORKED, 25-LOC recipe ready for Wiretap replacement | 2026-04-30 | research-only | [260430-e5y-smoke-test-pyexporter-export-end-to-end-](./quick/260430-e5y-smoke-test-pyexporter-export-end-to-end-/) |
 
 ## Deferred Items
 
