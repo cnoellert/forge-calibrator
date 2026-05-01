@@ -188,6 +188,18 @@ _FLAME_FPS_LABELS = (
 )
 
 
+# Allowed values for the v5 JSON `flame_to_blender_scale` field.
+# Discrete log10 ladder so the inverse multiplier on extract is an exact
+# float (no precision drift across round-trip). Default 1.0. The artist
+# UI in a future phase will gate on a dropdown of these values; this
+# tuple is the authoritative source of truth on the bake side.
+# See .planning/quick/260501-dpa-add-flame-blender-scale-ladder-knob-roun/
+# for the spec. Extract side reads `forge_bake_scale` stamped by
+# _stamp_metadata; that value is whatever bake decided after applying
+# the precedence below, so extract math automatically inverts.
+_FLAME_TO_BLENDER_SCALE_LADDER = (0.01, 0.1, 1.0, 10.0, 100.0)
+
+
 def _closest_flame_fps_label(fps: float) -> str:
     """Map a numeric fps to the nearest _FLAME_FPS_LABELS label string.
 
@@ -294,6 +306,41 @@ def _stamp_metadata(
 # =============================================================================
 
 
+def _validate_flame_to_blender_scale(value: float) -> float:
+    """Return ``value`` if it's on the allowed ladder; else SystemExit.
+
+    The ladder exists so the multiplier (bake-side division) and the
+    divisor (extract-side multiplication) are exact-inverse floats —
+    picking arbitrary values like 0.0173 introduces silent precision
+    drift in the round-trip. See ``_FLAME_TO_BLENDER_SCALE_LADDER`` and
+    .planning/quick/260501-dpa-add-flame-blender-scale-ladder-knob-roun/
+    for the spec. Out-of-ladder values are rejected loudly (SystemExit
+    with the ladder in the error message) rather than snapped to the
+    nearest stop, because silent snapping is exactly the failure mode
+    the ladder exists to prevent.
+
+    Args:
+        value: the candidate scale (typically read from
+            ``data["flame_to_blender_scale"]`` in ``_bake``).
+
+    Returns:
+        ``float(value)`` when it matches an entry of
+        ``_FLAME_TO_BLENDER_SCALE_LADDER`` exactly.
+
+    Raises:
+        SystemExit: with a message naming the offending value and the
+            full ladder list.
+    """
+    v = float(value)
+    if v not in _FLAME_TO_BLENDER_SCALE_LADDER:
+        ladder_str = "{" + ", ".join(
+            str(x) for x in _FLAME_TO_BLENDER_SCALE_LADDER) + "}"
+        raise SystemExit(
+            f"flame_to_blender_scale={value} is not on the allowed "
+            f"ladder {ladder_str}")
+    return v
+
+
 def _bake(args: argparse.Namespace) -> None:
     with open(args.in_path) as f:
         data = json.load(f)
@@ -302,9 +349,19 @@ def _bake(args: argparse.Namespace) -> None:
     if not frames:
         raise SystemExit(f"{args.in_path}: no frames in JSON")
 
-    scale = args.scale
-    if scale <= 0:
-        raise SystemExit(f"--scale must be positive, got {scale}")
+    # Precedence: JSON `flame_to_blender_scale` field > CLI --scale > 1.0.
+    # The JSON field is the authoritative artist-facing knob and is
+    # ladder-validated; CLI --scale stays free-form for the legacy hook
+    # call site (camera_match_hook.py uses scale=1000.0 as a viewport-
+    # navigation hack — that path stays alive for backward compatibility
+    # until the hook integration phase wires the JSON field instead).
+    json_scale = data.get("flame_to_blender_scale")
+    if json_scale is not None:
+        scale = _validate_flame_to_blender_scale(json_scale)
+    else:
+        scale = args.scale
+        if scale <= 0:
+            raise SystemExit(f"--scale must be positive, got {scale}")
 
     cam = _get_or_create_camera(args.camera_name, args.create_if_missing)
     cam.rotation_mode = 'QUATERNION'

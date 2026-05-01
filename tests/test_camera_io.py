@@ -295,3 +295,102 @@ class TestExportFlameCameraToJson:
         assert math.isclose(frame["rotation_flame_euler"][0], 1.0)
         # focal_mm recomputed from fov=40 + film_back=36 (caller pinned)
         assert math.isclose(frame["focal_mm"], 36.0 / (2.0 * math.tan(math.radians(40.0) / 2.0)), rel_tol=1e-6)
+
+
+# =============================================================================
+# Group 6: export_flame_camera_to_json — flame_to_blender_scale kwarg
+# (Quick task 260501-dpa)
+# =============================================================================
+
+
+class TestFlameToBlenderScaleField:
+    """Tests for the new ``flame_to_blender_scale`` kwarg on
+    export_flame_camera_to_json. Critical contract:
+
+    - Omit the JSON key when the kwarg is not passed (back-compat with
+      pre-v6.4 consumers and with hook callers that don't yet wire it).
+    - Emit the JSON key when the kwarg is passed — including the value
+      ``1.0`` (the trap: truthy semantics would silently drop it; the
+      implementation uses ``is not None`` semantics).
+    - The serializer does NOT validate ladder membership — that's the
+      bake-side validator's job. This class only proves the emit/suppress
+      shape; ladder validation is in
+      tests/test_bake_camera.py::TestFlameToBlenderScaleLadder.
+    """
+
+    def _call(self, tmp_path, **kwargs):
+        """Helper mirrors TestExportFlameCameraToJson._call: build a
+        _FakeCam, write the JSON, return the loaded dict."""
+        cam = _FakeCam(
+            position=(10.0, 20.0, 4747.64),
+            rotation=(1.0, 2.0, 3.0),
+            fov=40.0,
+            focal=21.74,
+        )
+        out = str(tmp_path / "out.json")
+        export_flame_camera_to_json(
+            cam, out,
+            frame=1001,
+            width=1920,
+            height=1080,
+            film_back_mm=36.0,
+            **kwargs,
+        )
+        with open(out) as f:
+            return json.load(f)
+
+    def test_omitted_when_not_passed(self, tmp_path):
+        """Default behavior: no kwarg -> no JSON key.
+        Back-compat invariant — existing fixtures load byte-identically."""
+        data = self._call(tmp_path)
+        assert "flame_to_blender_scale" not in data, (
+            "kwarg defaults to None and must NOT emit a JSON key — "
+            "back-compat invariant for pre-v6.4 consumers"
+        )
+
+    def test_emitted_when_passed(self, tmp_path):
+        """flame_to_blender_scale=10.0 -> top-level JSON key with the value."""
+        data = self._call(tmp_path, flame_to_blender_scale=10.0)
+        assert "flame_to_blender_scale" in data
+        assert data["flame_to_blender_scale"] == 10.0
+
+    def test_emitted_when_passed_one(self, tmp_path):
+        """The TRAP: flame_to_blender_scale=1.0 must emit, not be dropped.
+
+        Truthy semantics (``if flame_to_blender_scale:``) would silently
+        drop 1.0 here because Python treats 1.0 as truthy but 0.0 as
+        falsy in tandem — and 1.0 is a perfectly valid ladder stop the
+        artist may have explicitly chosen. The implementation uses
+        ``is not None`` semantics."""
+        data = self._call(tmp_path, flame_to_blender_scale=1.0)
+        assert "flame_to_blender_scale" in data, (
+            "1.0 must emit — IS-NOT-NONE semantics, not truthy. "
+            "Truthy semantics would silently drop a meaningful artist choice."
+        )
+        assert data["flame_to_blender_scale"] == 1.0
+
+    def test_other_fields_unchanged(self, tmp_path):
+        """Kwarg is independent of the other top-level kwargs — adding
+        flame_to_blender_scale alongside frame_rate + custom_properties
+        does not perturb either of them, and the existing
+        width/height/film_back_mm/frames structure is intact."""
+        data = self._call(
+            tmp_path,
+            flame_to_blender_scale=0.1,
+            frame_rate="24 fps",
+            custom_properties={"foo": "bar"},
+        )
+        # All three new top-level keys present.
+        assert data["flame_to_blender_scale"] == 0.1
+        assert data["frame_rate"] == "24 fps"
+        assert data["custom_properties"] == {"foo": "bar"}
+        # Existing structure intact.
+        assert data["width"] == 1920
+        assert data["height"] == 1080
+        assert math.isclose(data["film_back_mm"], 36.0, rel_tol=1e-9)
+        assert len(data["frames"]) == 1
+        frame = data["frames"][0]
+        assert frame["frame"] == 1001
+        assert "position" in frame
+        assert "rotation_flame_euler" in frame
+        assert "focal_mm" in frame

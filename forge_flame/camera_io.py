@@ -100,6 +100,7 @@ def export_flame_camera_to_json(
     height: int,
     film_back_mm: Optional[float] = None,
     frame_rate: Optional[str] = None,
+    flame_to_blender_scale: Optional[float] = None,
     custom_properties: Optional[dict] = None,
 ) -> str:
     """Serialize a Flame Action camera node to the v5 JSON contract.
@@ -124,6 +125,23 @@ def export_flame_camera_to_json(
             ``forge_bake_frame_rate`` Blender custom property.
             When ``None``, no ``frame_rate`` key is emitted (backward-
             compatible with pre-v6.3 consumers).
+        flame_to_blender_scale: optional per-camera Flame↔Blender world
+            scale factor for the bake/extract round-trip. Allowed
+            values are restricted to the discrete log10 ladder
+            ``{0.01, 0.1, 1.0, 10.0, 100.0}`` (validated by
+            ``tools/blender/bake_camera.py::_validate_flame_to_blender_scale``
+            — this serializer does NOT validate; it's a thin emit).
+            When provided, written as a top-level ``flame_to_blender_scale``
+            key on the JSON payload; ``bake_camera.py`` then uses it as
+            the position divisor with precedence over its CLI ``--scale``
+            flag. When ``None``, no key is emitted (backward-compatible
+            with pre-v6.4 consumers and with the existing hook call site
+            in ``flame/camera_match_hook.py`` that still drives the CLI
+            ``scale=1000.0`` viewport-navigation hack). Uses
+            ``is not None`` semantics — ``1.0`` and ``0.01`` are valid
+            values that must round-trip explicitly when the caller asked
+            for them; truthy semantics would silently drop a meaningful
+            ``1.0``.
         custom_properties: optional dict of caller-supplied metadata to
             stamp into the v5 JSON payload under a top-level
             ``custom_properties`` key. Values must be JSON-serialisable.
@@ -175,6 +193,12 @@ def export_flame_camera_to_json(
         payload["custom_properties"] = dict(custom_properties)
     if frame_rate:
         payload["frame_rate"] = str(frame_rate)
+    # NOTE: ``is not None`` semantics, NOT truthy — see kwarg docstring.
+    # ``1.0`` is a valid ladder stop the artist may have explicitly chosen,
+    # and dropping it would silently fall back to bake's CLI default. The
+    # bake-side validator catches ``0.0`` (not on the ladder) loudly.
+    if flame_to_blender_scale is not None:
+        payload["flame_to_blender_scale"] = float(flame_to_blender_scale)
 
     out_abs = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)

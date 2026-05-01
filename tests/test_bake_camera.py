@@ -267,3 +267,57 @@ class TestStampMetadataFrameRate:
         assert val is not None and str(val).strip(), (
             f"forge_bake_frame_rate must be a non-empty string; got {val!r}"
         )
+
+
+# =============================================================================
+# Quick task 260501-dpa: flame_to_blender_scale ladder
+# =============================================================================
+
+
+class TestFlameToBlenderScaleLadder:
+    """Ladder validation for the new v5 JSON ``flame_to_blender_scale``
+    field. The constant lives at module scope of bake_camera.py and is the
+    authoritative source-of-truth on the bake side. ``_validate_flame_to_blender_scale``
+    is the bake-side gate; off-ladder values raise SystemExit with the
+    full ladder in the error so the artist can self-correct without
+    needing to reach for documentation."""
+
+    def test_ladder_constant_shape(self):
+        """The ladder constant must equal (0.01, 0.1, 1.0, 10.0, 100.0)
+        — the discrete log10 stops chosen so multiplier (bake) and
+        divisor (extract) are exact-inverse floats."""
+        assert bake_camera._FLAME_TO_BLENDER_SCALE_LADDER == (
+            0.01, 0.1, 1.0, 10.0, 100.0
+        ), (
+            f"ladder must be (0.01, 0.1, 1.0, 10.0, 100.0); got "
+            f"{bake_camera._FLAME_TO_BLENDER_SCALE_LADDER!r}"
+        )
+
+    @pytest.mark.parametrize("value", [0.01, 0.1, 1.0, 10.0, 100.0])
+    def test_validator_accepts_each_ladder_value(self, value):
+        """Every ladder value passes validation and round-trips
+        unchanged (returned as float)."""
+        got = bake_camera._validate_flame_to_blender_scale(value)
+        assert got == value
+        assert isinstance(got, float)
+
+    @pytest.mark.parametrize("value", [0.5, 2.0, 0.05, 1000.0, -1.0, 0.0])
+    def test_validator_rejects_off_ladder(self, value):
+        """Off-ladder values raise SystemExit. Includes the user-cited
+        examples (0.5 the most likely artist mistake; 0.0 the
+        positive-scale degenerate)."""
+        with pytest.raises(SystemExit):
+            bake_camera._validate_flame_to_blender_scale(value)
+
+    def test_validator_rejection_message_lists_ladder(self):
+        """The SystemExit message must name the offending value AND
+        list every ladder stop, so the artist can self-correct without
+        consulting docs."""
+        with pytest.raises(SystemExit) as excinfo:
+            bake_camera._validate_flame_to_blender_scale(0.5)
+        msg = str(excinfo.value)
+        assert "0.5" in msg, f"offending value missing from message: {msg!r}"
+        # Spot-check that the ladder ends are in the message; if those
+        # appear, the rest will too (the message lists the full tuple).
+        assert "0.01" in msg, f"ladder lower bound missing: {msg!r}"
+        assert "100.0" in msg, f"ladder upper bound missing: {msg!r}"
