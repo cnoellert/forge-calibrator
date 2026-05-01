@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-04-30 -- Completed quick task 260430-iv3: matchbox uniform readback spike KILLED — pivot to pixel-encoded inputs + snapshot decode
+Last activity: 2026-05-01 -- Completed quick task 260501-dpa: Flame↔Blender scale ladder knob shipped — bit-exact round-trip parity, +29 tests; matchbox direction shelved 2026-05-01
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -118,7 +118,8 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260430-ddi | Matchbox calibrator architecture spike — Path A/B not viable, Snapshot path (PyExporter) recommended | 2026-04-30 | research-only | [260430-ddi-spike-matchbox-calibrator-architecture-t](./quick/260430-ddi-spike-matchbox-calibrator-architecture-t/) |
 | 260430-e5y | PyExporter().export() smoke-test — WORKED, 25-LOC recipe ready for Wiretap replacement | 2026-04-30 | research-only | [260430-e5y-smoke-test-pyexporter-export-end-to-end-](./quick/260430-e5y-smoke-test-pyexporter-export-end-to-end-/) |
 | 260430-hn7 | Frame-parking validation PARTIAL — no PyClip parking API in Flame 2026.2.1; recipe needs Route A/B/C strategy | 2026-04-30 | research-only | [260430-hn7-frame-parking-validation-for-pyexporter-](./quick/260430-hn7-frame-parking-validation-for-pyexporter-/) |
-| 260430-iv3 | Matchbox uniform readback spike KILLED — uniforms not Python-readable at any layer; pivot to pixel-encoded inputs + snapshot decode | 2026-04-30 | research-only | [260430-iv3-spike-matchbox-uniform-readback-via-flam](./quick/260430-iv3-spike-matchbox-uniform-readback-via-flam/) |
+| 260430-iv3 | Matchbox uniform readback spike KILLED — uniforms not Python-readable at any layer; pivot to pixel-encoded inputs + snapshot decode (SHELVED 2026-05-01) | 2026-04-30 | research-only | [260430-iv3-spike-matchbox-uniform-readback-via-flam](./quick/260430-iv3-spike-matchbox-uniform-readback-via-flam/) |
+| 260501-dpa | Flame↔Blender scale ladder knob — `flame_to_blender_scale` on v5 JSON contract, log10 stops {0.01, 0.1, 1, 10, 100}, bit-exact round-trip parity, +29 tests | 2026-05-01 | 76d88fa | [260501-dpa-add-flame-blender-scale-ladder-knob-roun](./quick/260501-dpa-add-flame-blender-scale-ladder-knob-roun/) |
 
 ## Deferred Items
 
