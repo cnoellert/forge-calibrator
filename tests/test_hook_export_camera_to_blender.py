@@ -241,3 +241,300 @@ class TestExportHandlerFpsLabel:
 # export_fbx with only_selected_nodes=True, NO cameras= kwarg) is now
 # moot — the hook calls fbx_io.export_action_cameras_to_fbx which
 # handles the selection-restore pattern internally.
+
+
+# ---------------------------------------------------------------------------
+# Quick 260501-i31: TestLadderMenuFactory
+#
+# Covers _make_export_callback factory + flame_to_blender_scale parameter
+# plumbing on the three signatures (_export_camera_pipeline,
+# _export_camera_to_blender, _export_camera_from_action_selection) +
+# menu shape for both surfaces + the two regression canaries
+# (default-entry scale=100.0, viewport-nav scale=1000.0 byte-identical).
+# ---------------------------------------------------------------------------
+
+
+class TestLadderMenuFactory:
+    """Quick 260501-i31: 5-stop scale ladder right-click menu entries.
+
+    Covers _make_export_callback factory + flame_to_blender_scale plumbing
+    + menu shape on both Batch (Action-scope) and Action (Camera-scope)
+    surfaces + regression canaries.
+    """
+
+    _LADDER_LABELS_AFTER_DEFAULT = [
+        "Export to Blender @ 0.01x",
+        "Export to Blender @ 0.1x",
+        "Export to Blender @ 1x",
+        "Export to Blender @ 10x",
+        "Export to Blender @ 100x",
+    ]
+
+    # ------------------------------------------------------------------
+    # A. Per-stop dispatch — Action-scope (camera_scope=False)
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("scale", [0.01, 0.1, 1.0, 10.0, 100.0])
+    def test_factory_dispatches_per_stop_action_scope(self, monkeypatch, scale):
+        """Each ladder stop produces a closure whose dispatch fires the
+        Action-scope wrapper with flame_to_blender_scale=stop_value.
+        Catches loop-variable capture bugs (T-quick-260501-i31-01)."""
+        calls = []
+
+        def _recorder(selection, *, flame_to_blender_scale):
+            calls.append((selection, flame_to_blender_scale))
+
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_to_blender", _recorder)
+
+        cb = _hook_module._make_export_callback(scale)
+        sentinel = object()
+        cb(sentinel)
+
+        assert len(calls) == 1
+        assert calls[0][0] is sentinel
+        assert calls[0][1] == scale
+
+    # ------------------------------------------------------------------
+    # B. Per-stop dispatch — Camera-scope (camera_scope=True)
+    # ------------------------------------------------------------------
+    @pytest.mark.parametrize("scale", [0.01, 0.1, 1.0, 10.0, 100.0])
+    def test_factory_dispatches_per_stop_camera_scope(self, monkeypatch, scale):
+        """Camera-scope flag routes to _export_camera_from_action_selection
+        with flame_to_blender_scale=stop_value; Action-scope wrapper is
+        NOT called."""
+        cam_calls = []
+        action_calls = []
+
+        def _cam_recorder(selection, *, flame_to_blender_scale):
+            cam_calls.append((selection, flame_to_blender_scale))
+
+        def _action_recorder(selection, *, flame_to_blender_scale):
+            action_calls.append((selection, flame_to_blender_scale))
+
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_from_action_selection",
+            _cam_recorder)
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_to_blender", _action_recorder)
+
+        cb = _hook_module._make_export_callback(scale, camera_scope=True)
+        sentinel = object()
+        cb(sentinel)
+
+        assert len(cam_calls) == 1
+        assert cam_calls[0][0] is sentinel
+        assert cam_calls[0][1] == scale
+        assert action_calls == []
+
+    # ------------------------------------------------------------------
+    # C. Camera-scope routing inline (default vs explicit)
+    # ------------------------------------------------------------------
+    def test_factory_camera_scope_routing(self, monkeypatch):
+        """Default (camera_scope=False) -> Action wrapper only.
+        Explicit camera_scope=True -> Camera wrapper only."""
+        action_calls = []
+        cam_calls = []
+
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_to_blender",
+            lambda selection, *, flame_to_blender_scale:
+                action_calls.append(flame_to_blender_scale))
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_from_action_selection",
+            lambda selection, *, flame_to_blender_scale:
+                cam_calls.append(flame_to_blender_scale))
+
+        # Default camera_scope is False
+        _hook_module._make_export_callback(1.0)(object())
+        assert action_calls == [1.0]
+        assert cam_calls == []
+
+        # Explicit camera_scope=True
+        _hook_module._make_export_callback(1.0, camera_scope=True)(object())
+        assert action_calls == [1.0]   # unchanged
+        assert cam_calls == [1.0]
+
+    # ------------------------------------------------------------------
+    # D. Default-entry regression — both surfaces
+    # ------------------------------------------------------------------
+    def test_default_entry_still_uses_scale_100_action_scope(self, monkeypatch):
+        """Calling _export_camera_to_blender(selection) with NO factory
+        wrapper (the default menu entry's call shape) lands
+        flame_to_blender_scale=100.0 on _export_camera_pipeline.
+        Regression guard for T-quick-260501-i31-02."""
+        recorded = {}
+
+        def _pipeline_recorder(action, cam, label, *, flame_to_blender_scale):
+            recorded["scale"] = flame_to_blender_scale
+
+        # Stub the inner functions so the wrapper reaches the pipeline call.
+        fake_action = object()
+        fake_cam = object()
+        fake_triple = (fake_action, fake_cam, "Action > Camera")
+
+        monkeypatch.setattr(
+            _hook_module, "_first_action_in_selection",
+            lambda sel: fake_action)
+        monkeypatch.setattr(
+            _hook_module, "_find_action_cameras",
+            lambda only_action=None: [fake_triple])
+        monkeypatch.setattr(
+            _hook_module, "_pick_camera",
+            lambda cameras, title: fake_triple)
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_pipeline", _pipeline_recorder)
+
+        _hook_module._export_camera_to_blender(object())
+
+        assert recorded.get("scale") == 100.0
+
+    def test_default_entry_still_uses_scale_100_camera_scope(self, monkeypatch):
+        """Calling _export_camera_from_action_selection(selection) with NO
+        factory wrapper (the Camera-scope default menu entry's call shape)
+        lands flame_to_blender_scale=100.0 on _export_camera_pipeline."""
+        recorded = {}
+
+        def _pipeline_recorder(action, cam, label, *, flame_to_blender_scale):
+            recorded["scale"] = flame_to_blender_scale
+
+        fake_action = _FakeCam(name="ActionNode")
+        fake_cam = _FakeCam(name="Camera")
+
+        monkeypatch.setattr(
+            _hook_module, "_first_camera_in_action_selection",
+            lambda sel: (fake_action, fake_cam))
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_pipeline", _pipeline_recorder)
+
+        _hook_module._export_camera_from_action_selection(object())
+
+        assert recorded.get("scale") == 100.0
+
+    # ------------------------------------------------------------------
+    # E. Batch menu shape
+    # ------------------------------------------------------------------
+    def test_batch_menu_shape(self):
+        """get_batch_custom_ui_actions()'s 'Camera' subgroup has 7 dicts:
+        1 clip-scoped 'Open Camera Calibrator' + 6 Action-scoped (1
+        default 'Export Camera to Blender' + 5 ladder entries)."""
+        groups = _hook_module.get_batch_custom_ui_actions()
+        camera_groups = [g for g in groups if g.get("name") == "Camera"]
+        assert len(camera_groups) == 1, \
+            f"Expected exactly 1 'Camera' group; got {len(camera_groups)}"
+
+        actions = camera_groups[0]["actions"]
+        assert len(actions) == 7, \
+            f"Expected 7 entries in 'Camera' subgroup; got {len(actions)}"
+
+        # Filter to Action-scoped subset (the spec's 6-entry shape).
+        action_scoped = [
+            a for a in actions
+            if a.get("isVisible") is _hook_module._scope_batch_action
+        ]
+        assert len(action_scoped) == 6, \
+            f"Expected 6 Action-scoped entries; got {len(action_scoped)}"
+
+        labels = [a["name"] for a in action_scoped]
+        assert labels == [
+            "Export Camera to Blender",
+        ] + self._LADDER_LABELS_AFTER_DEFAULT, (
+            f"Action-scoped label list mismatch.\n"
+            f"  expected: {['Export Camera to Blender'] + self._LADDER_LABELS_AFTER_DEFAULT}\n"
+            f"  got:      {labels}"
+        )
+
+    # ------------------------------------------------------------------
+    # F. Action menu shape
+    # ------------------------------------------------------------------
+    def test_action_menu_shape(self):
+        """get_action_custom_ui_actions()'s root group has exactly 6 dicts
+        (1 default + 5 ladder), all _scope_action_camera-filtered."""
+        groups = _hook_module.get_action_custom_ui_actions()
+        assert len(groups) == 1, \
+            f"Expected exactly 1 root group; got {len(groups)}"
+
+        actions = groups[0]["actions"]
+        assert len(actions) == 6, \
+            f"Expected 6 entries in root group; got {len(actions)}"
+
+        labels = [a["name"] for a in actions]
+        assert labels == [
+            "Export Camera to Blender",
+        ] + self._LADDER_LABELS_AFTER_DEFAULT, (
+            f"Action-surface label list mismatch.\n"
+            f"  expected: {['Export Camera to Blender'] + self._LADDER_LABELS_AFTER_DEFAULT}\n"
+            f"  got:      {labels}"
+        )
+
+        # All entries must use _scope_action_camera filter.
+        for a in actions:
+            assert a.get("isVisible") is _hook_module._scope_action_camera, (
+                f"Entry {a['name']!r} must use _scope_action_camera filter; "
+                f"got {a.get('isVisible')!r}"
+            )
+
+    # ------------------------------------------------------------------
+    # G. Viewport-nav scale=1000.0 canary (T-quick-260501-i31-03)
+    # ------------------------------------------------------------------
+    def test_viewport_nav_canary_unchanged(self):
+        """The literal 'scale=1000.0' must appear exactly 2 times in the
+        hook source (1 in run_bake call, 1 in the explanatory comment).
+        Pre-edit baseline confirmed via grep -c."""
+        hook_path = os.path.join(
+            _REPO_ROOT, "flame", "camera_match_hook.py")
+        with open(hook_path) as f:
+            source = f.read()
+        count = source.count("scale=1000.0")
+        assert count == 2, (
+            f"Expected 'scale=1000.0' to appear exactly 2 times in "
+            f"flame/camera_match_hook.py; got {count}. The viewport-nav "
+            f"CLI arg at run_bake must stay byte-identical."
+        )
+
+    # ------------------------------------------------------------------
+    # H. No new PySide widgets in factory (T-quick-260501-i31-05)
+    # ------------------------------------------------------------------
+    def test_no_new_pyside_widgets_in_factory(self):
+        """Defends the zero-dialog spec: factory must NOT introduce
+        QDialog/QInputDialog/QListWidget/show_in_dialog/QMessageBox."""
+        import inspect
+        src = inspect.getsource(_hook_module._make_export_callback)
+        forbidden = [
+            "QDialog", "QInputDialog", "QListWidget",
+            "show_in_dialog", "QMessageBox",
+        ]
+        for token in forbidden:
+            assert token not in src, (
+                f"_make_export_callback must not contain {token!r}; "
+                f"the spec forbids new dialogs/popups."
+            )
+
+    # ------------------------------------------------------------------
+    # I. Signature shape: keyword-only flame_to_blender_scale=100.0
+    # ------------------------------------------------------------------
+    def test_pipeline_signature_has_keyword_only_scale_default_100(self):
+        """All three signatures (_export_camera_pipeline,
+        _export_camera_to_blender, _export_camera_from_action_selection)
+        must declare flame_to_blender_scale as keyword-only with
+        default 100.0. Defends the regression anchor."""
+        import inspect
+
+        for fn_name in (
+            "_export_camera_pipeline",
+            "_export_camera_to_blender",
+            "_export_camera_from_action_selection",
+        ):
+            fn = getattr(_hook_module, fn_name)
+            sig = inspect.signature(fn)
+            assert "flame_to_blender_scale" in sig.parameters, (
+                f"{fn_name} must declare a flame_to_blender_scale parameter"
+            )
+            param = sig.parameters["flame_to_blender_scale"]
+            assert param.kind == inspect.Parameter.KEYWORD_ONLY, (
+                f"{fn_name}.flame_to_blender_scale must be KEYWORD_ONLY; "
+                f"got {param.kind}"
+            )
+            assert param.default == 100.0, (
+                f"{fn_name}.flame_to_blender_scale default must be 100.0; "
+                f"got {param.default!r}"
+            )

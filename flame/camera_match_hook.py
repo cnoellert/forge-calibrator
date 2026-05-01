@@ -2627,7 +2627,7 @@ def _launch_blender_on_blend(blend_path: str, *, focus_steal: bool):
         )
 
 
-def _export_camera_to_blender(selection):
+def _export_camera_to_blender(selection, *, flame_to_blender_scale=100.0):
     """Right-click handler for an Action node in Batch — Action-scope path.
 
     Flow: right-click the Action holding your solved camera
@@ -2640,6 +2640,10 @@ def _export_camera_to_blender(selection):
     (_export_camera_from_action_selection, Plan 04.4-02) bypasses
     _pick_camera and feeds (action, cam, label) directly into the
     shared pipeline. D-05: single resolution helper, two thin wrappers.
+
+    Default `flame_to_blender_scale=100.0` preserves the studio-default
+    behavior of the original menu entry; ladder entries override via
+    `_make_export_callback(scale)` (per quick 260501-i31).
     """
     import flame
 
@@ -2667,7 +2671,10 @@ def _export_camera_to_blender(selection):
         return  # user cancelled the 2+-camera picker; no dialog needed
     action, cam, label = picked
 
-    _export_camera_pipeline(action, cam, label)
+    _export_camera_pipeline(
+        action, cam, label,
+        flame_to_blender_scale=flame_to_blender_scale,
+    )
 
 
 # RESEARCH §P-02 + Open Question OQ-2: cam.parent returning the containing
@@ -2680,7 +2687,7 @@ def _export_camera_to_blender(selection):
 # Plan 04.4-03 ships and a Flame restart picks up the new
 # get_action_custom_ui_actions function. After Plan 04.4-02 lands, this
 # code is present but unreachable from the menu.
-def _export_camera_from_action_selection(selection):
+def _export_camera_from_action_selection(selection, *, flame_to_blender_scale=100.0):
     """Right-click handler for a Camera PyCoNode inside an Action's
     schematic — Camera-scope path. Bypasses _pick_camera entirely:
     the user has already indicated which camera by right-clicking it.
@@ -2689,6 +2696,10 @@ def _export_camera_from_action_selection(selection):
     The label format matches _find_action_cameras' f"{action} > {cam}"
     shape so the pipeline's downstream code (filename construction,
     info-dialog text) sees identical input regardless of entry point.
+
+    Default `flame_to_blender_scale=100.0` preserves the studio-default
+    behavior of the original menu entry; ladder entries override via
+    `_make_export_callback(scale, camera_scope=True)` (per quick 260501-i31).
     """
     import flame
     action_node, cam_node = _first_camera_in_action_selection(selection)
@@ -2705,10 +2716,50 @@ def _export_camera_from_action_selection(selection):
     # entry points.
     label = f"{_val(action_node.name)} > {_val(cam_node.name)}"
 
-    _export_camera_pipeline(action_node, cam_node, label)
+    _export_camera_pipeline(
+        action_node, cam_node, label,
+        flame_to_blender_scale=flame_to_blender_scale,
+    )
 
 
-def _export_camera_pipeline(action, cam, label):
+# Discrete log10 ladder for the right-click menu entries — must match
+# tools/blender/bake_camera.py::_FLAME_TO_BLENDER_SCALE_LADDER. The
+# default-entry hardcode of 100.0 is the studio-default convenience
+# entry (per 260501-em8); these are the additional artist-pickable
+# stops surfaced via _make_export_callback (per quick 260501-i31).
+_LADDER_MENU_STOPS = (0.01, 0.1, 1.0, 10.0, 100.0)
+
+
+def _make_export_callback(scale, *, camera_scope=False):
+    """Return a single-arg `(selection,)` callback that fires the
+    appropriate export entry point with `flame_to_blender_scale=scale`
+    injected at the `fbx_to_v5_json` call site.
+
+    Closure-over-scale lets each ladder stop be one menu entry without
+    per-stop helpers. NO dialog, NO popup — fires the export immediately
+    (per quick 260501-i31 spec).
+
+    `camera_scope=False` (default) -> wraps `_export_camera_to_blender`
+      (Batch right-click on Action node).
+    `camera_scope=True`            -> wraps
+      `_export_camera_from_action_selection` (Action-schematic
+      right-click on Camera node).
+
+    Each call to `_make_export_callback(0.01)`, `_make_export_callback(0.1)`,
+    etc. produces a distinct closure with its own captured `scale`.
+    """
+
+    def _cb(selection):
+        if camera_scope:
+            return _export_camera_from_action_selection(
+                selection, flame_to_blender_scale=scale)
+        return _export_camera_to_blender(
+            selection, flame_to_blender_scale=scale)
+
+    return _cb
+
+
+def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=100.0):
     """Shared export pipeline used by both right-click entry points
     (Batch Action-scope and Action-schematic Camera-scope).
 
@@ -2716,6 +2767,12 @@ def _export_camera_pipeline(action, cam, label):
     here; this function owns the plate-resolution / bake / Blender-launch
     sequence. Extracted from _export_camera_to_blender per D-05 (single
     resolution helper) so both entry points share one implementation.
+
+    `flame_to_blender_scale` is the divisor baked into the v5 JSON
+    `flame_to_blender_scale` field (per 260501-dpa); default 100.0 is
+    the studio-default convenience entry (per the 260501-em8 pivot).
+    The right-click ladder (260501-i31) passes other values from
+    `_LADDER_MENU_STOPS` via `_make_export_callback(scale)`.
 
     Flow: infer plate resolution via the three-tier fallback
        (_infer_plate_resolution: action.resolution -> batch w/h -> first clip)
@@ -2896,14 +2953,16 @@ def _export_camera_pipeline(action, cam, label):
                     "forge_bake_action_name": raw_action_name,
                     "forge_bake_camera_name": raw_cam_name,
                 },
-                # Hardcoded studio default per 260501-em8 pivot: 100.0
-                # is a divisor (bake_camera.py line ~380: pos / scale),
-                # so a 1080p plate camera at ~833px lands at ~8.3m back
-                # from origin in Blender — human-scale rooms. Per the
-                # ladder spec (260501-dpa) this OVERRIDES the
-                # `scale=1000.0` CLI arg below at the bake call site,
-                # which is why scenes felt small (camera at ~0.83m).
-                flame_to_blender_scale=100.0,
+                # 100.0 is the studio default per the 260501-em8 pivot
+                # (a divisor; see bake_camera.py line ~380: pos / scale).
+                # The right-click ladder (260501-i31) lets the artist
+                # override via _make_export_callback(scale); the default
+                # entry uses the parameter's default of 100.0 set on
+                # _export_camera_pipeline. Per the ladder spec
+                # (260501-dpa) this OVERRIDES the `scale=1000.0` CLI
+                # arg below at the bake call site, which is why scenes
+                # felt small (camera at ~0.83m) before the pivot.
+                flame_to_blender_scale=flame_to_blender_scale,
             )
         except Exception as e:
             flame.messages.show_in_dialog(
@@ -3027,6 +3086,35 @@ def get_batch_custom_ui_actions():
                     "isVisible": _scope_batch_action,
                     "execute": _export_camera_to_blender,
                 },
+                # Quick 260501-i31: 5 ladder-stop siblings of the studio
+                # default. Each `_make_export_callback(stop)` is invoked
+                # AT REGISTRATION TIME so each entry gets its own closure
+                # with its own captured `scale`. Do NOT remove the parens.
+                {
+                    "name": "Export to Blender @ 0.01x",
+                    "isVisible": _scope_batch_action,
+                    "execute": _make_export_callback(0.01),
+                },
+                {
+                    "name": "Export to Blender @ 0.1x",
+                    "isVisible": _scope_batch_action,
+                    "execute": _make_export_callback(0.1),
+                },
+                {
+                    "name": "Export to Blender @ 1x",
+                    "isVisible": _scope_batch_action,
+                    "execute": _make_export_callback(1.0),
+                },
+                {
+                    "name": "Export to Blender @ 10x",
+                    "isVisible": _scope_batch_action,
+                    "execute": _make_export_callback(10.0),
+                },
+                {
+                    "name": "Export to Blender @ 100x",
+                    "isVisible": _scope_batch_action,
+                    "execute": _make_export_callback(100.0),
+                },
             ],
         },
     ]
@@ -3066,6 +3154,35 @@ def get_action_custom_ui_actions():
                     "name": "Export Camera to Blender",
                     "isVisible": _scope_action_camera,
                     "execute": _export_camera_from_action_selection,
+                },
+                # Quick 260501-i31: 5 ladder-stop siblings of the studio
+                # default on the Camera-scope surface. camera_scope=True
+                # routes to _export_camera_from_action_selection. Each
+                # factory invocation produces a distinct closure.
+                {
+                    "name": "Export to Blender @ 0.01x",
+                    "isVisible": _scope_action_camera,
+                    "execute": _make_export_callback(0.01, camera_scope=True),
+                },
+                {
+                    "name": "Export to Blender @ 0.1x",
+                    "isVisible": _scope_action_camera,
+                    "execute": _make_export_callback(0.1, camera_scope=True),
+                },
+                {
+                    "name": "Export to Blender @ 1x",
+                    "isVisible": _scope_action_camera,
+                    "execute": _make_export_callback(1.0, camera_scope=True),
+                },
+                {
+                    "name": "Export to Blender @ 10x",
+                    "isVisible": _scope_action_camera,
+                    "execute": _make_export_callback(10.0, camera_scope=True),
+                },
+                {
+                    "name": "Export to Blender @ 100x",
+                    "isVisible": _scope_action_camera,
+                    "execute": _make_export_callback(100.0, camera_scope=True),
                 },
             ],
         }
