@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-01 -- 5-stop scale ladder right-click menu shipped on Action + Camera surfaces (quick 260501-i31); +18 tests, 508/0/2 green; default entry preserved at scale=100.0
+Last activity: 2026-05-01 -- Forge-themed scale-picker dialog shipped (quick 260501-knl); reverted i31's 5-entry ladder menu, single entry now opens dialog with 5 buttons + 100x default; +14 tests, 522/0/2 green
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -121,7 +121,8 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260430-iv3 | Matchbox uniform readback spike KILLED — uniforms not Python-readable at any layer; pivot to pixel-encoded inputs + snapshot decode (SHELVED 2026-05-01) | 2026-04-30 | research-only | [260430-iv3-spike-matchbox-uniform-readback-via-flam](./quick/260430-iv3-spike-matchbox-uniform-readback-via-flam/) |
 | 260501-dpa | Flame↔Blender scale ladder knob — `flame_to_blender_scale` on v5 JSON contract, log10 stops {0.01, 0.1, 1, 10, 100}, bit-exact round-trip parity, +29 tests | 2026-05-01 | 76d88fa | [260501-dpa-add-flame-blender-scale-ladder-knob-roun](./quick/260501-dpa-add-flame-blender-scale-ladder-knob-roun/) |
 | 260501-em8 | Hook integration for scale ladder — kwarg plumbed through `fbx_to_v5_json`, hardcoded studio default `flame_to_blender_scale=100.0` at hook call site (artist gets human-scale rooms by default), +4 tests | 2026-05-01 | 9265f86 | (no planning dir — pivoted from menu plan; commit details in git log) |
-| 260501-i31 | Scale ladder right-click menu — 5 ladder-stop entries on Action AND Camera right-click surfaces (`Export to Blender @ 0.01x` .. `@ 100x`), default entry preserved, +18 tests | 2026-05-01 | 6200771 | [260501-i31-scale-ladder-right-click-menu-action-cam](./quick/260501-i31-scale-ladder-right-click-menu-action-cam/) |
+| 260501-i31 | Scale ladder right-click menu — 5 ladder-stop entries on Action AND Camera right-click surfaces (`Export to Blender @ 0.01x` .. `@ 100x`), default entry preserved, +18 tests (SUPERSEDED by 260501-knl — menu reverted in favor of dialog) | 2026-05-01 | 6200771 | [260501-i31-scale-ladder-right-click-menu-action-cam](./quick/260501-i31-scale-ladder-right-click-menu-action-cam/) |
+| 260501-knl | Forge-themed scale-picker dialog — reverted i31's 5-entry menu, single "Export Camera to Blender" entry now opens a forge-styled PySide6 dialog with 5 buttons + 100x default; ESC cancels cleanly; +14 tests | 2026-05-01 | 699c601 | [260501-knl-revert-ladder-menu-replace-with-forge-th](./quick/260501-knl-revert-ladder-menu-replace-with-forge-th/) |
 
 ## Deferred Items
 
