@@ -1795,6 +1795,95 @@ class TestFbxToV5JsonFrameRateTopLevel:
         assert on_disk["frame_rate"] == "23.976 fps"
 
 
+class TestFbxToV5JsonScaleField:
+    """Tests for the ``flame_to_blender_scale`` kwarg on ``fbx_to_v5_json``.
+
+    Mirror of ``TestFlameToBlenderScaleField`` in test_camera_io.py — but
+    against the FBX-driven export path the live hook actually uses
+    (camera_match_hook.py:2886-2899). The 260501-dpa quick added the
+    kwarg to ``camera_io.export_flame_camera_to_json`` only; the hook
+    uses ``fbx_ascii.fbx_to_v5_json`` instead, so this serializer needed
+    the parallel surface or the hook's hardcoded scale would have no
+    way to land in the JSON.
+
+    Critical contract:
+    - Omit the JSON key when the kwarg is not passed (back-compat).
+    - Emit the JSON key when the kwarg is passed — including ``1.0``
+      (the trap: truthy semantics would silently drop it; impl uses
+      ``is not None``).
+    - Serializer does NOT validate ladder membership — that's the
+      bake-side validator's job (covered by
+      tests/test_bake_camera.py::TestFlameToBlenderScaleLadder).
+    """
+
+    _FIXTURE = os.path.join(FIXTURE_DIR, "forge_fbx_baked.fbx")
+    _COMMON_KWARGS = dict(
+        width=1920,
+        height=1080,
+        film_back_mm=36.0,
+        camera_name="Default",
+    )
+
+    def test_omitted_when_not_passed(self, tmp_path):
+        """Default behavior: no kwarg -> no JSON key. Back-compat
+        invariant — pre-260501-em8 fixtures load byte-identically."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(self._FIXTURE, str(json_path),
+                                **self._COMMON_KWARGS)
+        assert "flame_to_blender_scale" not in result, (
+            "kwarg defaults to None and must NOT emit a JSON key — "
+            "back-compat invariant for pre-260501-em8 consumers"
+        )
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert "flame_to_blender_scale" not in on_disk
+
+    def test_emitted_when_passed(self, tmp_path):
+        """flame_to_blender_scale=100.0 -> top-level JSON key with the value.
+        100.0 is the studio-default value the hook now hardcodes."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(self._FIXTURE, str(json_path),
+                                **self._COMMON_KWARGS,
+                                flame_to_blender_scale=100.0)
+        assert "flame_to_blender_scale" in result
+        assert result["flame_to_blender_scale"] == 100.0
+        with open(json_path) as f:
+            on_disk = json.load(f)
+        assert on_disk["flame_to_blender_scale"] == 100.0
+
+    def test_emitted_when_passed_one(self, tmp_path):
+        """The TRAP: flame_to_blender_scale=1.0 must emit, not be dropped.
+
+        Truthy semantics (``if flame_to_blender_scale:``) would silently
+        drop 1.0 because Python treats 0.0 as falsy in tandem — and 1.0
+        is a perfectly valid ladder stop. Implementation uses
+        ``is not None`` semantics."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(self._FIXTURE, str(json_path),
+                                **self._COMMON_KWARGS,
+                                flame_to_blender_scale=1.0)
+        assert "flame_to_blender_scale" in result, (
+            "1.0 must emit — IS-NOT-NONE semantics, not truthy"
+        )
+        assert result["flame_to_blender_scale"] == 1.0
+
+    def test_other_fields_unchanged(self, tmp_path):
+        """Kwarg is independent of the other top-level kwargs — adding
+        flame_to_blender_scale alongside frame_rate + custom_properties
+        does not perturb either."""
+        json_path = tmp_path / "out.json"
+        result = fbx_to_v5_json(self._FIXTURE, str(json_path),
+                                **self._COMMON_KWARGS,
+                                flame_to_blender_scale=0.1,
+                                frame_rate="24 fps",
+                                custom_properties={"foo": "bar"})
+        assert result["flame_to_blender_scale"] == 0.1
+        assert result["frame_rate"] == "24 fps"
+        assert result["custom_properties"] == {"foo": "bar"}
+        assert result["width"] == 1920
+        assert result["height"] == 1080
+
+
 # =============================================================================
 # Group 11: Flame import_fbx rotation negation contract (Phase 04.1 hotfix)
 # =============================================================================

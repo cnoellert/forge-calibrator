@@ -1018,6 +1018,7 @@ def fbx_to_v5_json(
     frame_offset: int = 0,
     frame_start: Optional[int] = None,
     frame_end: Optional[int] = None,
+    flame_to_blender_scale: Optional[float] = None,
 ) -> dict:
     """Read a Flame-emitted ASCII FBX and write a v5 JSON contract file.
 
@@ -1078,6 +1079,15 @@ def fbx_to_v5_json(
             bakes past the user's range: Flame emits ``(end - start + 1)``
             KTimes, which after the +``start_frame`` offset lands one
             frame past end.
+        flame_to_blender_scale: optional v5 contract field controlling
+            the Flame->Blender world-space scale. Bake side
+            (``tools/blender/bake_camera.py``) DIVIDES camera positions
+            by this value, so larger numbers produce smaller scenes in
+            Blender. Allowed values per the ladder spec in 260501-dpa:
+            ``{0.01, 0.1, 1.0, 10.0, 100.0}``. ``None`` (default) omits
+            the field — bake then falls back to the CLI ``--scale`` arg
+            (precedence: JSON field > CLI > 1.0). Use ``is not None``
+            semantics so ``1.0`` can be recorded explicitly.
 
     Returns the parsed v5 JSON dict (also written to disk).
     """
@@ -1118,6 +1128,8 @@ def fbx_to_v5_json(
         payload["custom_properties"] = dict(custom_properties)
     if frame_rate:
         payload["frame_rate"] = str(frame_rate)
+    if flame_to_blender_scale is not None:
+        payload["flame_to_blender_scale"] = float(flame_to_blender_scale)
 
     out_abs = os.path.abspath(out_json_path)
     os.makedirs(os.path.dirname(out_abs) or ".", exist_ok=True)

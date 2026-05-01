@@ -2896,6 +2896,14 @@ def _export_camera_pipeline(action, cam, label):
                     "forge_bake_action_name": raw_action_name,
                     "forge_bake_camera_name": raw_cam_name,
                 },
+                # Hardcoded studio default per 260501-em8 pivot: 100.0
+                # is a divisor (bake_camera.py line ~380: pos / scale),
+                # so a 1080p plate camera at ~833px lands at ~8.3m back
+                # from origin in Blender — human-scale rooms. Per the
+                # ladder spec (260501-dpa) this OVERRIDES the
+                # `scale=1000.0` CLI arg below at the bake call site,
+                # which is why scenes felt small (camera at ~0.83m).
+                flame_to_blender_scale=100.0,
             )
         except Exception as e:
             flame.messages.show_in_dialog(
