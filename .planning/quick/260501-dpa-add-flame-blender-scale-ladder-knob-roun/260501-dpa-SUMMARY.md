@@ -121,6 +121,12 @@ The natural follow-up is a planned phase (not a quick) that:
 
 1. **Wires the JSON field through the existing hook.** The `camera_match_hook.py:2912` viewport-nav `scale=1000.0` hack is currently independent of the new `flame_to_blender_scale` field. The phase reconciles the two — likely by making the hack a special case of the ladder (and bumping the hack's value into the ladder set if 1000.0 is needed as a real scale).
 2. **Adds the artist UI** — PySide2 dropdown in the calibrator that lists the 5 ladder stops and writes the chosen value into the JSON before invoking the bake.
-3. **Documents the choice for artists** — what each stop means in physical terms (0.01 = treat Flame pixels as cm; 0.1 = decimeters; 1.0 = treat 1 pixel as 1 m; 10.0/100.0 for very small / very large scenes).
+3. **Documents the choice for artists** — what each stop means in physical terms. **Note (correction logged 2026-05-01 in 260501-em8 pivot):** scale is a DIVISOR (`pos / scale` in `bake_camera.py:380`), not a multiplier. Correct table for a 1080p plate (camera at ~833px from origin):
+   - `0.01` → divides by 0.01 → camera at **83,300m back** (treats 1 Flame pixel as 100 Blender units — enormous scenes)
+   - `0.1` → 8,330m back
+   - `1.0` → 833m back (architectural scale)
+   - `10.0` → 83.3m back (large building exterior)
+   - `100.0` → **8.3m back — human-scale indoor rooms** (the 260501-em8 hardcoded studio default)
+   - The pre-existing CLI `scale=1000.0` viewport-nav hack would land the camera at 0.83m, which is below human eye height — the "scenes too small in Blender" symptom that triggered 260501-em8.
 
 Subsequently, a second phase (calibrated reference-distance UI) supersedes manual ladder picking with photogrammetric scale derivation, but the ladder remains as the fallback when no measurement is provided.
