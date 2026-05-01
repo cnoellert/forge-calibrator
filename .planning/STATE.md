@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-01 -- Completed quick task 260501-dpa: Flame↔Blender scale ladder knob shipped — bit-exact round-trip parity, +29 tests; matchbox direction shelved 2026-05-01
+Last activity: 2026-05-01 -- Hardcoded flame_to_blender_scale=100.0 in hook (camera_match_hook.py:2898) — pivoted from 260501-em8 menu plan after user feedback; +4 tests, 490/0/2 green
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
