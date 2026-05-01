@@ -262,14 +262,6 @@ class TestLadderMenuFactory:
     surfaces + regression canaries.
     """
 
-    _LADDER_LABELS_AFTER_DEFAULT = [
-        "Export to Blender @ 0.01x",
-        "Export to Blender @ 0.1x",
-        "Export to Blender @ 1x",
-        "Export to Blender @ 10x",
-        "Export to Blender @ 100x",
-    ]
-
     # ------------------------------------------------------------------
     # A. Per-stop dispatch — Action-scope (camera_scope=False)
     # ------------------------------------------------------------------
@@ -355,123 +347,146 @@ class TestLadderMenuFactory:
         assert cam_calls == [1.0]
 
     # ------------------------------------------------------------------
-    # D. Default-entry regression — both surfaces
+    # D. Wrapper regression — both surfaces (quick 260501-knl)
     # ------------------------------------------------------------------
-    def test_default_entry_still_uses_scale_100_action_scope(self, monkeypatch):
-        """Calling _export_camera_to_blender(selection) with NO factory
-        wrapper (the default menu entry's call shape) lands
-        flame_to_blender_scale=100.0 on _export_camera_pipeline.
-        Regression guard for T-quick-260501-i31-02."""
-        recorded = {}
+    def test_wrapper_action_scope_forwards_picked_scale(self, monkeypatch):
+        """When the picker returns 100.0, the wrapper invokes
+        _export_camera_to_blender(selection, flame_to_blender_scale=100.0).
+        Regression guard for the studio-default behavior surfaced via the
+        new menu wiring."""
+        calls = []
 
-        def _pipeline_recorder(action, cam, label, *, flame_to_blender_scale):
-            recorded["scale"] = flame_to_blender_scale
-
-        # Stub the inner functions so the wrapper reaches the pipeline call.
-        fake_action = object()
-        fake_cam = object()
-        fake_triple = (fake_action, fake_cam, "Action > Camera")
+        def _recorder(selection, *, flame_to_blender_scale):
+            calls.append((selection, flame_to_blender_scale))
 
         monkeypatch.setattr(
-            _hook_module, "_first_action_in_selection",
-            lambda sel: fake_action)
-        monkeypatch.setattr(
-            _hook_module, "_find_action_cameras",
-            lambda only_action=None: [fake_triple])
-        monkeypatch.setattr(
-            _hook_module, "_pick_camera",
-            lambda cameras, title: fake_triple)
-        monkeypatch.setattr(
-            _hook_module, "_export_camera_pipeline", _pipeline_recorder)
+            _hook_module, "_export_camera_to_blender", _recorder)
 
-        _hook_module._export_camera_to_blender(object())
+        # Stub the scale_picker_dialog module since it is imported lazily.
+        fake_picker = types.ModuleType("scale_picker_dialog")
+        fake_picker.pick_scale = lambda parent=None, default=100.0: 100.0
+        monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
-        assert recorded.get("scale") == 100.0
+        sentinel = object()
+        _hook_module._export_camera_to_blender_with_picker(sentinel)
 
-    def test_default_entry_still_uses_scale_100_camera_scope(self, monkeypatch):
-        """Calling _export_camera_from_action_selection(selection) with NO
-        factory wrapper (the Camera-scope default menu entry's call shape)
-        lands flame_to_blender_scale=100.0 on _export_camera_pipeline."""
-        recorded = {}
+        assert len(calls) == 1
+        assert calls[0][0] is sentinel
+        assert calls[0][1] == 100.0
 
-        def _pipeline_recorder(action, cam, label, *, flame_to_blender_scale):
-            recorded["scale"] = flame_to_blender_scale
+    def test_wrapper_action_scope_cancel_skips_export(self, monkeypatch):
+        """When the picker returns None (ESC/cancel), the wrapper invokes
+        NO export. Defends the 'cancel = no-op' contract."""
+        calls = []
 
-        fake_action = _FakeCam(name="ActionNode")
-        fake_cam = _FakeCam(name="Camera")
+        def _recorder(selection, *, flame_to_blender_scale):
+            calls.append((selection, flame_to_blender_scale))
 
         monkeypatch.setattr(
-            _hook_module, "_first_camera_in_action_selection",
-            lambda sel: (fake_action, fake_cam))
+            _hook_module, "_export_camera_to_blender", _recorder)
+
+        fake_picker = types.ModuleType("scale_picker_dialog")
+        fake_picker.pick_scale = lambda parent=None, default=100.0: None
+        monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
+
+        _hook_module._export_camera_to_blender_with_picker(object())
+
+        assert calls == []
+
+    def test_wrapper_camera_scope_forwards_picked_scale(self, monkeypatch):
+        """Camera-scope wrapper: picker returns scale -> Camera-scope export
+        fires with that scale."""
+        calls = []
+
+        def _recorder(selection, *, flame_to_blender_scale):
+            calls.append((selection, flame_to_blender_scale))
+
         monkeypatch.setattr(
-            _hook_module, "_export_camera_pipeline", _pipeline_recorder)
+            _hook_module, "_export_camera_from_action_selection", _recorder)
 
-        _hook_module._export_camera_from_action_selection(object())
+        fake_picker = types.ModuleType("scale_picker_dialog")
+        fake_picker.pick_scale = lambda parent=None, default=100.0: 10.0
+        monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
-        assert recorded.get("scale") == 100.0
+        sentinel = object()
+        _hook_module._export_camera_from_action_selection_with_picker(sentinel)
+
+        assert len(calls) == 1
+        assert calls[0][0] is sentinel
+        assert calls[0][1] == 10.0
+
+    def test_wrapper_camera_scope_cancel_skips_export(self, monkeypatch):
+        """Camera-scope wrapper: picker returns None -> NO export."""
+        calls = []
+
+        def _recorder(selection, *, flame_to_blender_scale):
+            calls.append((selection, flame_to_blender_scale))
+
+        monkeypatch.setattr(
+            _hook_module, "_export_camera_from_action_selection", _recorder)
+
+        fake_picker = types.ModuleType("scale_picker_dialog")
+        fake_picker.pick_scale = lambda parent=None, default=100.0: None
+        monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
+
+        _hook_module._export_camera_from_action_selection_with_picker(object())
+
+        assert calls == []
 
     # ------------------------------------------------------------------
-    # E. Batch menu shape
+    # E. Batch menu shape (quick 260501-knl: reverted from i31's 7-entry shape)
     # ------------------------------------------------------------------
     def test_batch_menu_shape(self):
-        """get_batch_custom_ui_actions()'s 'Camera' subgroup has 7 dicts:
-        1 clip-scoped 'Open Camera Calibrator' + 6 Action-scoped (1
-        default 'Export Camera to Blender' + 5 ladder entries)."""
+        """get_batch_custom_ui_actions()'s 'Camera' subgroup has 2 dicts:
+        1 clip-scoped 'Open Camera Calibrator' + 1 Action-scoped
+        'Export Camera to Blender' (now wired to the picker wrapper).
+        Reverted from i31's 7-entry shape per quick 260501-knl."""
         groups = _hook_module.get_batch_custom_ui_actions()
         camera_groups = [g for g in groups if g.get("name") == "Camera"]
         assert len(camera_groups) == 1, \
             f"Expected exactly 1 'Camera' group; got {len(camera_groups)}"
 
         actions = camera_groups[0]["actions"]
-        assert len(actions) == 7, \
-            f"Expected 7 entries in 'Camera' subgroup; got {len(actions)}"
+        assert len(actions) == 2, \
+            f"Expected 2 entries in 'Camera' subgroup; got {len(actions)}"
 
-        # Filter to Action-scoped subset (the spec's 6-entry shape).
         action_scoped = [
             a for a in actions
             if a.get("isVisible") is _hook_module._scope_batch_action
         ]
-        assert len(action_scoped) == 6, \
-            f"Expected 6 Action-scoped entries; got {len(action_scoped)}"
+        assert len(action_scoped) == 1, \
+            f"Expected 1 Action-scoped entry; got {len(action_scoped)}"
 
-        labels = [a["name"] for a in action_scoped]
-        assert labels == [
-            "Export Camera to Blender",
-        ] + self._LADDER_LABELS_AFTER_DEFAULT, (
-            f"Action-scoped label list mismatch.\n"
-            f"  expected: {['Export Camera to Blender'] + self._LADDER_LABELS_AFTER_DEFAULT}\n"
-            f"  got:      {labels}"
+        assert action_scoped[0]["name"] == "Export Camera to Blender"
+        assert action_scoped[0]["execute"] is \
+            _hook_module._export_camera_to_blender_with_picker, (
+            "Action-scoped 'Export Camera to Blender' must wire to the "
+            "picker wrapper, NOT directly to _export_camera_to_blender — "
+            "the dialog is the new menu surface."
         )
 
     # ------------------------------------------------------------------
-    # F. Action menu shape
+    # F. Action menu shape (quick 260501-knl: reverted from i31's 6-entry shape)
     # ------------------------------------------------------------------
     def test_action_menu_shape(self):
-        """get_action_custom_ui_actions()'s root group has exactly 6 dicts
-        (1 default + 5 ladder), all _scope_action_camera-filtered."""
+        """get_action_custom_ui_actions()'s root group has exactly 1 dict
+        (the picker-wrapped Export Camera to Blender). Reverted from i31's
+        6-entry shape per quick 260501-knl."""
         groups = _hook_module.get_action_custom_ui_actions()
         assert len(groups) == 1, \
             f"Expected exactly 1 root group; got {len(groups)}"
 
         actions = groups[0]["actions"]
-        assert len(actions) == 6, \
-            f"Expected 6 entries in root group; got {len(actions)}"
+        assert len(actions) == 1, \
+            f"Expected 1 entry in root group; got {len(actions)}"
 
-        labels = [a["name"] for a in actions]
-        assert labels == [
-            "Export Camera to Blender",
-        ] + self._LADDER_LABELS_AFTER_DEFAULT, (
-            f"Action-surface label list mismatch.\n"
-            f"  expected: {['Export Camera to Blender'] + self._LADDER_LABELS_AFTER_DEFAULT}\n"
-            f"  got:      {labels}"
+        assert actions[0]["name"] == "Export Camera to Blender"
+        assert actions[0]["isVisible"] is _hook_module._scope_action_camera
+        assert actions[0]["execute"] is \
+            _hook_module._export_camera_from_action_selection_with_picker, (
+            "Camera-scoped entry must wire to the picker wrapper, NOT "
+            "directly to _export_camera_from_action_selection."
         )
-
-        # All entries must use _scope_action_camera filter.
-        for a in actions:
-            assert a.get("isVisible") is _hook_module._scope_action_camera, (
-                f"Entry {a['name']!r} must use _scope_action_camera filter; "
-                f"got {a.get('isVisible')!r}"
-            )
 
     # ------------------------------------------------------------------
     # G. Viewport-nav scale=1000.0 canary (T-quick-260501-i31-03)
@@ -538,3 +553,37 @@ class TestLadderMenuFactory:
                 f"{fn_name}.flame_to_blender_scale default must be 100.0; "
                 f"got {param.default!r}"
             )
+
+    # ------------------------------------------------------------------
+    # J. Wrappers exist and take 1 arg (quick 260501-knl)
+    # ------------------------------------------------------------------
+    def test_wrappers_exist_and_are_callable(self):
+        """The two new menu wrapper functions must exist at module scope
+        and be 1-arg callables (the menu callback shape Flame expects)."""
+        import inspect
+
+        for fn_name in (
+            "_export_camera_to_blender_with_picker",
+            "_export_camera_from_action_selection_with_picker",
+        ):
+            fn = getattr(_hook_module, fn_name, None)
+            assert callable(fn), f"{fn_name} must be a callable at module scope"
+            sig = inspect.signature(fn)
+            # 1 positional 'selection' arg (matches Flame menu callback shape).
+            assert len(sig.parameters) == 1, (
+                f"{fn_name} must take exactly 1 arg (selection); "
+                f"got {list(sig.parameters)}"
+            )
+
+    # ------------------------------------------------------------------
+    # K. Factory + ladder constant still present (PRESERVE-FACTORY-05)
+    # ------------------------------------------------------------------
+    def test_factory_still_present(self):
+        """quick 260501-knl reverts the menu but KEEPS _make_export_callback
+        and _LADDER_MENU_STOPS. Tests A/B/C/I depend on them. This test
+        also catches accidental factory deletion during the revert."""
+        assert hasattr(_hook_module, "_make_export_callback"), \
+            "_make_export_callback factory must STAY (per PRESERVE-FACTORY-05)"
+        assert hasattr(_hook_module, "_LADDER_MENU_STOPS"), \
+            "_LADDER_MENU_STOPS constant must STAY"
+        assert _hook_module._LADDER_MENU_STOPS == (0.01, 0.1, 1.0, 10.0, 100.0)

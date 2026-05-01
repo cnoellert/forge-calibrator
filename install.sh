@@ -31,6 +31,11 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_HOOK="$REPO_ROOT/flame/camera_match_hook.py"
+# Added by quick 260501-knl — forge-themed scale picker dialog. Imported
+# lazily by camera_match_hook's _export_camera_*_with_picker wrappers via
+# `from scale_picker_dialog import pick_scale`. Must land alongside the
+# hook in /opt/Autodesk/shared/python/camera_match/.
+SOURCE_SCALE_PICKER="$REPO_ROOT/flame/scale_picker_dialog.py"
 SOURCE_FORGE_CORE="$REPO_ROOT/forge_core"
 SOURCE_FORGE_FLAME="$REPO_ROOT/forge_flame"
 SOURCE_BLENDER_SCRIPTS="$REPO_ROOT/tools/blender"
@@ -245,6 +250,14 @@ if [[ ! -f "$SOURCE_HOOK" ]]; then
   exit 1
 fi
 ok "hook present ($(wc -l < "$SOURCE_HOOK" | tr -d ' ') lines)"
+# Added by quick 260501-knl — verify the scale picker dialog source is
+# present so a missing file fails fast in the preflight rather than at
+# Flame menu-click time.
+if [[ ! -f "$SOURCE_SCALE_PICKER" ]]; then
+  err "missing source scale picker dialog: $SOURCE_SCALE_PICKER"
+  exit 1
+fi
+ok "scale picker dialog present ($(wc -l < "$SOURCE_SCALE_PICKER" | tr -d ' ') lines)"
 if [[ ! -d "$SOURCE_FORGE_CORE" ]]; then
   err "missing source forge_core: $SOURCE_FORGE_CORE"
   exit 1
@@ -450,6 +463,14 @@ fi
 # copy hook
 run "cp \"$SOURCE_HOOK\" \"$TARGET_HOOK\""
 ok "wrote $TARGET_HOOK"
+
+# Added by quick 260501-knl — copy the scale picker dialog alongside the
+# hook. The hook's _export_camera_*_with_picker wrappers lazy-import
+# `from scale_picker_dialog import pick_scale`; INSTALL_DIR is on Flame's
+# sys.path so the flat import resolves at runtime.
+TARGET_SCALE_PICKER="$INSTALL_DIR/scale_picker_dialog.py"
+run "cp \"$SOURCE_SCALE_PICKER\" \"$TARGET_SCALE_PICKER\""
+ok "wrote $TARGET_SCALE_PICKER"
 
 # stub __init__.py — prevents the namespace-package drift documented in
 # memory/flame_module_reload.md. Needs to exist; contents don't matter.

@@ -2759,6 +2759,41 @@ def _make_export_callback(scale, *, camera_scope=False):
     return _cb
 
 
+# Quick 260501-knl: replace i31's 5-sibling ladder menu with a single
+# entry per surface that opens a forge-themed scale picker dialog.
+# The wrappers below are the new menu callables; the dialog lives in
+# flame/scale_picker_dialog.py.
+#
+# Lazy import of pick_scale: same pattern as _pick_camera's lazy
+# PySide6 import — keeps the test path that stubs PySide6 from having
+# to also stub the dialog module at module-load time.
+def _export_camera_to_blender_with_picker(selection):
+    """Action-scope menu wrapper. Opens the scale picker; on a chosen
+    scale, fires _export_camera_to_blender(selection, flame_to_blender_scale=scale).
+    On ESC/cancel, returns silently with no export call.
+
+    Studio default is 100.0 — the dialog's '100x' button is highlighted
+    as primary so the artist can hit Enter for the common case.
+    """
+    from scale_picker_dialog import pick_scale
+    scale = pick_scale(default=100.0)
+    if scale is None:
+        return  # ESC / cancel / X — no export
+    _export_camera_to_blender(selection, flame_to_blender_scale=scale)
+
+
+def _export_camera_from_action_selection_with_picker(selection):
+    """Camera-scope menu wrapper. Opens the scale picker; on a chosen
+    scale, fires _export_camera_from_action_selection(selection,
+    flame_to_blender_scale=scale). On ESC/cancel, returns silently."""
+    from scale_picker_dialog import pick_scale
+    scale = pick_scale(default=100.0)
+    if scale is None:
+        return  # ESC / cancel / X — no export
+    _export_camera_from_action_selection(
+        selection, flame_to_blender_scale=scale)
+
+
 def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=100.0):
     """Shared export pipeline used by both right-click entry points
     (Batch Action-scope and Action-schematic Camera-scope).
@@ -3082,38 +3117,17 @@ def get_batch_custom_ui_actions():
                     "execute": _launch_camera_match,
                 },
                 {
+                    # Quick 260501-knl: reverted from i31's 6-sibling ladder
+                    # to a single entry that opens the forge-themed scale
+                    # picker dialog. The wrapper lazy-imports pick_scale
+                    # from scale_picker_dialog.py and forwards the chosen
+                    # scale to _export_camera_to_blender via the kw-only
+                    # flame_to_blender_scale parameter (i31 plumbing
+                    # preserved). _make_export_callback + _LADDER_MENU_STOPS
+                    # remain at module scope (defended by tests A/B/C/K).
                     "name": "Export Camera to Blender",
                     "isVisible": _scope_batch_action,
-                    "execute": _export_camera_to_blender,
-                },
-                # Quick 260501-i31: 5 ladder-stop siblings of the studio
-                # default. Each `_make_export_callback(stop)` is invoked
-                # AT REGISTRATION TIME so each entry gets its own closure
-                # with its own captured `scale`. Do NOT remove the parens.
-                {
-                    "name": "Export to Blender @ 0.01x",
-                    "isVisible": _scope_batch_action,
-                    "execute": _make_export_callback(0.01),
-                },
-                {
-                    "name": "Export to Blender @ 0.1x",
-                    "isVisible": _scope_batch_action,
-                    "execute": _make_export_callback(0.1),
-                },
-                {
-                    "name": "Export to Blender @ 1x",
-                    "isVisible": _scope_batch_action,
-                    "execute": _make_export_callback(1.0),
-                },
-                {
-                    "name": "Export to Blender @ 10x",
-                    "isVisible": _scope_batch_action,
-                    "execute": _make_export_callback(10.0),
-                },
-                {
-                    "name": "Export to Blender @ 100x",
-                    "isVisible": _scope_batch_action,
-                    "execute": _make_export_callback(100.0),
+                    "execute": _export_camera_to_blender_with_picker,
                 },
             ],
         },
@@ -3151,38 +3165,14 @@ def get_action_custom_ui_actions():
             "hierarchy": [],
             "actions": [
                 {
+                    # Quick 260501-knl: reverted from i31's 6-sibling ladder
+                    # to a single entry that opens the forge-themed scale
+                    # picker dialog. The wrapper forwards the chosen scale
+                    # to _export_camera_from_action_selection via the
+                    # kw-only flame_to_blender_scale parameter.
                     "name": "Export Camera to Blender",
                     "isVisible": _scope_action_camera,
-                    "execute": _export_camera_from_action_selection,
-                },
-                # Quick 260501-i31: 5 ladder-stop siblings of the studio
-                # default on the Camera-scope surface. camera_scope=True
-                # routes to _export_camera_from_action_selection. Each
-                # factory invocation produces a distinct closure.
-                {
-                    "name": "Export to Blender @ 0.01x",
-                    "isVisible": _scope_action_camera,
-                    "execute": _make_export_callback(0.01, camera_scope=True),
-                },
-                {
-                    "name": "Export to Blender @ 0.1x",
-                    "isVisible": _scope_action_camera,
-                    "execute": _make_export_callback(0.1, camera_scope=True),
-                },
-                {
-                    "name": "Export to Blender @ 1x",
-                    "isVisible": _scope_action_camera,
-                    "execute": _make_export_callback(1.0, camera_scope=True),
-                },
-                {
-                    "name": "Export to Blender @ 10x",
-                    "isVisible": _scope_action_camera,
-                    "execute": _make_export_callback(10.0, camera_scope=True),
-                },
-                {
-                    "name": "Export to Blender @ 100x",
-                    "isVisible": _scope_action_camera,
-                    "execute": _make_export_callback(100.0, camera_scope=True),
+                    "execute": _export_camera_from_action_selection_with_picker,
                 },
             ],
         }
