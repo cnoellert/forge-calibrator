@@ -22,14 +22,14 @@ key_findings:
   - input_sockets/output_sockets/sockets are schematic socket labels (e.g. ['Input 1']), not shader uniforms
   - flame.batch.mimic_link surfaces post-Animate but is type-restricted (equal node types only) — kills the link-picker discovery angle
   - Sidecar Comment-node fallback is unbuildable — reader works, writer has no candidate (matchbox can't populate it)
-  - Architectural pivot identified: pixel-encoded INPUTS + snapshot decode, mirroring the existing out_pos_x/out_focal_mm pattern
+  - Architectural pivot identified at synthesis (pixel-encoded INPUTS + snapshot decode), then SHELVED 2026-05-01 by user strategic decision — matchbox direction dropped entirely; PySide2 path is forward
 ---
 
 # Quick Task 260430-iv3 — Matchbox Uniform Readback via Flame Channel API — Summary
 
 ## One-liner
 
-Matchbox shader uniforms (`vp1_l1_start`, `vp2_l1_end`, etc.) are **not Python-readable** in Flame 2026.2.1 via any introspection surface tested. The proposed "matchbox-as-storage" architecture (where right-click headlessly reads VP values off the matchbox PyNode) is dead. The viable pivot is **pixel-encoded inputs + snapshot decode** — extend the existing pixel-encoding pattern (already used for solver outputs `out_pos_x` etc.) to also encode the VP inputs into a separate pixel region, then snapshot via `flame.PyExporter().export()` and decode in numpy.
+Matchbox shader uniforms (`vp1_l1_start`, `vp2_l1_end`, etc.) are **not Python-readable** in Flame 2026.2.1 via any introspection surface tested. The proposed "matchbox-as-storage" architecture (where right-click headlessly reads VP values off the matchbox PyNode) is dead. A pivot was identified at synthesis (pixel-encoded inputs + snapshot decode) but **SHELVED 2026-05-01** by user strategic decision — the engineering effort isn't justified relative to the existing PySide2 line-drawing calibrator that already ships. **Forward path: stay on PySide2.** See memory: `matchbox_direction_shelved.md`.
 
 ## Verdict
 
