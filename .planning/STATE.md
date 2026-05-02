@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-02 -- Scale ladder 7-stop semantic redesign shipped + LIVE UAT 1/2/5 PASS in real Flame+Blender (returned camera lands geometrically on original; symmetry holds at multiple scalings; Interior default-button parity); dialog re-layout drops plate-specific subtitle and stacks ×10ⁿ on line 2 (commit 0f2cbcc); UAT 3/4/6/7 still pending
+Last activity: 2026-05-02 -- Tester install-rollout polish (quick 260501-u7q): README ## Install gateway (prereqs + one-line + verify + pointer to docs/seamless-bridge.md), install.sh conda preflight extended to detect no-conda vs no-env with auto-create prompt + --yes flag; 4 dry-run branches verified live; 542/2 tests still green
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -129,6 +129,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260501-i31 | Scale ladder right-click menu — 5 ladder-stop entries on Action AND Camera right-click surfaces (`Export to Blender @ 0.01x` .. `@ 100x`), default entry preserved, +18 tests (SUPERSEDED by 260501-knl — menu reverted in favor of dialog) | 2026-05-01 | 6200771 | [260501-i31-scale-ladder-right-click-menu-action-cam](./quick/260501-i31-scale-ladder-right-click-menu-action-cam/) |
 | 260501-knl | Forge-themed scale-picker dialog — reverted i31's 5-entry menu, single "Export Camera to Blender" entry now opens a forge-styled PySide6 dialog with 5 buttons + 100x default; ESC cancels cleanly; +14 tests | 2026-05-01 | 699c601 | [260501-knl-revert-ladder-menu-replace-with-forge-th](./quick/260501-knl-revert-ladder-menu-replace-with-forge-th/) |
 | 260501-rus | Extend Flame↔Blender scale ladder 5→7 stops with semantic labels (Landscape ×10⁰ … Macro ×10⁶), Interior (1000.0) is new studio default; deprecated {0.01, 0.1} kept valid bake-side for back-compat with already-baked .blend files; +20 tests | 2026-05-02 | b6e75ca | [260501-rus-extend-flame-blender-scale-ladder-from-5](./quick/260501-rus-extend-flame-blender-scale-ladder-from-5/) |
+| 260501-u7q | Tester install-rollout polish — README ## Install gateway (prereqs + one-line + verify + pointer to docs/seamless-bridge.md) + install.sh conda preflight extended to detect no-conda vs no-env with auto-create prompt + --yes flag; 4 dry-run branches verified live | 2026-05-02 | 549f33e | [260501-u7q-fill-empty-readme-install-section-extend](./quick/260501-u7q-fill-empty-readme-install-section-extend/) |
 
 ## Deferred Items
 
