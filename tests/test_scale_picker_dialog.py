@@ -43,10 +43,11 @@ def _qapp():
     # one; QApplication is process-wide and meant to be reused.
 
 
-# --- Test 1: 5 buttons with the expected labels ---
-def test_pick_scale_constructs_dialog_with_5_scale_buttons(monkeypatch):
-    """The dialog must contain 5 QPushButtons with text starting with
-    each of the 5 ladder labels (0.01x, 0.1x, 1x, 10x, 100x)."""
+# --- Test 1: 7 buttons with the expected semantic prefixes ---
+def test_pick_scale_constructs_dialog_with_7_scale_buttons(monkeypatch):
+    """The dialog must contain 7 QPushButtons whose first text-line
+    starts with the semantic prefix + ' · ×10' (Landscape, Outdoor,
+    Soundstage, Interior, Tabletop, Product, Macro)."""
     import scale_picker_dialog
     from PySide6.QtWidgets import QPushButton, QDialog
 
@@ -59,7 +60,7 @@ def test_pick_scale_constructs_dialog_with_5_scale_buttons(monkeypatch):
         return QDialog.Rejected
     monkeypatch.setattr(QDialog, "exec", _fake_exec)
 
-    result = scale_picker_dialog.pick_scale(default=100.0)
+    result = scale_picker_dialog.pick_scale(default=1000.0)
     assert result is None  # we rejected
 
     dialog = captured["dialog"]
@@ -67,13 +68,17 @@ def test_pick_scale_constructs_dialog_with_5_scale_buttons(monkeypatch):
                   for b in dialog.findChildren(QPushButton)]
     # Filter out the Cancel button.
     scale_labels = [l for l in btn_labels if l != "Cancel"]
-    assert scale_labels == ["0.01x", "0.1x", "1x", "10x", "100x"]
+    expected_prefixes = ["Landscape", "Outdoor", "Soundstage", "Interior",
+                         "Tabletop", "Product", "Macro"]
+    assert len(scale_labels) == 7, scale_labels
+    for prefix, label in zip(expected_prefixes, scale_labels):
+        assert label.startswith(prefix + " · ×10"), (prefix, label)
 
 
-# --- Test 2: default=100.0 highlights the "100x" button as default ---
-def test_pick_scale_default_100_highlights_100x_button(monkeypatch):
-    """default=100.0 -> the '100x' button has setDefault(True) and
-    objectName='primary' (the forge-style primary marker)."""
+# --- Test 2: default=1000.0 highlights the "Interior" button ---
+def test_pick_scale_default_1000_highlights_interior_button(monkeypatch):
+    """default=1000.0 -> the 'Interior · ×10³' button has setDefault(True)
+    and objectName='primary' (the forge-style primary marker)."""
     import scale_picker_dialog
     from PySide6.QtWidgets import QPushButton, QDialog
 
@@ -83,23 +88,23 @@ def test_pick_scale_default_100_highlights_100x_button(monkeypatch):
         return QDialog.Rejected
     monkeypatch.setattr(QDialog, "exec", _fake_exec)
 
-    scale_picker_dialog.pick_scale(default=100.0)
+    scale_picker_dialog.pick_scale(default=1000.0)
 
     dialog = captured["dialog"]
     primary_buttons = [
         b for b in dialog.findChildren(QPushButton)
-        if b.text().startswith("100x")
+        if b.text().split("\n", 1)[0].startswith("Interior · ×10³")
     ]
     assert len(primary_buttons) == 1
     assert primary_buttons[0].isDefault(), \
-        "100x button must be the dialog's default (Enter triggers it)"
+        "Interior button must be the dialog's default (Enter triggers it)"
     assert primary_buttons[0].objectName() == "primary", \
-        "100x button must have objectName='primary' for forge styling"
+        "Interior button must have objectName='primary' for forge styling"
 
     # And the other buttons must NOT be marked primary.
     other_scale_buttons = [
         b for b in dialog.findChildren(QPushButton)
-        if not b.text().startswith("100x")
+        if not b.text().split("\n", 1)[0].startswith("Interior · ×10³")
         and b.text() != "Cancel"
     ]
     for b in other_scale_buttons:
@@ -110,31 +115,32 @@ def test_pick_scale_default_100_highlights_100x_button(monkeypatch):
 
 # --- Test 3: parametrized — clicking each button returns its scale ---
 @pytest.mark.parametrize("label_prefix,expected_scale", [
-    ("0.01x", 0.01),
-    ("0.1x", 0.1),
-    ("1x", 1.0),
-    ("10x", 10.0),
-    ("100x", 100.0),
+    ("Landscape",  1.0),
+    ("Outdoor",    10.0),
+    ("Soundstage", 100.0),
+    ("Interior",   1000.0),
+    ("Tabletop",   10000.0),
+    ("Product",    100000.0),
+    ("Macro",      1000000.0),
 ])
 def test_pick_scale_returns_scale_on_button_click(
     monkeypatch, label_prefix, expected_scale,
 ):
     """Clicking each ladder button closes the dialog and returns that
-    button's scale value."""
+    button's scale value. Semantic-prefix match — no collision risk
+    across the 7 distinct labels."""
     import scale_picker_dialog
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QDialog, QPushButton
 
     # We need to actually exec() the dialog so the click handler runs,
     # but exec() blocks. Use a QTimer to schedule the click + accept.
-    # The trampoline finds the button by EXACT label-prefix match (so
-    # "1x" doesn't match "10x" or "100x") and clicks it.
     original_exec = QDialog.exec
     def _exec_with_trampoline(self):
         def _do_click():
             for btn in self.findChildren(QPushButton):
                 first_line = btn.text().split("\n", 1)[0]
-                if first_line == label_prefix and btn.text() != "Cancel":
+                if first_line.startswith(label_prefix + " · ×10") and btn.text() != "Cancel":
                     btn.click()
                     return
             self.reject()
@@ -142,7 +148,7 @@ def test_pick_scale_returns_scale_on_button_click(
         return original_exec(self)
     monkeypatch.setattr(QDialog, "exec", _exec_with_trampoline)
 
-    result = scale_picker_dialog.pick_scale(default=100.0)
+    result = scale_picker_dialog.pick_scale(default=1000.0)
     assert result == expected_scale
 
 
@@ -159,7 +165,7 @@ def test_pick_scale_cancel_returns_none(monkeypatch):
         return original_exec(self)
     monkeypatch.setattr(QDialog, "exec", _exec_with_reject)
 
-    result = scale_picker_dialog.pick_scale(default=100.0)
+    result = scale_picker_dialog.pick_scale(default=1000.0)
     assert result is None
 
 
@@ -182,7 +188,7 @@ def test_pick_scale_cancel_button_returns_none(monkeypatch):
         return original_exec(self)
     monkeypatch.setattr(QDialog, "exec", _exec_with_cancel_click)
 
-    result = scale_picker_dialog.pick_scale(default=100.0)
+    result = scale_picker_dialog.pick_scale(default=1000.0)
     assert result is None
 
 

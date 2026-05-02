@@ -31,23 +31,28 @@ from typing import Optional
 
 # Discrete log10 ladder, mirrors _LADDER_MENU_STOPS in camera_match_hook
 # and _FLAME_TO_BLENDER_SCALE_LADDER in tools/blender/bake_camera.py.
-# Subtitle text is human-readable physical scale guidance for the artist.
+# Semantic labels + unicode superscript multipliers; physical-distance
+# subtitles rounded for the 4096-wide / ~97° hfov reference plate.
+# Deprecated stops (0.01, 0.1) are intentionally NOT offered here.
 _LADDER_STOPS = [
-    # (label, scale_value, subtitle)
-    ("0.01x", 0.01, "enormous"),
-    ("0.1x",  0.1,  "very large"),
-    ("1x",    1.0,  "architectural"),
-    ("10x",   10.0, "large building"),
-    ("100x",  100.0, "indoor room"),
+    # (semantic_label, multiplier_suffix, scale_value, physical_distance_subtitle)
+    ("Landscape",  "×10⁰", 1.0,       "~1.8 km"),
+    ("Outdoor",    "×10¹", 10.0,      "~180 m"),
+    ("Soundstage", "×10²", 100.0,     "~18 m"),
+    ("Interior",   "×10³", 1000.0,    "~1.8 m"),
+    ("Tabletop",   "×10⁴", 10000.0,   "~18 cm"),
+    ("Product",    "×10⁵", 100000.0,  "~1.8 cm"),
+    ("Macro",      "×10⁶", 1000000.0, "~1.8 mm"),
 ]
 
 
-def pick_scale(parent=None, default: float = 100.0) -> Optional[float]:
+def pick_scale(parent=None, default: float = 1000.0) -> Optional[float]:
     """Modal forge-themed scale picker.
 
-    Returns the chosen scale (one of 0.01, 0.1, 1.0, 10.0, 100.0) when
-    the artist clicks a button. Returns None when the dialog is rejected
-    (ESC, the X close box, or the explicit Cancel button).
+    Returns the chosen scale (one of 1.0, 10.0, 100.0, 1000.0, 10000.0,
+    100000.0, 1000000.0) when the artist clicks a button. Returns None
+    when the dialog is rejected (ESC, the X close box, or the explicit
+    Cancel button).
 
     `default` selects which button is the dialog's default (responds to
     Enter, visually highlighted as primary). Must match one of
@@ -86,7 +91,7 @@ def pick_scale(parent=None, default: float = 100.0) -> Optional[float]:
 
     dialog = QDialog(parent)
     dialog.setWindowTitle("FORGE — Export Camera to Blender — Scale")
-    dialog.setMinimumWidth(560)
+    dialog.setMinimumWidth(820)
     dialog.setStyleSheet(_FORGE_SS)
 
     layout = QVBoxLayout(dialog)
@@ -100,7 +105,7 @@ def pick_scale(parent=None, default: float = 100.0) -> Optional[float]:
 
     subtitle = QLabel(
         "Divisor applied to camera position when baking to Blender. "
-        "100x is the studio default (room-scale scenes).")
+        "Interior (×10³) is the studio default — room-scale interiors and human-scale CG.")
     subtitle.setStyleSheet("color: #888; font-size: 11px;")
     subtitle.setWordWrap(True)
     layout.addWidget(subtitle)
@@ -123,13 +128,14 @@ def pick_scale(parent=None, default: float = 100.0) -> Optional[float]:
     btn_row = QHBoxLayout()
     btn_row.setSpacing(8)
 
-    for label, scale_value, sub in _LADDER_STOPS:
+    for label, suffix, scale_value, sub in _LADDER_STOPS:
         # Each button is a single QPushButton with newline-separated
-        # text (label on top, subtitle below). Single-widget-per-button
-        # keeps test location trivial: filter by btn.text().split("\n", 1)[0].
-        btn = QPushButton(f"{label}\n{sub}")
+        # text ("{Semantic} · ×10ⁿ" on top, distance subtitle below).
+        # Single-widget-per-button keeps test location trivial: filter
+        # by btn.text().split("\n", 1)[0].
+        btn = QPushButton(f"{label} · {suffix}\n{sub}")
         btn.setMinimumHeight(56)
-        btn.setMinimumWidth(96)
+        btn.setMinimumWidth(108)
         if scale_value == default:
             # Default button highlighting: setObjectName("primary") triggers
             # the QPushButton#primary block in _FORGE_SS (orange bg, white
