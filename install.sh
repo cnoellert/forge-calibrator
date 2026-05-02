@@ -18,6 +18,7 @@
 #   ./install.sh --dry-run        # print actions, change nothing
 #   ./install.sh --install-dir X  # override target
 #   ./install.sh --force          # overwrite without prompting
+#   ./install.sh --yes            # non-interactive auto-create of forge env if missing
 #
 # Environment overrides:
 #   FORGE_BRIDGE_VERSION    git tag of forge-bridge to deploy (default: v1.3.0)
@@ -79,6 +80,7 @@ FORGE_BRIDGE_HOOK_PATH="/opt/Autodesk/shared/python/forge_bridge/scripts/forge_b
 
 DRY_RUN=0
 FORCE=0
+YES=0
 
 # ---- colour helpers (only if stdout is a tty) ---------------------------------
 if [[ -t 1 ]]; then
@@ -111,6 +113,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run)     DRY_RUN=1 ; shift ;;
     --force)       FORCE=1 ; shift ;;
+    --yes|-y)      YES=1 ; shift ;;
     --install-dir) INSTALL_DIR="$2" ; shift 2 ;;
     -h|--help)
       sed -n '3,29p' "$0" | sed 's/^# \{0,1\}//'
@@ -277,17 +280,60 @@ ok "tools/blender present ($(find "$SOURCE_BLENDER_SCRIPTS" -maxdepth 1 -type f 
 # ---- precheck: forge conda env ------------------------------------------------
 step "Forge conda env"
 FORGE_PY="$FORGE_ENV/bin/python"
+FORGE_ENV_YML="$REPO_ROOT/forge-env.yml"
 PREFLIGHT_FAIL=0
-if [[ ! -x "$FORGE_PY" ]]; then
-  err "forge python not found at $FORGE_PY"
-  warn "create it with: conda create -n forge python=3.11 numpy opencv-python"
+
+# Auto-create branch: --force or --yes triggers create-without-prompt; otherwise
+# prompt the user (default N). On 'n' we print the copy-pasteable one-liner and
+# fail preflight so the existing exit-1 path catches it.
+_create_forge_env() {
+  if [[ ! -f "$FORGE_ENV_YML" ]]; then
+    err "cannot auto-create — $FORGE_ENV_YML not found in repo root"
+    return 1
+  fi
+  run "conda env create -f \"$FORGE_ENV_YML\""
+  return $?
+}
+
+if ! command -v conda >/dev/null 2>&1; then
+  err "conda not found on PATH"
+  warn "install miniconda from https://docs.conda.io/projects/miniconda/"
+  warn "then create the forge env: conda env create -f forge-env.yml"
   PREFLIGHT_FAIL=1
-else
+elif [[ ! -x "$FORGE_PY" ]]; then
+  warn "forge env not found at $FORGE_ENV"
+  if (( FORCE )) || (( YES )); then
+    ok "auto-creating forge env (--force or --yes set)"
+    if _create_forge_env && [[ -x "$FORGE_PY" || $DRY_RUN -eq 1 ]]; then
+      ok "forge env ready"
+    else
+      err "auto-create failed — fix the conda error above and re-run"
+      PREFLIGHT_FAIL=1
+    fi
+  else
+    read -r -p "  auto-create forge env now? [y/N] " ans
+    if [[ "${ans:-N}" =~ ^[Yy]([Ee][Ss])?$ ]]; then
+      if _create_forge_env && [[ -x "$FORGE_PY" || $DRY_RUN -eq 1 ]]; then
+        ok "forge env ready"
+      else
+        err "auto-create failed — fix the conda error above and re-run"
+        PREFLIGHT_FAIL=1
+      fi
+    else
+      warn "create it manually: conda env create -f forge-env.yml"
+      PREFLIGHT_FAIL=1
+    fi
+  fi
+fi
+
+# Re-check after the create branch above — if we still don't have a python, OR
+# we auto-created in dry-run mode (binary won't exist), bail without trying to
+# probe deps. If the binary IS present, run the dep probe.
+if (( ! PREFLIGHT_FAIL )) && [[ -x "$FORGE_PY" ]]; then
   ok "python: $("$FORGE_PY" --version 2>&1)"
-  # Probe deps from within the forge env
   if ! "$FORGE_PY" -c "import numpy, cv2" >/dev/null 2>&1; then
     err "forge env missing numpy or cv2"
-    warn "install with: $FORGE_ENV/bin/pip install numpy opencv-python"
+    warn "fix with: conda env update -f forge-env.yml --prune"
     PREFLIGHT_FAIL=1
   else
     ok "deps: numpy $("$FORGE_PY" -c 'import numpy;print(numpy.__version__)')" \
