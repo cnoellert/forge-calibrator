@@ -228,8 +228,11 @@ class TestEulerHelperInverse:
 # =============================================================================
 
 
-# All 5 ladder stops from bake_camera.py::_FLAME_TO_BLENDER_SCALE_LADDER.
-_LADDER = (0.01, 0.1, 1.0, 10.0, 100.0)
+# Canonical 7-stop ladder from bake_camera.py::_FLAME_TO_BLENDER_SCALE_LADDER
+# (extended in 260501-rus); deprecated stops kept valid bake-side for
+# back-compat with already-baked .blend files (260501-dpa).
+_LADDER = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0)
+_DEPRECATED_LADDER = (0.01, 0.1)
 
 
 class TestScaleLadderRoundTrip:
@@ -253,6 +256,25 @@ class TestScaleLadderRoundTrip:
             rotation_out, rotation_in, atol=1e-9, rtol=0,
             err_msg=f"rotation drifted at scale={scale} (rotations must NOT "
                     f"be touched by scale): in={rotation_in} out={rotation_out}")
+
+    @pytest.mark.parametrize("scale", _DEPRECATED_LADDER)
+    def test_static_camera_round_trip_at_each_deprecated_ladder_value(self, scale):
+        """Deprecated stops still round-trip bit-exact — proves back-compat
+        with .blend files baked under the original 260501-dpa contract."""
+        position_in = [833.0, -1250.0, 4747.64]
+        rotation_in = [12.5, -7.3, 0.4]
+
+        M_blender = bake_flame_to_blender(position_in, rotation_in, scale=scale)
+        position_out, rotation_out = extract_blender_to_flame(M_blender, scale=scale)
+
+        np.testing.assert_allclose(
+            position_out, position_in, atol=1e-9, rtol=0,
+            err_msg=f"position drifted at deprecated scale={scale}: "
+                    f"in={position_in} out={position_out}")
+        np.testing.assert_allclose(
+            rotation_out, rotation_in, atol=1e-9, rtol=0,
+            err_msg=f"rotation drifted at deprecated scale={scale}: "
+                    f"in={rotation_in} out={rotation_out}")
 
     @pytest.mark.parametrize("scale", _LADDER)
     def test_animated_camera_round_trip_at_each_ladder_value(self, scale):

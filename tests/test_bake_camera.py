@@ -283,41 +283,61 @@ class TestFlameToBlenderScaleLadder:
     needing to reach for documentation."""
 
     def test_ladder_constant_shape(self):
-        """The ladder constant must equal (0.01, 0.1, 1.0, 10.0, 100.0)
-        — the discrete log10 stops chosen so multiplier (bake) and
-        divisor (extract) are exact-inverse floats."""
+        """Canonical ladder must equal the 7-stop log10 set
+        (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0) — chosen
+        so multiplier (bake) and divisor (extract) are exact-inverse floats."""
         assert bake_camera._FLAME_TO_BLENDER_SCALE_LADDER == (
-            0.01, 0.1, 1.0, 10.0, 100.0
+            1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0
         ), (
-            f"ladder must be (0.01, 0.1, 1.0, 10.0, 100.0); got "
-            f"{bake_camera._FLAME_TO_BLENDER_SCALE_LADDER!r}"
+            f"ladder must be (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0); "
+            f"got {bake_camera._FLAME_TO_BLENDER_SCALE_LADDER!r}"
         )
 
-    @pytest.mark.parametrize("value", [0.01, 0.1, 1.0, 10.0, 100.0])
+    def test_deprecated_ladder_constant_shape(self):
+        """Deprecated ladder must equal (0.01, 0.1) — kept valid bake-side
+        for back-compat with .blend files baked under the original
+        260501-dpa contract; never offered in the dialog."""
+        assert bake_camera._DEPRECATED_FLAME_TO_BLENDER_SCALE_LADDER == (0.01, 0.1), (
+            f"deprecated ladder must be (0.01, 0.1); got "
+            f"{bake_camera._DEPRECATED_FLAME_TO_BLENDER_SCALE_LADDER!r}"
+        )
+
+    @pytest.mark.parametrize("value", [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0])
     def test_validator_accepts_each_ladder_value(self, value):
-        """Every ladder value passes validation and round-trips
+        """Every canonical ladder value passes validation and round-trips
         unchanged (returned as float)."""
         got = bake_camera._validate_flame_to_blender_scale(value)
         assert got == value
         assert isinstance(got, float)
 
-    @pytest.mark.parametrize("value", [0.5, 2.0, 0.05, 1000.0, -1.0, 0.0])
+    @pytest.mark.parametrize("value", [0.01, 0.1])
+    def test_validator_accepts_each_deprecated_ladder_value(self, value):
+        """Deprecated stops still validate cleanly — proves back-compat
+        with .blend files baked under the original 260501-dpa contract."""
+        got = bake_camera._validate_flame_to_blender_scale(value)
+        assert got == value
+        assert isinstance(got, float)
+
+    @pytest.mark.parametrize(
+        "value", [0.5, 2.0, 0.05, -1.0, 0.0, 5.0, 50.0, 500.0, 9999.99])
     def test_validator_rejects_off_ladder(self, value):
-        """Off-ladder values raise SystemExit. Includes the user-cited
-        examples (0.5 the most likely artist mistake; 0.0 the
-        positive-scale degenerate)."""
+        """Off-ladder values raise SystemExit. Includes user-likely typos
+        (0.5, 5.0) plus degenerate cases (0.0, -1.0). Note: 1000.0 is now
+        a CANONICAL stop (Interior) and is not in this rejection set."""
         with pytest.raises(SystemExit):
             bake_camera._validate_flame_to_blender_scale(value)
 
     def test_validator_rejection_message_lists_ladder(self):
         """The SystemExit message must name the offending value AND
-        list every ladder stop, so the artist can self-correct without
-        consulting docs."""
+        list every canonical stop AND every deprecated stop, so the
+        artist can self-correct without consulting docs."""
         with pytest.raises(SystemExit) as excinfo:
             bake_camera._validate_flame_to_blender_scale(0.5)
         msg = str(excinfo.value)
         assert "0.5" in msg, f"offending value missing from message: {msg!r}"
-        # Spot-check that the ladder ends are in the message; if those
-        # appear, the rest will too (the message lists the full tuple).
-        assert "0.01" in msg, f"ladder lower bound missing: {msg!r}"
-        assert "100.0" in msg, f"ladder upper bound missing: {msg!r}"
+        # Canonical ladder ends.
+        assert "1.0" in msg, f"canonical lower bound missing: {msg!r}"
+        assert "1000000.0" in msg, f"canonical upper bound missing: {msg!r}"
+        # Deprecated stops listed parenthetically.
+        assert "0.01" in msg, f"deprecated lower bound missing: {msg!r}"
+        assert "0.1" in msg, f"deprecated upper bound missing: {msg!r}"

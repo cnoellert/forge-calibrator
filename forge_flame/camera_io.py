@@ -128,9 +128,11 @@ def export_flame_camera_to_json(
         flame_to_blender_scale: optional per-camera Flame↔Blender world
             scale factor for the bake/extract round-trip. Allowed
             values are restricted to the discrete log10 ladder
-            ``{0.01, 0.1, 1.0, 10.0, 100.0}`` (validated by
+            ``{1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0}``
+            (canonical) plus ``{0.01, 0.1}`` (deprecated, kept valid
+            bake-side for back-compat) — validated by
             ``tools/blender/bake_camera.py::_validate_flame_to_blender_scale``
-            — this serializer does NOT validate; it's a thin emit).
+            (this serializer does NOT validate; it's a thin emit).
             When provided, written as a top-level ``flame_to_blender_scale``
             key on the JSON payload; ``bake_camera.py`` then uses it as
             the position divisor with precedence over its CLI ``--scale``

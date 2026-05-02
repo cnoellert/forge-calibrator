@@ -190,14 +190,16 @@ _FLAME_FPS_LABELS = (
 
 # Allowed values for the v5 JSON `flame_to_blender_scale` field.
 # Discrete log10 ladder so the inverse multiplier on extract is an exact
-# float (no precision drift across round-trip). Default 1.0. The artist
-# UI in a future phase will gate on a dropdown of these values; this
-# tuple is the authoritative source of truth on the bake side.
-# See .planning/quick/260501-dpa-add-flame-blender-scale-ladder-knob-roun/
-# for the spec. Extract side reads `forge_bake_scale` stamped by
+# float (no precision drift across round-trip). The artist UI gates on
+# this set; this tuple is the authoritative source of truth on the bake
+# side. See .planning/quick/260501-dpa-... and .../260501-rus-... for
+# the spec. Extract side reads `forge_bake_scale` stamped by
 # _stamp_metadata; that value is whatever bake decided after applying
 # the precedence below, so extract math automatically inverts.
-_FLAME_TO_BLENDER_SCALE_LADDER = (0.01, 0.1, 1.0, 10.0, 100.0)
+# canonical 7-stop log10 ladder; default 1000.0 (Interior)
+_FLAME_TO_BLENDER_SCALE_LADDER = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0)
+# deprecated stops kept valid bake-side for back-compat with already-baked .blend files (260501-dpa); never offered by the dialog.
+_DEPRECATED_FLAME_TO_BLENDER_SCALE_LADDER = (0.01, 0.1)
 
 
 def _closest_flame_fps_label(fps: float) -> str:
@@ -332,12 +334,15 @@ def _validate_flame_to_blender_scale(value: float) -> float:
             full ladder list.
     """
     v = float(value)
-    if v not in _FLAME_TO_BLENDER_SCALE_LADDER:
+    allowed = _FLAME_TO_BLENDER_SCALE_LADDER + _DEPRECATED_FLAME_TO_BLENDER_SCALE_LADDER
+    if v not in allowed:
         ladder_str = "{" + ", ".join(
             str(x) for x in _FLAME_TO_BLENDER_SCALE_LADDER) + "}"
+        deprecated_str = "{" + ", ".join(
+            str(x) for x in _DEPRECATED_FLAME_TO_BLENDER_SCALE_LADDER) + "}"
         raise SystemExit(
             f"flame_to_blender_scale={value} is not on the allowed "
-            f"ladder {ladder_str}")
+            f"ladder {ladder_str} (or deprecated stops {deprecated_str})")
     return v
 
 

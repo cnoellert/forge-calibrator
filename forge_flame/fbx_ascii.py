@@ -1083,11 +1083,14 @@ def fbx_to_v5_json(
             the Flame->Blender world-space scale. Bake side
             (``tools/blender/bake_camera.py``) DIVIDES camera positions
             by this value, so larger numbers produce smaller scenes in
-            Blender. Allowed values per the ladder spec in 260501-dpa:
-            ``{0.01, 0.1, 1.0, 10.0, 100.0}``. ``None`` (default) omits
-            the field — bake then falls back to the CLI ``--scale`` arg
-            (precedence: JSON field > CLI > 1.0). Use ``is not None``
-            semantics so ``1.0`` can be recorded explicitly.
+            Blender. Allowed values per the ladder spec in 260501-dpa
+            (extended in 260501-rus): canonical
+            ``{1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0}``
+            plus deprecated ``{0.01, 0.1}`` (kept valid bake-side for
+            back-compat). ``None`` (default) omits the field — bake
+            then falls back to the CLI ``--scale`` arg (precedence:
+            JSON field > CLI > 1.0). Use ``is not None`` semantics so
+            ``1.0`` can be recorded explicitly.
 
     Returns the parsed v5 JSON dict (also written to disk).
     """
