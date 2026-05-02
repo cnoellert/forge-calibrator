@@ -91,6 +91,11 @@ Recent decisions affecting current work:
 
 All "Phase 4 polish" items previously listed here have been bucketed into **Phase 4.1** (inserted 2026-04-22 after Phase 4 discuss-phase). See `.planning/ROADMAP.md` §"Phase 4.1: Phase 4 polish items (INSERTED)" for the canonical list. Phase 4 itself stays scoped to DOC-01 (E2E smoke test) + DOC-02 (user docs) only.
 
+**Pending todo files (3):**
+- `2026-04-27-camera-scope-export-nonetype-regression-on-cold-install.md`
+- `2026-04-29-blender-binary-picker-ui-tweak.md`
+- `2026-05-02-flame-blender-scale-roundtrip-uat.md` ← **NEXT SESSION** — UAT the Flame↔Blender scaling chain shipped today (commits 9265f86 / 6200771 / 699c601 / d926810). 6 UAT items including bake/extract round-trip parity at multiple ladder stops, animated camera, ESC hygiene, default-button parity, Camera-node surface.
+
 ### Roadmap Evolution
 
 - Phase 4.1 inserted after Phase 4 on 2026-04-22: Phase 4 polish items bucket (stereo-rig filter, empty-camera UX, crash repro, code-review warnings, fps stamping). Rationale: Phase 4's discuss-phase locked scope to docs+validation only; pre-existing polish items tagged "Phase 4" in Phase 1-2 summaries needed a home that doesn't bloat Phase 4. Priority set after Phase 4 smoke test surfaces which polish items actually block v6.3 ship.
