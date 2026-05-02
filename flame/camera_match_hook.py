@@ -2627,7 +2627,7 @@ def _launch_blender_on_blend(blend_path: str, *, focus_steal: bool):
         )
 
 
-def _export_camera_to_blender(selection, *, flame_to_blender_scale=100.0):
+def _export_camera_to_blender(selection, *, flame_to_blender_scale=1000.0):
     """Right-click handler for an Action node in Batch — Action-scope path.
 
     Flow: right-click the Action holding your solved camera
@@ -2641,8 +2641,9 @@ def _export_camera_to_blender(selection, *, flame_to_blender_scale=100.0):
     _pick_camera and feeds (action, cam, label) directly into the
     shared pipeline. D-05: single resolution helper, two thin wrappers.
 
-    Default `flame_to_blender_scale=100.0` preserves the studio-default
-    behavior of the original menu entry; ladder entries override via
+    Default `flame_to_blender_scale=1000.0` is the new studio sweet spot
+    (Interior — per quick 260501-rus; supersedes 260501-em8's 100.0
+    Soundstage default); ladder entries override via
     `_make_export_callback(scale)` (per quick 260501-i31).
     """
     import flame
@@ -2687,7 +2688,7 @@ def _export_camera_to_blender(selection, *, flame_to_blender_scale=100.0):
 # Plan 04.4-03 ships and a Flame restart picks up the new
 # get_action_custom_ui_actions function. After Plan 04.4-02 lands, this
 # code is present but unreachable from the menu.
-def _export_camera_from_action_selection(selection, *, flame_to_blender_scale=100.0):
+def _export_camera_from_action_selection(selection, *, flame_to_blender_scale=1000.0):
     """Right-click handler for a Camera PyCoNode inside an Action's
     schematic — Camera-scope path. Bypasses _pick_camera entirely:
     the user has already indicated which camera by right-clicking it.
@@ -2697,8 +2698,8 @@ def _export_camera_from_action_selection(selection, *, flame_to_blender_scale=10
     shape so the pipeline's downstream code (filename construction,
     info-dialog text) sees identical input regardless of entry point.
 
-    Default `flame_to_blender_scale=100.0` preserves the studio-default
-    behavior of the original menu entry; ladder entries override via
+    Default `flame_to_blender_scale=1000.0` is the new studio sweet spot
+    (Interior — per quick 260501-rus); ladder entries override via
     `_make_export_callback(scale, camera_scope=True)` (per quick 260501-i31).
     """
     import flame
@@ -2722,12 +2723,13 @@ def _export_camera_from_action_selection(selection, *, flame_to_blender_scale=10
     )
 
 
-# Discrete log10 ladder for the right-click menu entries — must match
-# tools/blender/bake_camera.py::_FLAME_TO_BLENDER_SCALE_LADDER. The
-# default-entry hardcode of 100.0 is the studio-default convenience
-# entry (per 260501-em8); these are the additional artist-pickable
-# stops surfaced via _make_export_callback (per quick 260501-i31).
-_LADDER_MENU_STOPS = (0.01, 0.1, 1.0, 10.0, 100.0)
+# Discrete log10 7-stop ladder for the right-click menu entries —
+# must match tools/blender/bake_camera.py::_FLAME_TO_BLENDER_SCALE_LADDER.
+# Default-entry hardcode of 1000.0 is the studio-default convenience
+# entry (Interior — per quick 260501-rus); these are the additional
+# artist-pickable stops surfaced via _make_export_callback (per quick
+# 260501-i31).
+_LADDER_MENU_STOPS = (1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0)
 
 
 def _make_export_callback(scale, *, camera_scope=False):
@@ -2772,11 +2774,11 @@ def _export_camera_to_blender_with_picker(selection):
     scale, fires _export_camera_to_blender(selection, flame_to_blender_scale=scale).
     On ESC/cancel, returns silently with no export call.
 
-    Studio default is 100.0 — the dialog's '100x' button is highlighted
-    as primary so the artist can hit Enter for the common case.
+    Studio default is 1000.0 — the dialog's 'Interior · ×10³' button is
+    highlighted as primary so the artist can hit Enter for the common case.
     """
     from scale_picker_dialog import pick_scale
-    scale = pick_scale(default=100.0)
+    scale = pick_scale(default=1000.0)
     if scale is None:
         return  # ESC / cancel / X — no export
     _export_camera_to_blender(selection, flame_to_blender_scale=scale)
@@ -2787,14 +2789,14 @@ def _export_camera_from_action_selection_with_picker(selection):
     scale, fires _export_camera_from_action_selection(selection,
     flame_to_blender_scale=scale). On ESC/cancel, returns silently."""
     from scale_picker_dialog import pick_scale
-    scale = pick_scale(default=100.0)
+    scale = pick_scale(default=1000.0)
     if scale is None:
         return  # ESC / cancel / X — no export
     _export_camera_from_action_selection(
         selection, flame_to_blender_scale=scale)
 
 
-def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=100.0):
+def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=1000.0):
     """Shared export pipeline used by both right-click entry points
     (Batch Action-scope and Action-schematic Camera-scope).
 
@@ -2804,9 +2806,10 @@ def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=100.0)
     resolution helper) so both entry points share one implementation.
 
     `flame_to_blender_scale` is the divisor baked into the v5 JSON
-    `flame_to_blender_scale` field (per 260501-dpa); default 100.0 is
-    the studio-default convenience entry (per the 260501-em8 pivot).
-    The right-click ladder (260501-i31) passes other values from
+    `flame_to_blender_scale` field (per 260501-dpa); default 1000.0 is
+    the studio-default convenience entry (Interior — per the 260501-rus
+    flip; supersedes 260501-em8's 100.0 Soundstage default). The
+    right-click ladder (260501-i31) passes other values from
     `_LADDER_MENU_STOPS` via `_make_export_callback(scale)`.
 
     Flow: infer plate resolution via the three-tier fallback
@@ -2988,15 +2991,16 @@ def _export_camera_pipeline(action, cam, label, *, flame_to_blender_scale=100.0)
                     "forge_bake_action_name": raw_action_name,
                     "forge_bake_camera_name": raw_cam_name,
                 },
-                # 100.0 is the studio default per the 260501-em8 pivot
-                # (a divisor; see bake_camera.py line ~380: pos / scale).
-                # The right-click ladder (260501-i31) lets the artist
-                # override via _make_export_callback(scale); the default
-                # entry uses the parameter's default of 100.0 set on
+                # 1000.0 is the studio default per the 260501-rus flip
+                # (Interior — supersedes 260501-em8's 100.0 Soundstage
+                # default; a divisor; see bake_camera.py: pos / scale).
+                # The dialog (260501-knl) and right-click ladder
+                # (260501-i31) let the artist pick other values; the
+                # default entry uses the parameter default on
                 # _export_camera_pipeline. Per the ladder spec
                 # (260501-dpa) this OVERRIDES the `scale=1000.0` CLI
-                # arg below at the bake call site, which is why scenes
-                # felt small (camera at ~0.83m) before the pivot.
+                # arg below at the bake call site (a separate divisor —
+                # legacy viewport-nav hack, byte-identical canary).
                 flame_to_blender_scale=flame_to_blender_scale,
             )
         except Exception as e:

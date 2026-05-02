@@ -250,12 +250,13 @@ class TestExportHandlerFpsLabel:
 # plumbing on the three signatures (_export_camera_pipeline,
 # _export_camera_to_blender, _export_camera_from_action_selection) +
 # menu shape for both surfaces + the two regression canaries
-# (default-entry scale=100.0, viewport-nav scale=1000.0 byte-identical).
+# (default-entry scale=1000.0 — Interior per 260501-rus,
+#  viewport-nav scale=1000.0 at run_bake byte-identical).
 # ---------------------------------------------------------------------------
 
 
 class TestLadderMenuFactory:
-    """Quick 260501-i31: 5-stop scale ladder right-click menu entries.
+    """Quick 260501-i31 + 260501-rus: 7-stop scale ladder right-click menu entries.
 
     Covers _make_export_callback factory + flame_to_blender_scale plumbing
     + menu shape on both Batch (Action-scope) and Action (Camera-scope)
@@ -265,7 +266,7 @@ class TestLadderMenuFactory:
     # ------------------------------------------------------------------
     # A. Per-stop dispatch — Action-scope (camera_scope=False)
     # ------------------------------------------------------------------
-    @pytest.mark.parametrize("scale", [0.01, 0.1, 1.0, 10.0, 100.0])
+    @pytest.mark.parametrize("scale", [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0])
     def test_factory_dispatches_per_stop_action_scope(self, monkeypatch, scale):
         """Each ladder stop produces a closure whose dispatch fires the
         Action-scope wrapper with flame_to_blender_scale=stop_value.
@@ -289,7 +290,7 @@ class TestLadderMenuFactory:
     # ------------------------------------------------------------------
     # B. Per-stop dispatch — Camera-scope (camera_scope=True)
     # ------------------------------------------------------------------
-    @pytest.mark.parametrize("scale", [0.01, 0.1, 1.0, 10.0, 100.0])
+    @pytest.mark.parametrize("scale", [1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0])
     def test_factory_dispatches_per_stop_camera_scope(self, monkeypatch, scale):
         """Camera-scope flag routes to _export_camera_from_action_selection
         with flame_to_blender_scale=stop_value; Action-scope wrapper is
@@ -350,10 +351,10 @@ class TestLadderMenuFactory:
     # D. Wrapper regression — both surfaces (quick 260501-knl)
     # ------------------------------------------------------------------
     def test_wrapper_action_scope_forwards_picked_scale(self, monkeypatch):
-        """When the picker returns 100.0, the wrapper invokes
-        _export_camera_to_blender(selection, flame_to_blender_scale=100.0).
+        """When the picker returns 1000.0, the wrapper invokes
+        _export_camera_to_blender(selection, flame_to_blender_scale=1000.0).
         Regression guard for the studio-default behavior surfaced via the
-        new menu wiring."""
+        new menu wiring (Interior — per quick 260501-rus)."""
         calls = []
 
         def _recorder(selection, *, flame_to_blender_scale):
@@ -364,7 +365,7 @@ class TestLadderMenuFactory:
 
         # Stub the scale_picker_dialog module since it is imported lazily.
         fake_picker = types.ModuleType("scale_picker_dialog")
-        fake_picker.pick_scale = lambda parent=None, default=100.0: 100.0
+        fake_picker.pick_scale = lambda parent=None, default=1000.0: 1000.0
         monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
         sentinel = object()
@@ -372,7 +373,7 @@ class TestLadderMenuFactory:
 
         assert len(calls) == 1
         assert calls[0][0] is sentinel
-        assert calls[0][1] == 100.0
+        assert calls[0][1] == 1000.0
 
     def test_wrapper_action_scope_cancel_skips_export(self, monkeypatch):
         """When the picker returns None (ESC/cancel), the wrapper invokes
@@ -386,7 +387,7 @@ class TestLadderMenuFactory:
             _hook_module, "_export_camera_to_blender", _recorder)
 
         fake_picker = types.ModuleType("scale_picker_dialog")
-        fake_picker.pick_scale = lambda parent=None, default=100.0: None
+        fake_picker.pick_scale = lambda parent=None, default=1000.0: None
         monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
         _hook_module._export_camera_to_blender_with_picker(object())
@@ -405,7 +406,7 @@ class TestLadderMenuFactory:
             _hook_module, "_export_camera_from_action_selection", _recorder)
 
         fake_picker = types.ModuleType("scale_picker_dialog")
-        fake_picker.pick_scale = lambda parent=None, default=100.0: 10.0
+        fake_picker.pick_scale = lambda parent=None, default=1000.0: 10.0
         monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
         sentinel = object()
@@ -426,7 +427,7 @@ class TestLadderMenuFactory:
             _hook_module, "_export_camera_from_action_selection", _recorder)
 
         fake_picker = types.ModuleType("scale_picker_dialog")
-        fake_picker.pick_scale = lambda parent=None, default=100.0: None
+        fake_picker.pick_scale = lambda parent=None, default=1000.0: None
         monkeypatch.setitem(sys.modules, "scale_picker_dialog", fake_picker)
 
         _hook_module._export_camera_from_action_selection_with_picker(object())
@@ -492,18 +493,33 @@ class TestLadderMenuFactory:
     # G. Viewport-nav scale=1000.0 canary (T-quick-260501-i31-03)
     # ------------------------------------------------------------------
     def test_viewport_nav_canary_unchanged(self):
-        """The literal 'scale=1000.0' must appear exactly 2 times in the
-        hook source (1 in run_bake call, 1 in the explanatory comment).
-        Pre-edit baseline confirmed via grep -c."""
+        """The viewport-nav `, scale=1000.0,` literal at the
+        blender_bridge.run_bake call site must stay byte-identical.
+
+        Tightened in 260501-rus: the studio default flipped 100.0 →
+        1000.0, so `flame_to_blender_scale=1000.0` is now also a valid
+        substring; the prior naive `source.count("scale=1000.0")` yields
+        false positives. We anchor on the run_bake-specific `, scale=1000.0,`
+        spelling (the run_bake kwarg sits between two other kwargs, so the
+        comma-bracketed form is unique to that call site) plus the
+        backtick-quoted reference inside the explanatory comment block.
+        Both must remain at 1.
+        """
         hook_path = os.path.join(
             _REPO_ROOT, "flame", "camera_match_hook.py")
         with open(hook_path) as f:
             source = f.read()
-        count = source.count("scale=1000.0")
-        assert count == 2, (
-            f"Expected 'scale=1000.0' to appear exactly 2 times in "
-            f"flame/camera_match_hook.py; got {count}. The viewport-nav "
-            f"CLI arg at run_bake must stay byte-identical."
+        run_bake_literal = source.count(", scale=1000.0,")
+        assert run_bake_literal == 1, (
+            f"Expected ', scale=1000.0,' to appear exactly 1 time in "
+            f"flame/camera_match_hook.py (the blender_bridge.run_bake "
+            f"kwarg); got {run_bake_literal}. The viewport-nav CLI arg "
+            f"at run_bake must stay byte-identical."
+        )
+        comment_ref = source.count("`scale=1000.0`")
+        assert comment_ref == 1, (
+            f"Expected '`scale=1000.0`' (backtick-quoted) to appear "
+            f"exactly 1 time in the explanatory comment; got {comment_ref}."
         )
 
     # ------------------------------------------------------------------
@@ -525,13 +541,14 @@ class TestLadderMenuFactory:
             )
 
     # ------------------------------------------------------------------
-    # I. Signature shape: keyword-only flame_to_blender_scale=100.0
+    # I. Signature shape: keyword-only flame_to_blender_scale=1000.0
     # ------------------------------------------------------------------
-    def test_pipeline_signature_has_keyword_only_scale_default_100(self):
+    def test_pipeline_signature_has_keyword_only_scale_default_1000(self):
         """All three signatures (_export_camera_pipeline,
         _export_camera_to_blender, _export_camera_from_action_selection)
         must declare flame_to_blender_scale as keyword-only with
-        default 100.0. Defends the regression anchor."""
+        default 1000.0 (Interior — per quick 260501-rus). Defends the
+        regression anchor."""
         import inspect
 
         for fn_name in (
@@ -549,8 +566,8 @@ class TestLadderMenuFactory:
                 f"{fn_name}.flame_to_blender_scale must be KEYWORD_ONLY; "
                 f"got {param.kind}"
             )
-            assert param.default == 100.0, (
-                f"{fn_name}.flame_to_blender_scale default must be 100.0; "
+            assert param.default == 1000.0, (
+                f"{fn_name}.flame_to_blender_scale default must be 1000.0; "
                 f"got {param.default!r}"
             )
 
@@ -581,9 +598,12 @@ class TestLadderMenuFactory:
     def test_factory_still_present(self):
         """quick 260501-knl reverts the menu but KEEPS _make_export_callback
         and _LADDER_MENU_STOPS. Tests A/B/C/I depend on them. This test
-        also catches accidental factory deletion during the revert."""
+        also catches accidental factory deletion during the revert.
+        Constant tuple widened in 260501-rus from 5 stops to 7 (canonical
+        log10 ladder 1.0 → 1000000.0)."""
         assert hasattr(_hook_module, "_make_export_callback"), \
             "_make_export_callback factory must STAY (per PRESERVE-FACTORY-05)"
         assert hasattr(_hook_module, "_LADDER_MENU_STOPS"), \
             "_LADDER_MENU_STOPS constant must STAY"
-        assert _hook_module._LADDER_MENU_STOPS == (0.01, 0.1, 1.0, 10.0, 100.0)
+        assert _hook_module._LADDER_MENU_STOPS == (
+            1.0, 10.0, 100.0, 1000.0, 10000.0, 100000.0, 1000000.0)
