@@ -67,9 +67,22 @@ def pick_scale(parent=None, default: float = 100.0) -> Optional[float]:
     )
     from PySide6.QtCore import Qt  # noqa: F401  — kept for future use
 
-    # Import _FORGE_SS lazily too — avoids any import cycle in the
-    # (unlikely) event camera_match_hook ever imports back from here.
-    from camera_match_hook import _FORGE_SS
+    # Resolve _FORGE_SS via sys.modules instead of a static import.
+    # Why: install.sh renames the hook from `camera_match_hook.py`
+    # (source) to `camera_match.py` (install), so the live module name
+    # is `camera_match` in production but `camera_match_hook` in the
+    # source tree / tests. A static `from camera_match_hook import …`
+    # works in tests but ModuleNotFoundError-fails on the deployed
+    # install — the menu callback raises, Flame swallows the exception,
+    # and the dialog silently no-shows. The two-name lookup matches
+    # both environments without try/except.
+    import sys
+    _hook = sys.modules.get("camera_match") or sys.modules.get("camera_match_hook")
+    if _hook is None:
+        raise ImportError(
+            "forge hook not loaded under 'camera_match' or 'camera_match_hook' "
+            "— cannot resolve _FORGE_SS palette for the scale picker dialog")
+    _FORGE_SS = _hook._FORGE_SS
 
     dialog = QDialog(parent)
     dialog.setWindowTitle("FORGE — Export Camera to Blender — Scale")
