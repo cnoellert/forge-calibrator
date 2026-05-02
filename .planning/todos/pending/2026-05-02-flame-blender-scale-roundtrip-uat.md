@@ -14,8 +14,27 @@ related_commits:
   - 6200771 (feat: 5-stop ladder menu — superseded by knl)
   - 699c601 (feat: scale picker dialog)
   - d926810 (fix: sys.modules lookup for _FORGE_SS — install rename)
-  - <pending — quick 260501-rus commits land before this UAT runs>
-status: pending
+  - b096ba2 a70591d d621e77 b6e75ca (quick 260501-rus — 7-stop semantic ladder + Interior default)
+  - 0f2cbcc (fix: drop plate-specific distance subtitle, stack ×10ⁿ on line 2, tighten dialog width)
+status: partial — UAT 1/2/5 verified live 2026-05-02; UAT 3/4/6/7 still pending
+---
+
+## Live UAT outcomes — 2026-05-02
+
+| UAT | Status | Notes |
+|-----|--------|-------|
+| UAT 1 — Static round-trip at Interior · ×10³ | ✅ PASS | Returned camera lands geometrically on top of original; PyActionNode `action1` import target; FBX 16432 bytes captured at `/tmp/forge_send_capture/20260501-212941-576930.fbx` as known-good regression reference |
+| UAT 2 — Static round-trip at non-default scale | ✅ PASS | Multiple scalings tested live; symmetry holds across the ladder |
+| UAT 3 — Animated camera round-trip | ⏭ pending | Multi-keyframe case not yet exercised live |
+| UAT 4 — ESC/cancel hygiene | ⏭ pending | Not exercised live; unit tests cover the dialog path |
+| UAT 5 — Default-button parity (Enter vs click) | ✅ PASS (implicit) | Interior was the default-button entry on every successful round-trip today |
+| UAT 6 — Camera-node surface (Action schematic) | ⏭ pending | Hands-on test deferred |
+| UAT 7 — Deprecated-stop back-compat | ⏭ pending | No old `.blend` at 0.01x/0.1x available to test against |
+
+**Pre-flight sequence that worked:** Restart Flame → batch loaded with original Action only (no leftover Actions from prior crashed attempts) → warmup export from Flame to Blender → Send-to-Flame from Blender → returned camera lands clean.
+
+**Earlier failure mode** (resolved by clean-batch + warmup): SIGSEGV at `0x00001508` in `importToActionFBX` reproduced twice when Send-to-Flame was attempted with stale Actions in the batch from prior crashes. NOT the documented first-import-after-boot race — this was caused by stale-Action pickup at the bridge's import-target selection. Capture wrapper installed via `/exec` to grab the FBX bytes survives across calls; remained dormant on the successful run (capture is harmless overhead).
+
 ---
 
 ## Problem

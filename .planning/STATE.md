@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-02 -- Scale ladder extended 5→7 stops with semantic labels (quick 260501-rus); Landscape ×10⁰ … Macro ×10⁶ spanning 1.8 km → 1.8 mm; Interior (1000.0) is new studio default; deprecated {0.01, 0.1} kept valid bake-side; +20 tests, 542/0/2 green
+Last activity: 2026-05-02 -- Scale ladder 7-stop semantic redesign shipped + LIVE UAT 1/2/5 PASS in real Flame+Blender (returned camera lands geometrically on original; symmetry holds at multiple scalings; Interior default-button parity); dialog re-layout drops plate-specific subtitle and stacks ×10ⁿ on line 2 (commit 0f2cbcc); UAT 3/4/6/7 still pending
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
