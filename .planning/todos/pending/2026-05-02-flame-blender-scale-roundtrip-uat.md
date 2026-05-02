@@ -14,6 +14,7 @@ related_commits:
   - 6200771 (feat: 5-stop ladder menu — superseded by knl)
   - 699c601 (feat: scale picker dialog)
   - d926810 (fix: sys.modules lookup for _FORGE_SS — install rename)
+  - <pending — quick 260501-rus commits land before this UAT runs>
 status: pending
 ---
 
@@ -39,28 +40,26 @@ If anything is broken, the most likely failure mode is the inverse asymmetry: `b
 
 Run the following 6 UAT items in sequence next session, before declaring the scaling work shippable:
 
-### UAT 1: Static round-trip at default scale (100x) — REGRESSION HEADLINE
+### UAT 1: Static round-trip at default scale (Interior · ×10³) — REGRESSION HEADLINE
 
 1. In Flame, find a batch with an Action containing a static camera (the one the artist tested today works)
 2. Right-click Action → Camera Match → Camera → "Export Camera to Blender"
-3. Dialog opens with `100x` highlighted as default
-4. Hit **Enter** (or click `100x` explicitly) → Blender opens with the camera at human-room scale (~8m back for a 1080p plate, ~76m for the 2160×4096 plate from today)
+3. Dialog opens with `Interior · ×10³` highlighted as default
+4. Hit **Enter** (or click `Interior · ×10³` explicitly) → Blender opens with the camera at room-scale (~1.8 m back for the reference 4096-wide plate; the studio sweet spot for human-scale interiors)
 5. In Blender, **without touching anything**, run "Send to Flame" (forge_sender addon)
 6. Back in Flame: the returned camera should land at the **same** Flame coords as the original Action camera (position, rotation, focal length)
 7. Verification: visually confirm cameras overlap in the Flame Action viewport, OR query the position attributes via /exec to assert `np.isclose(returned, original, atol=1e-3)`
 
 **FAIL CRITERIA:** if the returned camera lands at a different position, the divide/multiply asymmetry is broken. Most likely: extract isn't reading `forge_bake_scale` correctly, or the bake didn't stamp it.
 
-### UAT 2: Static round-trip at non-default scale (1x)
+### UAT 2: Static round-trip at non-default scale (Landscape · ×10⁰)
 
-Same flow as UAT 1, but pick `1x` from the dialog. Camera should land at architectural scale (~833m back). Send-to-Flame should still return to original coords.
-
-This proves the symmetry holds at a value other than the studio default — different scale values exercise the same code path but with different numbers, so a bug in the property-stamping logic might only show up at non-100 values.
+Same flow as UAT 1, but pick `Landscape · ×10⁰` from the dialog. Camera should land at landscape scale (~1.8 km back for the 4096-wide reference plate). Send-to-Flame should still return to original Flame coords. This proves the symmetry holds at a value other than the studio default — different scale values exercise the same code path with different numbers, so a bug in property-stamping logic might only surface at non-Interior values.
 
 ### UAT 3: Animated camera round-trip
 
 1. Pick an Action with a multi-keyframe camera (10+ frames)
-2. Export at scale=100 (default dialog pick)
+2. Export at scale=1000 (default dialog pick — Interior)
 3. Verify Blender shows animated camera with all keyframes at the right positions
 4. Send back to Flame
 5. Verify all keyframes land at the original Flame positions AND the timing (frame numbers) is preserved
@@ -76,10 +75,10 @@ This proves the symmetry holds at a value other than the studio default — diff
 
 ### UAT 5: Default-button parity (Enter vs explicit click)
 
-1. Click "Export Camera to Blender" → dialog opens with `100x` highlighted
+1. Click "Export Camera to Blender" → dialog opens with `Interior · ×10³` highlighted
 2. Hit **Enter** (uses the default-button shortcut)
 3. Note the .blend output path
-4. Re-export the same camera, click `100x` explicitly with the mouse
+4. Re-export the same camera, click `Interior · ×10³` explicitly with the mouse
 5. Diff the two .blend files (`diff` won't work — they're binary; instead compare camera position/rotation in Blender or via bpy script). Should be byte-identical (same scale, same source camera, same code path).
 
 ### UAT 6: Camera-node surface
@@ -92,6 +91,18 @@ The i31 work added the dialog to BOTH the Action right-click AND the Camera-node
 4. Click it → same dialog → pick a scale → verify the export fires AND the resulting .blend is correct (same as UAT 1)
 
 This is the surface that's been in the code since i31 but never hands-on-keyboard tested.
+
+### UAT 7: Deprecated-stop back-compat (already-baked .blend round-trip)
+
+The 260501-rus extension widened the canonical ladder to 7 semantic stops {1, 10, 100, 1000, 10000, 100000, 1000000} but kept {0.01, 0.1} as deprecated-but-valid bake-side inputs so .blend files baked under the old contract still round-trip cleanly.
+
+1. Find a .blend baked before today (commit predates 260501-rus) — e.g. one of yesterday's bakes at scale=100 OR a hypothetical scale=0.1 bake from 260501-dpa testing. The `forge_bake_scale` custom property on the Blender camera names the original divisor.
+2. Open it in Blender, run "Send to Flame" (forge_sender addon)
+3. Verify: the returned camera lands at the original Flame coords. NO error about "scale not on the allowed ladder" — extract reads the stamped property and applies the inverse without re-validating against the canonical set.
+
+**FAIL CRITERIA:** Send-to-Flame errors with "0.01 not on ladder" or "0.1 not on ladder" — would mean the deprecated-stop tolerance broke and existing artist .blend files are now stranded.
+
+(NOTE: this UAT can be deferred or skipped if the studio has no live .blend files at deprecated scales. The unit-test parity coverage for deprecated stops in tests/test_blender_roundtrip.py is sufficient automated guard.)
 
 ## Resume signal
 
