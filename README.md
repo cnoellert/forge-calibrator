@@ -38,29 +38,42 @@ Flame↔Blender round-trip must preserve that fidelity end-to-end.**
 
 ## Install
 
-### One-time prerequisite — `forge` conda env
+### Prereqs
+
+- **Flame 2026.2.1** on macOS or Linux (older versions untested; Windows not supported).
+- **conda** (any flavor — full Anaconda or miniconda from
+  https://docs.conda.io/projects/miniconda/). The installer creates the `forge`
+  env from `forge-env.yml` if it is missing.
+- **Blender 4.5+** for the Flame↔Blender round-trip leg. Install the addon zip
+  per [docs/seamless-bridge.md#for-artists](docs/seamless-bridge.md#for-artists).
+
+### One-line install
 
 ```bash
-conda env create -f forge-env.yml
-# or (if `forge` already exists with stale deps):
-conda env update -f forge-env.yml --prune
+git clone https://github.com/cnoellert/forge-calibrator.git \
+    && cd forge-calibrator && ./install.sh
 ```
 
-The env carries Python 3.11 + numpy + opencv-python. `install.sh` looks for it
-at `$HOME/miniconda3/envs/forge` by default; override with `FORGE_ENV=<path>`.
+The installer is idempotent — safe to re-run. On a host that lacks the `forge`
+conda env, it prompts to auto-create from `forge-env.yml`; pass `--yes` for
+non-interactive auto-create (CI), or `--force` to skip every prompt.
 
-### Per-machine install
+### Verify
 
-- Run `./install.sh` (macOS/Linux). Idempotent — safe to re-run for
-  incremental updates. The installer purges stale `.pyc` bytecode across
-  `camera_match/`, `forge_core/`, and `forge_flame/` to prevent Flame from
-  serving outdated modules between deploys.
-- Install the Blender addon: in Blender → Edit → Preferences → Add-ons →
-  Install from file → select `tools/blender/forge_sender-v1.3.5.zip` → enable
-  "Forge: Send Camera to Flame".
-- See [docs/seamless-bridge.md#install](docs/seamless-bridge.md#install) for the
-  detailed walkthrough covering preflight checks, what deploys where, and the full
-  artist addon setup.
+1. Restart Flame. Wait 15-30 s after the splash for the workspace to settle (a
+   first-import-after-boot race can crash on the very first round-trip — see
+   [docs/seamless-bridge.md#troubleshooting](docs/seamless-bridge.md#troubleshooting)).
+2. Probe forge-bridge:
+   ```bash
+   curl -s http://localhost:9999/ -o /dev/null -w "%{http_code}\n"
+   # expect: 200
+   ```
+3. Right-click any Action in a Batch — confirm the **FORGE → Camera** submenu
+   is present.
+
+For the full walkthrough (preflight detail, what deploys where, offline /
+air-gapped installs, artist addon setup, and 6+ troubleshooting recipes), see
+[docs/seamless-bridge.md](docs/seamless-bridge.md).
 
 ## Validation
 
