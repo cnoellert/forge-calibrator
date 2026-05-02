@@ -45,9 +45,9 @@ def _qapp():
 
 # --- Test 1: 7 buttons with the expected semantic prefixes ---
 def test_pick_scale_constructs_dialog_with_7_scale_buttons(monkeypatch):
-    """The dialog must contain 7 QPushButtons whose first text-line
-    starts with the semantic prefix + ' · ×10' (Landscape, Outdoor,
-    Soundstage, Interior, Tabletop, Product, Macro)."""
+    """The dialog must contain 7 QPushButtons whose first text-line is
+    the semantic label exactly (Landscape, Outdoor, Soundstage, Interior,
+    Tabletop, Product, Macro). The ×10ⁿ multiplier sits on line 2."""
     import scale_picker_dialog
     from PySide6.QtWidgets import QPushButton, QDialog
 
@@ -68,16 +68,16 @@ def test_pick_scale_constructs_dialog_with_7_scale_buttons(monkeypatch):
                   for b in dialog.findChildren(QPushButton)]
     # Filter out the Cancel button.
     scale_labels = [l for l in btn_labels if l != "Cancel"]
-    expected_prefixes = ["Landscape", "Outdoor", "Soundstage", "Interior",
-                         "Tabletop", "Product", "Macro"]
+    expected_labels = ["Landscape", "Outdoor", "Soundstage", "Interior",
+                       "Tabletop", "Product", "Macro"]
     assert len(scale_labels) == 7, scale_labels
-    for prefix, label in zip(expected_prefixes, scale_labels):
-        assert label.startswith(prefix + " · ×10"), (prefix, label)
+    for expected, label in zip(expected_labels, scale_labels):
+        assert label == expected, (expected, label)
 
 
 # --- Test 2: default=1000.0 highlights the "Interior" button ---
 def test_pick_scale_default_1000_highlights_interior_button(monkeypatch):
-    """default=1000.0 -> the 'Interior · ×10³' button has setDefault(True)
+    """default=1000.0 -> the 'Interior' button has setDefault(True)
     and objectName='primary' (the forge-style primary marker)."""
     import scale_picker_dialog
     from PySide6.QtWidgets import QPushButton, QDialog
@@ -93,7 +93,7 @@ def test_pick_scale_default_1000_highlights_interior_button(monkeypatch):
     dialog = captured["dialog"]
     primary_buttons = [
         b for b in dialog.findChildren(QPushButton)
-        if b.text().split("\n", 1)[0].startswith("Interior · ×10³")
+        if b.text().split("\n", 1)[0] == "Interior"
     ]
     assert len(primary_buttons) == 1
     assert primary_buttons[0].isDefault(), \
@@ -104,7 +104,7 @@ def test_pick_scale_default_1000_highlights_interior_button(monkeypatch):
     # And the other buttons must NOT be marked primary.
     other_scale_buttons = [
         b for b in dialog.findChildren(QPushButton)
-        if not b.text().split("\n", 1)[0].startswith("Interior · ×10³")
+        if b.text().split("\n", 1)[0] != "Interior"
         and b.text() != "Cancel"
     ]
     for b in other_scale_buttons:
@@ -127,8 +127,8 @@ def test_pick_scale_returns_scale_on_button_click(
     monkeypatch, label_prefix, expected_scale,
 ):
     """Clicking each ladder button closes the dialog and returns that
-    button's scale value. Semantic-prefix match — no collision risk
-    across the 7 distinct labels."""
+    button's scale value. Exact semantic-label match on line 1 — no
+    collision risk across the 7 distinct labels."""
     import scale_picker_dialog
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QDialog, QPushButton
@@ -140,7 +140,7 @@ def test_pick_scale_returns_scale_on_button_click(
         def _do_click():
             for btn in self.findChildren(QPushButton):
                 first_line = btn.text().split("\n", 1)[0]
-                if first_line.startswith(label_prefix + " · ×10") and btn.text() != "Cancel":
+                if first_line == label_prefix and btn.text() != "Cancel":
                     btn.click()
                     return
             self.reject()

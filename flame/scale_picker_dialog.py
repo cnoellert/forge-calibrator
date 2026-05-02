@@ -31,18 +31,17 @@ from typing import Optional
 
 # Discrete log10 ladder, mirrors _LADDER_MENU_STOPS in camera_match_hook
 # and _FLAME_TO_BLENDER_SCALE_LADDER in tools/blender/bake_camera.py.
-# Semantic labels + unicode superscript multipliers; physical-distance
-# subtitles rounded for the 4096-wide / ~97° hfov reference plate.
+# Semantic labels + unicode superscript multipliers.
 # Deprecated stops (0.01, 0.1) are intentionally NOT offered here.
 _LADDER_STOPS = [
-    # (semantic_label, multiplier_suffix, scale_value, physical_distance_subtitle)
-    ("Landscape",  "×10⁰", 1.0,       "~1.8 km"),
-    ("Outdoor",    "×10¹", 10.0,      "~180 m"),
-    ("Soundstage", "×10²", 100.0,     "~18 m"),
-    ("Interior",   "×10³", 1000.0,    "~1.8 m"),
-    ("Tabletop",   "×10⁴", 10000.0,   "~18 cm"),
-    ("Product",    "×10⁵", 100000.0,  "~1.8 cm"),
-    ("Macro",      "×10⁶", 1000000.0, "~1.8 mm"),
+    # (semantic_label, multiplier_suffix, scale_value)
+    ("Landscape",  "×10⁰", 1.0),
+    ("Outdoor",    "×10¹", 10.0),
+    ("Soundstage", "×10²", 100.0),
+    ("Interior",   "×10³", 1000.0),
+    ("Tabletop",   "×10⁴", 10000.0),
+    ("Product",    "×10⁵", 100000.0),
+    ("Macro",      "×10⁶", 1000000.0),
 ]
 
 
@@ -91,7 +90,7 @@ def pick_scale(parent=None, default: float = 1000.0) -> Optional[float]:
 
     dialog = QDialog(parent)
     dialog.setWindowTitle("FORGE — Export Camera to Blender — Scale")
-    dialog.setMinimumWidth(820)
+    dialog.setMinimumWidth(700)
     dialog.setStyleSheet(_FORGE_SS)
 
     layout = QVBoxLayout(dialog)
@@ -128,14 +127,13 @@ def pick_scale(parent=None, default: float = 1000.0) -> Optional[float]:
     btn_row = QHBoxLayout()
     btn_row.setSpacing(8)
 
-    for label, suffix, scale_value, sub in _LADDER_STOPS:
+    for label, suffix, scale_value in _LADDER_STOPS:
         # Each button is a single QPushButton with newline-separated
-        # text ("{Semantic} · ×10ⁿ" on top, distance subtitle below).
-        # Single-widget-per-button keeps test location trivial: filter
-        # by btn.text().split("\n", 1)[0].
-        btn = QPushButton(f"{label} · {suffix}\n{sub}")
+        # text (semantic label on top, ×10ⁿ multiplier below). Filter
+        # tests by btn.text().split("\n", 1)[0].
+        btn = QPushButton(f"{label}\n{suffix}")
         btn.setMinimumHeight(56)
-        btn.setMinimumWidth(108)
+        btn.setMinimumWidth(86)
         if scale_value == default:
             # Default button highlighting: setObjectName("primary") triggers
             # the QPushButton#primary block in _FORGE_SS (orange bg, white
