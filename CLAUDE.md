@@ -10,7 +10,8 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 ### Constraints
 
 - **Tech stack**: Python 3.11 (Flame-bundled) for production code. FBX Python SDK wheel ships cp310-only — not usable in-process. Blender 4.5's FBX importer rejects ASCII FBX — motivates the custom parser in `forge_flame/fbx_ascii.py`.
-- **Runtime dependencies**: numpy + opencv-python in a conda `forge` env (dev-side); PyOpenColorIO from Flame's bundled Python (NOT installed in forge — version-conflict risk); Wiretap SDK from Flame; Blender 4.5+ as a subprocess; forge-bridge as the HTTP RPC endpoint into Flame's Python.
+- **Runtime dependencies**: numpy + opencv-python in a conda `forge` env (dev-side); PyOpenColorIO from Flame's bundled Python (NOT installed in forge — version-conflict risk); Wiretap SDK from Flame; Blender 4.5+ as a subprocess.
+- **Dev-only tooling**: forge-bridge is a Tier-3 dev-time RPC probe (HTTP /exec into Flame's Python at 127.0.0.1:9999), analogous to pytest. NOT a calibrator runtime dependency — the hook never imports it. install.sh deploys it for dev convenience; see `memory/forge_family_tier_model.md`.
 - **Platform**: macOS + Linux. Windows unsupported (Flame doesn't run there).
 - **Compatibility**: Flame 2026.2.1 is the primary target. Older Flame versions untested; newer versions may need API re-verification.
 - **Performance (non-goal this milestone)**: Wiretap single-frame reads run ~1.5s for a 4K 32-bit float MXF. Not on the hot path for this milestone's scope.
@@ -39,7 +40,7 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - pytest - Test runner and assertion library
 - Python standard `unittest.mock` - Mock objects for Flame API simulation
 ## Key Dependencies
-- numpy - Solver math: 2VP intersection, FOV/focal conversion, rotation composition (Euler ZYX), matrix transforms. Inlined into `solve_and_update.py` for forge-bridge HTTP execution.
+- numpy - Solver math: 2VP intersection, FOV/focal conversion, rotation composition (Euler ZYX), matrix transforms.
 - opencv-python (cv2) - GUI overlay rendering in `camera_match_hook.py`; frame preview/annotation on the VP line tool window
 - PyOpenColorIO - OCIO pipeline for ACES 2.0 colour management (preview tonemapping, DisplayViewTransform)
 - Wiretap SDK - Single-frame media extraction from clips; colour-space tagging lookup

@@ -52,7 +52,7 @@
 ## Key Dependencies
 
 **Critical (forge environment):**
-- numpy - Solver math: 2VP intersection, FOV/focal conversion, rotation composition (Euler ZYX), matrix transforms. Inlined into `solve_and_update.py` for forge-bridge HTTP execution.
+- numpy - Solver math: 2VP intersection, FOV/focal conversion, rotation composition (Euler ZYX), matrix transforms.
 - opencv-python (cv2) - GUI overlay rendering in `camera_match_hook.py`; frame preview/annotation on the VP line tool window
 
 **Flame-bundled (NOT to be installed in forge):**

@@ -8,11 +8,9 @@
 forge-calibrator/
 ├── flame/                         # Flame batch hook entry point
 │   ├── __init__.py
-│   ├── camera_match_hook.py       # Main hook (1697 LOC, ~93KB) — entry point
-│   ├── action_export.py           # Legacy diagnostic script
-│   ├── apply_solve.py             # Legacy diagnostic script
-│   ├── solve_and_update.py        # Legacy diagnostic script
-│   └── rotation_diagnostic.py     # Legacy diagnostic script
+│   ├── camera_match_hook.py       # Main hook (~93KB) — entry point
+│   ├── scale_picker_dialog.py     # Forge-themed PySide6 scale picker (quick-260501-knl)
+│   └── rotation_diagnostic.py     # Legacy diagnostic script (review separately)
 │
 ├── forge_core/                    # Host-agnostic math and image modules
 │   ├── __init__.py
