@@ -2512,8 +2512,10 @@ def _infer_plate_resolution(action_node) -> tuple:
       1. action_node.resolution   -- primary; shape confirmed by Plan 01's
          live-Flame probe (see .planning/phases/01-export-polish/01-PROBE.md
          TIER1_DISPOSITION line for the exact access pattern).
-      2. flame.batch.width/height -- batch-level fallback; same pattern
-         used at flame/apply_solve.py:269.
+      2. flame.batch.width/height -- batch-level fallback; same one-liner
+         (`int(flame.batch.width.get_value())`) was used by the legacy
+         Matchbox-era apply_solve.py before its removal in
+         quick-260505-mrv (Phase B forge family cleanup).
       3. _scan_first_clip_metadata() -- scan any clip in the current batch;
          returns None (after Plan 04 Task 1) when no readable clip exists.
 
@@ -2540,7 +2542,8 @@ def _infer_plate_resolution(action_node) -> tuple:
     except Exception:
         pass  # fall through to Tier 2
 
-    # Tier 2 — flame.batch.width/height (analog: flame/apply_solve.py:269).
+    # Tier 2 — flame.batch.width/height (legacy Matchbox-era apply_solve.py
+    # used the same one-liner before its removal in quick-260505-mrv).
     try:
         b = flame.batch
         width = int(b.width.get_value())
