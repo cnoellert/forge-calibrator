@@ -559,6 +559,14 @@ _sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
 run "find \"$INSTALL_DIR\" \"$FORGE_CORE_DEST\" \"$FORGE_FLAME_DEST\" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null || true"
 ok "cleared __pycache__ across camera_match + forge_core + forge_flame"
 
+# Purge stale Matchbox-era hooks at $INSTALL_DIR root. These were never copied
+# by the current install.sh, but a pre-260427 install or manual dev copy may
+# have left them behind — Flame's hook scanner picks them up at boot and
+# crashes on `from flame.action_export import ...` (now-missing module).
+# Source files deleted in quick-260505-mrv. Idempotent: rm -f survives missing.
+run "rm -f \"$INSTALL_DIR/apply_solve.py\" \"$INSTALL_DIR/action_export.py\" \"$INSTALL_DIR/solve_and_update.py\""
+ok "purged stale Matchbox-era scripts (if present)"
+
 # ---- done ---------------------------------------------------------------------
 step "Done"
 # ---- scope boundary ------------------------------------------------------------
