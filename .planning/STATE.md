@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-02 -- Tester install-rollout polish (quick 260501-u7q): README ## Install gateway (prereqs + one-line + verify + pointer to docs/seamless-bridge.md), install.sh conda preflight extended to detect no-conda vs no-env with auto-create prompt + --yes flag; 4 dry-run branches verified live; 542/2 tests still green
+Last activity: 2026-05-05 -- Phase B forge family cleanup (quick 260505-mrv): removed dead Matchbox-era scripts (apply_solve.py, solve_and_update.py, action_export.py, -836 LOC) + reclassified forge-bridge as Tier-3 dev-only in CLAUDE.md/STACK.md/STRUCTURE.md/PASSOFF.md; bonus production fix — Flame hook scanner no longer crashes on apply_solve.py at boot; 542/2 tests still green
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -130,6 +130,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260501-knl | Forge-themed scale-picker dialog — reverted i31's 5-entry menu, single "Export Camera to Blender" entry now opens a forge-styled PySide6 dialog with 5 buttons + 100x default; ESC cancels cleanly; +14 tests | 2026-05-01 | 699c601 | [260501-knl-revert-ladder-menu-replace-with-forge-th](./quick/260501-knl-revert-ladder-menu-replace-with-forge-th/) |
 | 260501-rus | Extend Flame↔Blender scale ladder 5→7 stops with semantic labels (Landscape ×10⁰ … Macro ×10⁶), Interior (1000.0) is new studio default; deprecated {0.01, 0.1} kept valid bake-side for back-compat with already-baked .blend files; +20 tests | 2026-05-02 | b6e75ca | [260501-rus-extend-flame-blender-scale-ladder-from-5](./quick/260501-rus-extend-flame-blender-scale-ladder-from-5/) |
 | 260501-u7q | Tester install-rollout polish — README ## Install gateway (prereqs + one-line + verify + pointer to docs/seamless-bridge.md) + install.sh conda preflight extended to detect no-conda vs no-env with auto-create prompt + --yes flag; 4 dry-run branches verified live | 2026-05-02 | 549f33e | [260501-u7q-fill-empty-readme-install-section-extend](./quick/260501-u7q-fill-empty-readme-install-section-extend/) |
+| 260505-mrv | Phase B forge family cleanup — deleted dead Matchbox-era scripts (apply_solve.py, solve_and_update.py, action_export.py; -836 LOC) + reclassified forge-bridge as Tier-3 dev-only in CLAUDE.md / STACK.md / STRUCTURE.md / PASSOFF.md; bonus fix: Flame hook scanner no longer crashes on apply_solve.py at boot | 2026-05-05 | 4be06ea | [260505-mrv-phase-b-remove-dead-matchbox-era-scripts](./quick/260505-mrv-phase-b-remove-dead-matchbox-era-scripts/) |
 
 ## Deferred Items
 
