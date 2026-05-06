@@ -9,7 +9,6 @@ forge-calibrator/
 ├── flame/                         # Flame batch hook entry point
 │   ├── __init__.py
 │   ├── camera_match_hook.py       # Main hook (~93KB) — entry point
-│   ├── scale_picker_dialog.py     # Forge-themed PySide6 scale picker (quick-260501-knl)
 │   └── rotation_diagnostic.py     # Legacy diagnostic script (review separately)
 │
 ├── forge_core/                    # Host-agnostic math and image modules
@@ -30,44 +29,29 @@ forge-calibrator/
 │       ├── __init__.py
 │       └── buffer.py              # Image decoding, OCIO application, color space mapping
 │
-├── forge_flame/                   # Flame-specific adapters (Wiretap, FBX, camera I/O)
+├── forge_flame/                   # Flame-specific adapters (Wiretap, solver-to-Flame)
 │   ├── __init__.py
 │   ├── adapter.py                 # Solver adapter (packing, Euler decomposition, tracing)
-│   ├── wiretap.py                 # Wiretap SDK wrappers (frame reader, color space)
-│   ├── camera_io.py               # Single-frame Flame camera ↔ JSON I/O
-│   ├── fbx_io.py                  # Multi-frame Action ↔ FBX I/O
-│   ├── fbx_ascii.py               # ASCII FBX 7.7.0 tokenizer, parser, writer (1231 LOC)
-│   ├── blender_bridge.py          # Blender binary/script resolution, subprocess CLI
-│   └── templates/
-│       └── camera_baked.fbx       # Flame-emitted FBX template (payload mutation target)
+│   └── wiretap.py                 # Wiretap SDK wrappers (frame reader, color space)
 │
-├── tools/
-│   └── blender/                   # Standalone Blender CLI scripts (subprocess targets)
-│       ├── bake_camera.py         # JSON → .blend (runs inside Blender)
-│       ├── extract_camera.py      # .blend → JSON (runs inside Blender)
-│       ├── roundtrip_selftest.sh  # End-to-end validation script
-│       └── sample_camera.json     # Test fixture
+├── tools/                         # Dev-time utilities (fSpy parser, smoke-test harness)
+│   ├── fspy_import.py             # fSpy project file parser (developer utility)
+│   └── smoke-test/
+│       └── seamless-bridge-smoke.sh  # E2E bridge smoke test
 │
-├── tests/                         # pytest suite (264 tests)
+├── tests/                         # pytest suite (~191 tests post quick-260505-tb3)
 │   ├── __init__.py
 │   ├── test_solver.py             # Solver math (coordinates, line intersection, focal length, rotation)
 │   ├── test_hook_parity.py        # Adapter parity vs. solver; Flame Euler invariants
 │   ├── test_cross_validate.py     # Solver vs. fSpy known-answer
 │   ├── test_image_buffer.py       # Image decode, OCIO pipeline
-│   ├── test_camera_io.py          # Flame camera ↔ JSON converters
-│   ├── test_blender_roundtrip.py  # Flame → Blender → Flame, Euler/FOV invariants
-│   ├── test_blender_bridge.py     # Blender binary/script resolution, CLI composition
-│   ├── test_fbx_io.py             # FBX export/import wrapper (Perspective filtering, selection)
-│   ├── test_fbx_ascii.py          # FBX ASCII tokenizer, parser, writer (51 tests)
-│   ├── verify_flame_yup.py        # Manual rotation verification (not automated)
-│   └── fixtures/
-│       ├── forge_fbx_baked.fbx    # Multi-frame template (used by fbx_ascii writer)
-│       └── forge_fbx_probe.fbx    # Live Flame export (test fixture)
+│   ├── test_camera_match_hook.py  # Hook scope predicates, picker, helpers
+│   └── verify_flame_yup.py        # Manual rotation verification (not automated)
 │
 ├── matchbox/                      # Matchbox-related (deprecated, not active)
 ├── .planning/
 │   └── codebase/                  # Generated documentation (this directory)
-├── install.sh                     # Installer (copies hook + forge_core + forge_flame + tools/blender to /opt)
+├── install.sh                     # Installer (copies hook + forge_core + forge_flame to /opt)
 ├── PASSOFF.md                     # Session history + data contracts + known issues
 └── .gitignore
 ```
@@ -76,8 +60,8 @@ forge-calibrator/
 
 **flame/**
 - Purpose: Flame batch hook entry point; user-facing UI and orchestration
-- Contains: Main hook file (1697 LOC), legacy diagnostic scripts
-- Key files: `camera_match_hook.py` is the Flame-loaded hook; exports `get_batch_custom_ui_actions()` for menu registration
+- Contains: Main hook file (~2611 LOC post-strip), legacy diagnostic scripts
+- Key files: `camera_match_hook.py` is the Flame-loaded hook; exports `get_batch_custom_ui_actions()` for menu registration (single action: Open Camera Calibrator)
 - Entry point called by: Flame 2026.2.1 batch hook loader
 
 **forge_core/**
@@ -88,23 +72,17 @@ forge-calibrator/
 
 **forge_flame/**
 - Purpose: Flame-specific adapters; bridges Flame API surface to forge_core
-- Contains: Solver adapter, Wiretap frame reader, camera I/O (JSON + FBX), FBX ASCII parser/writer, Blender orchestration
-- Key files: `adapter.py` (packing + Euler), `wiretap.py` (frame decode), `camera_io.py` (single-frame JSON), `fbx_io.py` (FBX wrapper), `fbx_ascii.py` (parser/writer), `blender_bridge.py` (subprocess)
+- Contains: Solver adapter, Wiretap frame reader
+- Key files: `adapter.py` (packing + Euler decomposition), `wiretap.py` (frame decode + colour-space lookup)
 - Dependencies: forge_core, Flame SDK (Wiretap optional)
 - Not importable from: trafFIK or non-Flame tools
-
-**tools/blender/**
-- Purpose: Standalone scripts executed inside Blender via subprocess
-- Contains: Camera bake (JSON → .blend), camera extract (.blend → JSON), end-to-end selftest
-- Key files: `bake_camera.py` (run target for export), `extract_camera.py` (run target for import), `roundtrip_selftest.sh` (E2E validation)
-- Execution: Via `blender --background --python <script> -- <args>`
-- Dependencies: Only bpy (Blender-bundled); no numpy, no forge imports
+- History: pre-quick-260505-tb3 also contained camera_io / fbx_io / fbx_ascii / blender_bridge for the Flame↔Blender round-trip; that surface migrated to forge-blender Phase 6
 
 **tests/**
-- Purpose: pytest suite (264 tests covering all layers)
-- Contains: Unit tests for solver, adapter, image processing, FBX parsing, Blender orchestration
-- Key files: `test_solver.py` (80+ tests, bottom-up solver pipeline), `test_fbx_ascii.py` (51 tests, tokenizer/parser/writer), `test_hook_parity.py` (adapter invariants), `test_blender_roundtrip.py` (Flame→Blender→Flame)
-- Fixtures: `fixtures/forge_fbx_baked.fbx` (template for writer), `fixtures/forge_fbx_probe.fbx` (live Flame export)
+- Purpose: pytest suite (~191 tests post quick-260505-tb3, covering surviving layers)
+- Contains: Unit tests for solver, adapter, image processing, hook scope/picker logic
+- Key files: `test_solver.py` (80+ tests, bottom-up solver pipeline), `test_hook_parity.py` (adapter invariants), `test_camera_match_hook.py` (hook helpers + picker)
+- Fixtures: removed in quick-260505-tb3 along with the FBX/Blender test surface
 
 **.planning/codebase/**
 - Purpose: Generated analysis documents for other GSD tools
@@ -113,14 +91,11 @@ forge-calibrator/
 ## Key File Locations
 
 **Entry Points:**
-- `flame/camera_match_hook.py` (1697 LOC): Flame hook loaded on startup; exports `get_batch_custom_ui_actions()` dict with three menu actions
-- `tools/blender/bake_camera.py`: Blender CLI target for export pipeline
-- `tools/blender/extract_camera.py`: Blender CLI target for import pipeline
+- `flame/camera_match_hook.py` (~2611 LOC post-strip): Flame hook loaded on startup; exports `get_batch_custom_ui_actions()` returning the FORGE > Camera > Open Camera Calibrator menu
 
 **Configuration:**
-- `install.sh`: Installer; copies hook + forge_core + forge_flame + tools/blender to `/opt/Autodesk/shared/python/` and verifies dependencies
+- `install.sh`: Installer; copies hook + forge_core + forge_flame to `/opt/Autodesk/shared/python/` and verifies dependencies (also self-heals stale Matchbox-era + Blender-era artifacts)
 - `PASSOFF.md`: Session history, data contracts, known issues (v4→v6.2)
-- `forge_flame/templates/camera_baked.fbx`: ASCII FBX template (payload mutation target for writer)
 
 **Core Logic by Layer:**
 
@@ -132,20 +107,14 @@ forge-calibrator/
 *Adapter layer (Flame conventions):*
 - `forge_flame/adapter.py` — `solve_for_flame()` (packing, Euler, tracing)
 - `forge_flame/wiretap.py` — `extract_frame_bytes()`, `get_clip_colour_space()`
-- `forge_flame/camera_io.py` — `export_flame_camera_to_json()`, `import_json_to_flame_camera()`
-- `forge_flame/fbx_io.py` — `export_fbx_to_action()`, `import_fbx_to_action()`
-- `forge_flame/fbx_ascii.py` — `parse_fbx_ascii()`, `fbx_to_v5_json()`, `v5_json_to_fbx()`, `emit_fbx_ascii()`
-- `forge_flame/blender_bridge.py` — `resolve_blender_bin()`, `run_bake_camera()`, `run_extract_camera()`
 
 *Hook orchestration:*
-- `flame/camera_match_hook.py` — `_launch_camera_match()`, `_export_camera_to_blender()`, `_import_camera_from_blender()`
+- `flame/camera_match_hook.py` — `_launch_camera_match()` (sole user-facing handler post quick-260505-tb3)
 
 **Testing:**
 - `tests/test_solver.py` — Solver bottom-up tests
 - `tests/test_hook_parity.py` — Adapter vs. solver parity
-- `tests/test_fbx_ascii.py` — FBX ASCII parsing/writing (51 tests)
-- `tests/test_camera_io.py` — Flame camera I/O
-- `tests/test_blender_roundtrip.py` — Full Flame→Blender→Flame invariants
+- `tests/test_camera_match_hook.py` — Hook scope predicates, picker dialog, helpers
 
 ## Naming Conventions
 
@@ -194,11 +163,6 @@ forge-calibrator/
 - Shared rotation utilities: `forge_core/math/rotations.py`
 - Flame-specific utilities: `forge_flame/adapter.py` or new `forge_flame/<domain>.py`
 
-**Blender-side code:**
-- New Blender CLI scripts: `tools/blender/<name>.py`
-- Script dependencies: Keep imports limited to bpy (no numpy, no forge imports)
-- Invocation: Via `forge_flame.blender_bridge` (register new function if subprocess pattern needed)
-
 **Tests for new code:**
 - Unit tests: Co-locate in `tests/test_<module>.py` matching the source module
 - Fixtures: Store in `tests/fixtures/` if reused across multiple tests
@@ -212,23 +176,8 @@ forge-calibrator/
 - Committed: Yes
 - Imports: numpy only
 
-**forge_flame/templates:**
-- Purpose: FBX templates used by fbx_ascii writer
-- Generated: No (manually captured from live Flame probes)
-- Committed: Yes
-- Contents: `camera_baked.fbx` (ASCII FBX 7.7.0 with Definitions + Connections structure)
-
-**tests/fixtures:**
-- Purpose: Test data (FBX files, JSON samples)
-- Generated: Partially (some via live Flame exports)
-- Committed: Yes
-- Contents: `forge_fbx_baked.fbx`, `forge_fbx_probe.fbx`, sample `.json` files
-
-**tools/blender:**
-- Purpose: Standalone scripts deployed to Flame install location
-- Generated: No
-- Committed: Yes
-- Deployed to: `/opt/Autodesk/shared/python/tools/blender/` by `install.sh`
+**tests/fixtures (removed in quick-260505-tb3):**
+- Pre-strip housed `forge_fbx_baked.fbx`, `forge_fbx_probe.fbx`, etc. — all FBX fixtures supported the Flame↔Blender round-trip flow that left calibrator. Directory is gone.
 
 **.planning/codebase/**
 - Purpose: Generated analysis documents
@@ -243,7 +192,6 @@ forge-calibrator/
 forge-calibrator/
 ├── forge_core/        # importable as `forge_core`
 ├── forge_flame/       # importable as `forge_flame`
-├── tools/blender/     # resolvable by blender_bridge via ../tools/blender
 └── flame/
     └── camera_match_hook.py  # symlinked or copied to Flame batch hook path
 ```
@@ -253,7 +201,6 @@ forge-calibrator/
 /opt/Autodesk/shared/python/
 ├── forge_core/              # sibling of camera_match/
 ├── forge_flame/             # sibling of camera_match/
-├── tools/blender/           # sibling of camera_match/
 └── camera_match/
     ├── __init__.py          # stub (module stability)
     ├── camera_match_hook.py # copy of flame/camera_match_hook.py
@@ -263,7 +210,7 @@ forge-calibrator/
 **Runtime import paths:**
 - Dev: Hook's `_ensure_forge_core_on_path()` adds repo root to `sys.path`
 - Install: Hook's parent (`/opt/Autodesk/shared/python/`) already on path (Flame's loader)
-- Blender scripts: Standalone; don't import forge modules (CLI args are the interface)
+- Blender scripts: REMOVED in quick-260505-tb3 — calibrator no longer ships Blender-side code
 
 ---
 

@@ -3,14 +3,14 @@
 
 **forge-calibrator**
 
-A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VFX artist draws 2-3 reference lines along orthogonal scene edges in a plate; the tool solves a camera (position, rotation, FOV, focal length) and applies it to a Flame Action node. Recent work (v6.x) extends this with a Flame↔Blender camera round-trip so solved cameras — static or animated — can be refined in Blender and returned to Flame.
+A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VFX artist draws 2-3 reference lines along orthogonal scene edges in a plate; the tool solves a camera (position, rotation, FOV, focal length) and applies it to a Flame Action node.
 
-**Core Value:** **The solved camera must be geometrically faithful to the plate, and the Flame↔Blender round-trip must preserve that fidelity end-to-end.** Everything else — UX polish, seamless workflows, automation — is secondary. If the numbers are wrong, the compositing CG won't glue to the plate and the tool fails its purpose.
+**Core Value:** **The solved camera must be geometrically faithful to the plate.** Calibrator is a single-purpose VP-solve tool — bridge-free, no Blender round-trip (that surface left in quick-260505-tb3; forge-blender Phase 6 absorbs the export half via cherry-pick). Everything else — UX polish, seamless workflows, automation — is secondary. If the numbers are wrong, the compositing CG won't glue to the plate and the tool fails its purpose.
 
 ### Constraints
 
-- **Tech stack**: Python 3.11 (Flame-bundled) for production code. FBX Python SDK wheel ships cp310-only — not usable in-process. Blender 4.5's FBX importer rejects ASCII FBX — motivates the custom parser in `forge_flame/fbx_ascii.py`.
-- **Runtime dependencies**: numpy + opencv-python in a conda `forge` env (dev-side); PyOpenColorIO from Flame's bundled Python (NOT installed in forge — version-conflict risk); Wiretap SDK from Flame; Blender 4.5+ as a subprocess.
+- **Tech stack**: Python 3.11 (Flame-bundled) for production code.
+- **Runtime dependencies**: numpy + opencv-python in a conda `forge` env (dev-side); PyOpenColorIO from Flame's bundled Python (NOT installed in forge — version-conflict risk); Wiretap SDK from Flame.
 - **Dev-only tooling**: forge-bridge is a Tier-3 dev-time RPC probe (HTTP /exec into Flame's Python at 127.0.0.1:9999), analogous to pytest. NOT a calibrator runtime dependency — the hook never imports it. install.sh deploys it for dev convenience; see `memory/forge_family_tier_model.md`.
 - **Platform**: macOS + Linux. Windows unsupported (Flame doesn't run there).
 - **Compatibility**: Flame 2026.2.1 is the primary target. Older Flame versions untested; newer versions may need API re-verification.
@@ -25,10 +25,8 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - Python 3.11.5 - Flame 2026.2.1 bundles this; the hook and all production code targets 3.11
 - Python 3.12+ - Supported for testing and development (test suite runs on both 3.11 and 3.12)
 - Bash - Installation and utility scripts (`install.sh`)
-- Blender Python (bundled with Blender 4.5+) - Scripts run in subprocess via `blender --background --python`; uses `bpy` and `mathutils` only, no external forge imports
 ## Runtime
 - Flame 2026.2.1 - VFX compositor where the Camera Match hook is installed and executed
-- Blender 4.5+ - Subprocess invocation only; not a runtime host for the Python library
 - macOS/Linux development machines - For testing and development with pytest
 ## Package Managers
 - conda (forge environment) - Creates an isolated Python 3.11 environment with:
@@ -36,7 +34,6 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - rsync or cp - For syncing production code to `/opt/Autodesk/shared/python/`
 ## Frameworks
 - PySide6 - UI toolkit for the Camera Match line-drawing window (bundled with Flame)
-- Blender bpy - For animated camera baking/extraction (Blender's Python API, subprocess-only)
 - pytest - Test runner and assertion library
 - Python standard `unittest.mock` - Mock objects for Flame API simulation
 ## Key Dependencies
@@ -44,12 +41,8 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - opencv-python (cv2) - GUI overlay rendering in `camera_match_hook.py`; frame preview/annotation on the VP line tool window
 - PyOpenColorIO - OCIO pipeline for ACES 2.0 colour management (preview tonemapping, DisplayViewTransform)
 - Wiretap SDK - Single-frame media extraction from clips; colour-space tagging lookup
-- bpy - Scene graph, camera object manipulation, keyframing
-- mathutils - Matrix algebra for Euler/quaternion conversions (numerically must match `numpy` on Flame side for round-trip)
 ## Configuration
 - `FORGE_ENV` - Path to conda forge environment; defaults to `$HOME/miniconda3/envs/forge` if unset (used by `install.sh`)
-- `FORGE_BLENDER_BIN` - Override Blender binary location; if unset, uses platform defaults or PATH
-- `FORGE_BLENDER_SCRIPTS` - Override bake/extract script directory; if unset, tries dev checkout then installed path
 - `/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame` - CLI for single-frame reads (version-safe symlink)
 - `/opt/Autodesk/wiretap/tools/current/python` - Wiretap Python SDK path
 - `/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio` - OCIO config (glob-resolved, auto-tracks Flame upgrades)
@@ -57,20 +50,18 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - `/opt/Autodesk/shared/python/camera_match/` - Hook installation target
 - `/opt/Autodesk/shared/python/forge_core/` - Host-agnostic library installation
 - `/opt/Autodesk/shared/python/forge_flame/` - Flame-specific adapters installation
-- `/opt/Autodesk/shared/python/tools/blender/` - Blender scripts (bake_camera.py, extract_camera.py)
 - Flame ACES 2.0 config - Preview DisplayViewTransform (RRT + ODT) for soft highlight rolloff on bright plates
 - sRGB display target - Standard output for preview
 ## Build & Deployment
 - `install.sh` - Bash installer with preflight checks for:
 - Target: `/opt/Autodesk/shared/python/` (sibling directory layout)
-- Copies: `camera_match/`, `forge_core/`, `forge_flame/`, `tools/blender/`
+- Copies: `camera_match/`, `forge_core/`, `forge_flame/`
 - Stub `__init__.py` in camera_match to prevent Flame's namespace-package loader drift
 - __pycache__ purged post-install to prevent stale bytecode
 - None detected; pytest suite runs locally on developer machines
 ## Platform Requirements
 - macOS or Linux
 - Flame 2026.2.1 with Wiretap SDK
-- Blender 4.5+ (for Blender→Flame animation testing)
 - Python 3.11 or 3.12
 - conda with forge environment initialized
 - Pytest for test execution
@@ -78,8 +69,6 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - `/opt/Autodesk/wiretap/tools/current/` - Wiretap installation
 - `/opt/Autodesk/colour_mgmt/configs/flame_configs/` - OCIO config directory
 - Forge conda environment on the same machine as Flame
-- Blender 4.5+ (not strictly locked; older versions untested for FBX compatibility)
-- No external Python packages; uses bpy + mathutils only
 <!-- GSD:stack-end -->
 
 <!-- GSD:conventions-start source:CONVENTIONS.md -->
@@ -245,10 +234,6 @@ A vanishing-point camera calibration tool that lives inside Autodesk Flame. A VF
 - Examples: `forge_flame/fbx_ascii.py` (tokenizer, recursive-descent parser, template writer), tests in `tests/test_fbx_ascii.py`
 - Pattern: Parse → FBXNode tree → camera/AnimCurve extraction; emit via template mutation (inherits Flame's Definitions/Connections)
 - Consumed by: `forge_flame.fbx_io` and camera round-trip pipeline
-- Purpose: Locate Blender binary, compose CLI args, run bake/extract scripts, surface errors
-- Examples: `forge_flame/blender_bridge.py`, tests in `tests/test_blender_bridge.py`
-- Pattern: Env override (FORGE_BLENDER_BIN, FORGE_BLENDER_SCRIPTS) → platform defaults → PATH; CLI composition unit-testable
-- Consumed by: Hook's export/import handlers
 ## Entry Points
 - Location: `flame/camera_match_hook.py`
 - Triggers: Flame loads `/opt/Autodesk/shared/python/camera_match/camera_match_hook.py` on startup

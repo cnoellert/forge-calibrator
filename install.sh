@@ -32,14 +32,8 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOURCE_HOOK="$REPO_ROOT/flame/camera_match_hook.py"
-# Added by quick 260501-knl — forge-themed scale picker dialog. Imported
-# lazily by camera_match_hook's _export_camera_*_with_picker wrappers via
-# `from scale_picker_dialog import pick_scale`. Must land alongside the
-# hook in /opt/Autodesk/shared/python/camera_match/.
-SOURCE_SCALE_PICKER="$REPO_ROOT/flame/scale_picker_dialog.py"
 SOURCE_FORGE_CORE="$REPO_ROOT/forge_core"
 SOURCE_FORGE_FLAME="$REPO_ROOT/forge_flame"
-SOURCE_BLENDER_SCRIPTS="$REPO_ROOT/tools/blender"
 
 INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # forge_core (host-agnostic) and forge_flame (Flame-specific adapters like the
@@ -48,13 +42,6 @@ INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # importable alongside camera_match at runtime.
 FORGE_CORE_DEST="/opt/Autodesk/shared/python/forge_core"
 FORGE_FLAME_DEST="/opt/Autodesk/shared/python/forge_flame"
-# tools/blender/ ships OUTSIDE /opt/Autodesk/shared/python/ deliberately —
-# these scripts top-import bpy/mathutils, which fails under Flame's hook
-# loader (the hook path is /opt/Autodesk/shared/python/). forge_flame
-# .blender_bridge resolves scripts to this path at runtime (see
-# _script_candidates there) so the Flame batch hook can shell out to
-# bake_camera.py / extract_camera.py via `blender --background --python`.
-BLENDER_SCRIPTS_DEST="/opt/Autodesk/shared/forge_blender_scripts"
 FORGE_ENV="${FORGE_ENV:-$HOME/miniconda3/envs/forge}"
 WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
@@ -253,14 +240,6 @@ if [[ ! -f "$SOURCE_HOOK" ]]; then
   exit 1
 fi
 ok "hook present ($(wc -l < "$SOURCE_HOOK" | tr -d ' ') lines)"
-# Added by quick 260501-knl — verify the scale picker dialog source is
-# present so a missing file fails fast in the preflight rather than at
-# Flame menu-click time.
-if [[ ! -f "$SOURCE_SCALE_PICKER" ]]; then
-  err "missing source scale picker dialog: $SOURCE_SCALE_PICKER"
-  exit 1
-fi
-ok "scale picker dialog present ($(wc -l < "$SOURCE_SCALE_PICKER" | tr -d ' ') lines)"
 if [[ ! -d "$SOURCE_FORGE_CORE" ]]; then
   err "missing source forge_core: $SOURCE_FORGE_CORE"
   exit 1
@@ -271,11 +250,6 @@ if [[ ! -d "$SOURCE_FORGE_FLAME" ]]; then
   exit 1
 fi
 ok "forge_flame present ($(find "$SOURCE_FORGE_FLAME" -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ') .py files)"
-if [[ ! -d "$SOURCE_BLENDER_SCRIPTS" ]]; then
-  err "missing source tools/blender: $SOURCE_BLENDER_SCRIPTS"
-  exit 1
-fi
-ok "tools/blender present ($(find "$SOURCE_BLENDER_SCRIPTS" -maxdepth 1 -type f | wc -l | tr -d ' ') files)"
 
 # ---- precheck: forge conda env ------------------------------------------------
 step "Forge conda env"
@@ -510,14 +484,6 @@ fi
 run "cp \"$SOURCE_HOOK\" \"$TARGET_HOOK\""
 ok "wrote $TARGET_HOOK"
 
-# Added by quick 260501-knl — copy the scale picker dialog alongside the
-# hook. The hook's _export_camera_*_with_picker wrappers lazy-import
-# `from scale_picker_dialog import pick_scale`; INSTALL_DIR is on Flame's
-# sys.path so the flat import resolves at runtime.
-TARGET_SCALE_PICKER="$INSTALL_DIR/scale_picker_dialog.py"
-run "cp \"$SOURCE_SCALE_PICKER\" \"$TARGET_SCALE_PICKER\""
-ok "wrote $TARGET_SCALE_PICKER"
-
 # stub __init__.py — prevents the namespace-package drift documented in
 # memory/flame_module_reload.md. Needs to exist; contents don't matter.
 run "printf '# Camera Match package marker — keeps Flame'\\''s loader from treating\\n# this directory as a namespace package, which breaks importlib.reload.\\n' > \"$TARGET_INIT\""
@@ -542,10 +508,6 @@ _sync_dir() {
 }
 _sync_dir "$SOURCE_FORGE_CORE"       "$FORGE_CORE_DEST"       "forge_core"
 _sync_dir "$SOURCE_FORGE_FLAME"      "$FORGE_FLAME_DEST"      "forge_flame"
-# tools/blender ships to /opt/Autodesk/shared/forge_blender_scripts/ — OUTSIDE
-# Flame's hook scan path (/opt/Autodesk/shared/python/). Safe to sync the whole
-# tree (bake, extract, forge_sender/) because Flame never imports from here.
-_sync_dir "$SOURCE_BLENDER_SCRIPTS"  "$BLENDER_SCRIPTS_DEST"  "tools/blender"
 
 # nuke pycache across camera_match + sibling forge_core/forge_flame trees so
 # Flame doesn't serve stale bytecode. Pre-260427 this only purged
@@ -566,6 +528,14 @@ ok "cleared __pycache__ across camera_match + forge_core + forge_flame"
 # Source files deleted in quick-260505-mrv. Idempotent: rm -f survives missing.
 run "rm -f \"$INSTALL_DIR/apply_solve.py\" \"$INSTALL_DIR/action_export.py\" \"$INSTALL_DIR/solve_and_update.py\""
 ok "purged stale Matchbox-era scripts (if present)"
+
+# Purge stale Blender round-trip artifacts at $INSTALL_DIR root and
+# /opt/Autodesk/shared/forge_blender_scripts/. These were never copied
+# by the post-strip install.sh, but a pre-strip install left them behind.
+# Source files deleted in quick-260505-tb3. Idempotent: rm survives missing.
+run "rm -f \"$INSTALL_DIR/scale_picker_dialog.py\""
+run "rm -rf /opt/Autodesk/shared/forge_blender_scripts/"
+ok "purged stale Blender round-trip artifacts (if present)"
 
 # ---- done ---------------------------------------------------------------------
 step "Done"

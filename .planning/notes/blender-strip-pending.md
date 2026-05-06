@@ -1,8 +1,8 @@
 # Pending: Phase A2 — strip all Blender round-trip code from calibrator
 
-**Status:** Decided 2026-05-05, blocked on forge-blender Phase 6
-**Trigger to start:** forge-blender Phase 6 (Single-camera Send, bridge-free) ships and verifies in real Flame
-**Estimated effort:** /gsd-quick scope when triggered (mechanical deletion + install.sh + docs)
+**Status:** Completed in quick-260505-tb3 (2026-05-05). Originally decided 2026-05-05.
+**Trigger that fired:** orchestrator decision 2026-05-05 — strip ahead of forge-blender Phase 6 (forge-blender will absorb the export half via git-history cherry-pick from this repo).
+**Actual effort:** quick-260505-tb3, 4 atomic commits (source delete / test delete / hook surgery / install + docs).
 
 ## Decision summary
 
@@ -50,3 +50,29 @@ The full decision chain lives at `forge-blender/.planning/notes/camera-push-arch
 - The strip itself is mechanical once forge-blender Phase 6 verifies; treat it as a `/gsd-quick` task at that time.
 
 Cross-reference: calibrator's auto-memory entry `phase_a2_blender_strip_pending.md` mirrors this note for memory-loaded sessions.
+
+## Completion record (2026-05-05)
+
+Stripped in quick-260505-tb3, 4-commit sequence:
+1. Source deletion (forge_flame Blender modules + tools/blender + scale_picker_dialog)
+2. Test deletion (13 test modules + 4 FBX fixtures)
+3. Hook surgery (camera_match_hook.py + test_camera_match_hook.py + forge_flame/__init__.py)
+4. install.sh + docs (CLAUDE.md, STACK.md, STRUCTURE.md, this file, config.json)
+
+Surviving forge_flame/: __init__.py, adapter.py, wiretap.py.
+Surviving menu surface: FORGE > Camera > Open Camera Calibrator (only).
+Test count: 542 -> 191 surviving (the rest were Blender-flow exclusive coverage).
+
+The export half is preserved in this repo's git history (commits before
+quick-260505-tb3); forge-blender Phase 6 (v1.1) will cherry-pick when
+their planning gets there.
+
+The Blender→Flame import direction is fully retired — artists who want
+a refined camera back use Blender's `File → Export → FBX` then Flame's
+native FBX import. Manual but works.
+
+Deviation note: tools/__init__.py, tools/fspy_import.py, and
+tools/smoke-test/seamless-bridge-smoke.sh were preserved (the plan
+called for `git rm -r tools/` but those three are non-Blender utilities;
+smoke-test is referenced from README.md). Only tools/blender/ was deleted.
+

@@ -3,7 +3,6 @@
   "commit_docs": true,
   "parallelization": true,
   "search_gitignored": false,
-  "blender_launch_focus_steal": false,
   "brave_search": false,
   "firecrawl": false,
   "exa_search": false,
