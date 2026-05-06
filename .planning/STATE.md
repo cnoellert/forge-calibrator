@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-04-19)
 Phase: 04.4 complete; between phases
 Plan: —
 Status: 04.4 closed (HUMAN-UAT pass, 6 GAP-04.4-UAT-* closed); next: triage cold-install todos
-Last activity: 2026-05-05 -- Phase B forge family cleanup (quick 260505-mrv): removed dead Matchbox-era scripts (apply_solve.py, solve_and_update.py, action_export.py, -836 LOC) + reclassified forge-bridge as Tier-3 dev-only in CLAUDE.md/STACK.md/STRUCTURE.md/PASSOFF.md; bonus production fix — Flame hook scanner no longer crashes on apply_solve.py at boot; 542/2 tests still green
+Last activity: 2026-05-05 -- Phase A2 Blender strip (quick 260505-tb3): deleted ALL Flame↔Blender camera round-trip code from calibrator (forge_flame/{fbx_ascii,fbx_io,blender_bridge,camera_io}.py + tools/blender/ + scale_picker_dialog + 7 hook handlers + 13 tests + 4 fixtures + install.sh + docs). 41 files, -15956 LOC. forge_flame/ shrinks 6→3 files; calibrator identity becomes pristine VP solve. Tests 542→191 (351-test drop = exactly the deleted Blender coverage). forge-blender Phase 6 (v1.1) will cherry-pick the export half from this repo's git history.
 
 Progress: [██████████] 100% (8 of 8 numbered phases complete; 999.x backlog remaining)
 
@@ -131,6 +131,7 @@ All "Phase 4 polish" items previously listed here have been bucketed into **Phas
 | 260501-rus | Extend Flame↔Blender scale ladder 5→7 stops with semantic labels (Landscape ×10⁰ … Macro ×10⁶), Interior (1000.0) is new studio default; deprecated {0.01, 0.1} kept valid bake-side for back-compat with already-baked .blend files; +20 tests | 2026-05-02 | b6e75ca | [260501-rus-extend-flame-blender-scale-ladder-from-5](./quick/260501-rus-extend-flame-blender-scale-ladder-from-5/) |
 | 260501-u7q | Tester install-rollout polish — README ## Install gateway (prereqs + one-line + verify + pointer to docs/seamless-bridge.md) + install.sh conda preflight extended to detect no-conda vs no-env with auto-create prompt + --yes flag; 4 dry-run branches verified live | 2026-05-02 | 549f33e | [260501-u7q-fill-empty-readme-install-section-extend](./quick/260501-u7q-fill-empty-readme-install-section-extend/) |
 | 260505-mrv | Phase B forge family cleanup — deleted dead Matchbox-era scripts (apply_solve.py, solve_and_update.py, action_export.py; -836 LOC) + reclassified forge-bridge as Tier-3 dev-only in CLAUDE.md / STACK.md / STRUCTURE.md / PASSOFF.md; bonus fix: Flame hook scanner no longer crashes on apply_solve.py at boot | 2026-05-05 | 4be06ea | [260505-mrv-phase-b-remove-dead-matchbox-era-scripts](./quick/260505-mrv-phase-b-remove-dead-matchbox-era-scripts/) |
+| 260505-tb3 | Phase A2 Blender strip — deleted ALL Flame↔Blender camera round-trip code from calibrator (forge_flame/{fbx_ascii,fbx_io,blender_bridge,camera_io}.py + tools/blender/ + scale_picker_dialog + 7 hook handlers + 13 tests + 4 fixtures + install.sh + docs). 41 files, -15956 LOC. forge_flame/ shrinks 6→3; calibrator identity becomes pristine VP solve. Tests 542→191. forge-blender Phase 6 (v1.1) will cherry-pick the export half from this repo's git history. | 2026-05-05 | 48d9b42 | [260505-tb3-phase-a2-strip-all-flame-blender-camera-](./quick/260505-tb3-phase-a2-strip-all-flame-blender-camera-/) |
 
 ## Deferred Items
 
