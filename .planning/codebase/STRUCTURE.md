@@ -34,10 +34,8 @@ forge-calibrator/
 │   ├── adapter.py                 # Solver adapter (packing, Euler decomposition, tracing)
 │   └── wiretap.py                 # Wiretap SDK wrappers (frame reader, color space)
 │
-├── tools/                         # Dev-time utilities (fSpy parser, smoke-test harness)
-│   ├── fspy_import.py             # fSpy project file parser (developer utility)
-│   └── smoke-test/
-│       └── seamless-bridge-smoke.sh  # E2E bridge smoke test
+├── tools/                         # Dev-time utilities (fSpy parser)
+│   └── fspy_import.py             # fSpy project file parser (developer utility)
 │
 ├── tests/                         # pytest suite (~191 tests post quick-260505-tb3)
 │   ├── __init__.py
