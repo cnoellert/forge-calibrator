@@ -365,10 +365,9 @@ fi
 # Runs BEFORE the Camera Match install (per D-07) so bridge-install failures
 # surface in terminal output BEFORE "camera_match installed" — clearer failure
 # semantics than the reverse order. If the bridge install fails, we warn and
-# continue: VP-solve + v6.2 static round-trip do not need forge-bridge, so
-# deploying Camera Match alone is still useful. Only v6.3 Send-to-Flame breaks
-# until the bridge is deployed (the Blender addon's Transport Tier popup already
-# covers that runtime failure mode — see .planning/phases/02-blender-addon/).
+# continue: forge-bridge is a Tier-3 dev-time RPC probe (see CLAUDE.md), NOT a
+# runtime dependency of the Camera Match hook. Calibrator works without it;
+# bridge is only needed for live Flame probing during development.
 #
 # D-14 reminder: this section does NOT try to start Flame or curl 127.0.0.1:9999.
 # BRG-01/BRG-02 live verification is Phase 4's E2E smoke test. Here we only
@@ -458,7 +457,7 @@ else
   # collision between the `warn` helper and the embedded `[WARN]` token, and to
   # preserve D-10's single-paragraph contract. Writes to stderr to match the
   # `warn`/`err` convention. Uses `$C_WARN`/`$C_END` so TTY colouring is consistent.
-  printf "  %s[WARN]%s forge-bridge install skipped (%s). VP-solve and v6.2 static round-trip still work. v6.3 Send-to-Flame will fail with \"forge-bridge not reachable at http://127.0.0.1:9999\" until the bridge is deployed. To retry: FORGE_BRIDGE_REPO=<path> ./install.sh   OR   curl -fsSL https://raw.githubusercontent.com/cnoellert/forge-bridge/%s/scripts/install-flame-hook.sh | bash\n" \
+  printf "  %s[WARN]%s forge-bridge install skipped (%s). Calibrator's Camera Match hook does not require forge-bridge at runtime — VP solve works without it. forge-bridge is a Tier-3 dev-time RPC probe used for live Flame inspection during development; install separately if you need /exec. To retry: FORGE_BRIDGE_REPO=<path> ./install.sh   OR   curl -fsSL https://raw.githubusercontent.com/cnoellert/forge-bridge/%s/scripts/install-flame-hook.sh | bash\n" \
     "$C_WARN" "$C_END" "$BRIDGE_FAIL_REASON" "$FORGE_BRIDGE_VERSION" >&2
 fi
 
@@ -552,11 +551,10 @@ cat <<EOF
 
 Next steps:
 
-  1. Restart Flame. On next boot, both the Camera Match hook AND the forge-bridge
-     hook register — forge-bridge will start listening on http://127.0.0.1:9999.
-     If the forge-bridge install was skipped (see the [WARN] above), v6.3
-     Send-to-Flame will fail until the bridge is deployed; VP-solve and v6.2
-     static round-trip still work.
+  1. Restart Flame. On next boot, the Camera Match hook registers; if forge-bridge
+     was also installed, it starts listening on http://127.0.0.1:9999 for dev-time
+     /exec probes. If the forge-bridge install was skipped (see the [WARN] above),
+     calibrator still works — bridge is dev tooling, not a runtime requirement.
 
   2. To reload the live Camera Match module without a restart (bridge still needs
      a restart to register):
