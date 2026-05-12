@@ -423,6 +423,7 @@ def _open_camera_match(clip):
             # Default to Flame-friendly: VP1 = -X, VP2 = -Y.
             self.ax1 = 1  # VP1 -> -X
             self.ax2 = 3  # VP2 -> -Y
+            self.scene_scale = 0.01
 
             self._qimage = QtGui.QImage(
                 img_rgb.data, img_w, img_h, img_w * 3,
@@ -474,6 +475,10 @@ def _open_camera_match(clip):
             self.ax2 = ax2
             self.update()
 
+        def set_scene_scale(self, scene_scale):
+            self.scene_scale = float(scene_scale)
+            self.update()
+
         def _active_lines(self):
             """Return (vp1_lines, vp2_lines, vp3_lines) as lists of (p0_px, p1_px)
             pairs based on three_lines / use_vp3 modes. Layout:
@@ -511,7 +516,8 @@ def _open_camera_match(clip):
             from forge_flame.adapter import solve_for_flame
             self.solve_result = solve_for_flame(
                 vp1_lines, vp2_lines, img_w, img_h, ax1, ax2,
-                origin_px=origin_px, vp3_lines=vp3_lines, quad_mode=self.quad_mode)
+                origin_px=origin_px, scene_scale=self.scene_scale,
+                vp3_lines=vp3_lines, quad_mode=self.quad_mode)
             self.update()
             return self.solve_result
 
@@ -1362,6 +1368,33 @@ def _open_camera_match(clip):
             vp_layout.addWidget(self.vp3_check)
             panel.addWidget(vp_group)
 
+            # ── Scene scale group ──
+            scale_group = QtWidgets.QGroupBox("SCENE SCALE")
+            scale_layout = QtWidgets.QVBoxLayout(scale_group)
+            scale_layout.setSpacing(8)
+            scale_row = QtWidgets.QHBoxLayout()
+            scale_row.setSpacing(8)
+            scale_lbl = QtWidgets.QLabel("Scale")
+            scale_lbl.setObjectName("fieldLabel")
+            scale_lbl.setFixedWidth(40)
+            self.scene_scale_combo = QtWidgets.QComboBox()
+            for label, value in (
+                ("0.001x", 0.001),
+                ("0.01x", 0.01),
+                ("0.1x", 0.1),
+                ("1.0x", 1.0),
+            ):
+                self.scene_scale_combo.addItem(label, value)
+            self.scene_scale_combo.setCurrentIndex(1)
+            self.scene_scale_combo.setToolTip(
+                "Uniformly scales camera and helper-axis positions. "
+                "Projection, FOV, focal length, rotation, and origin pixel stay unchanged.")
+            self.scene_scale_combo.currentIndexChanged.connect(self._on_scene_scale)
+            scale_row.addWidget(scale_lbl)
+            scale_row.addWidget(self.scene_scale_combo, stretch=1)
+            scale_layout.addLayout(scale_row)
+            panel.addWidget(scale_group)
+
             # ── Display group ──
             disp_group = QtWidgets.QGroupBox("DISPLAY")
             disp_layout = QtWidgets.QVBoxLayout(disp_group)
@@ -1410,6 +1443,7 @@ def _open_camera_match(clip):
             self.lbl_fov   = _result_row(1, "FOV")
             self.lbl_rot   = _result_row(2, "Rotation")
             self.lbl_pos   = _result_row(3, "Position")
+            self.lbl_scale = _result_row(4, "Scale")
             result_layout.setColumnStretch(1, 1)
             panel.addWidget(result_group)
 
@@ -1448,6 +1482,7 @@ def _open_camera_match(clip):
             # Sync image widget's axes to the current dropdowns and do initial solve
             self.image_widget.set_axes(
                 self.vp1_axis.currentIndex(), self.vp2_axis.currentIndex())
+            self.image_widget.set_scene_scale(self._current_scene_scale())
             self._on_solve()
 
         def _on_opacity(self, val):
@@ -1474,6 +1509,14 @@ def _open_camera_match(clip):
             self.image_widget.use_vp3 = checked
             self._on_solve()
 
+        def _current_scene_scale(self):
+            data = self.scene_scale_combo.currentData()
+            return float(data if data is not None else 1.0)
+
+        def _on_scene_scale(self, *args):
+            self.image_widget.set_scene_scale(self._current_scene_scale())
+            self._on_solve()
+
         def _on_solve(self, *args):
             ax1 = self.vp1_axis.currentIndex()
             ax2 = self.vp2_axis.currentIndex()
@@ -1487,14 +1530,15 @@ def _open_camera_match(clip):
                 self.lbl_fov.setText("%.1f° H / %.1f° V" % (result["hfov_deg"], result["vfov_deg"]))
                 self.lbl_rot.setText("%.2f, %.2f, %.2f°" % (r[0], r[1], r[2]))
                 self.lbl_pos.setText("%.2f, %.2f, %.2f" % result["position"])
-                for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos):
+                self.lbl_scale.setText("%.3gx" % result.get("scene_scale", 1.0))
+                for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos, self.lbl_scale):
                     lbl.setObjectName("value")
                     lbl.setStyleSheet("")  # force re-evaluation of object-name sheet
                 self.lbl_status.setText("● Solve valid")
                 self.lbl_status.setObjectName("statusOK")
                 self.apply_btn.setEnabled(True)
             else:
-                for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos):
+                for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos, self.lbl_scale):
                     lbl.setText("—")
                     lbl.setObjectName("valueDim")
                     lbl.setStyleSheet("")
@@ -1502,7 +1546,7 @@ def _open_camera_match(clip):
                 self.lbl_status.setObjectName("statusBad")
                 self.apply_btn.setEnabled(False)
             # Re-polish the labels whose objectName changed (so QSS updates)
-            for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos, self.lbl_status):
+            for lbl in (self.lbl_focal, self.lbl_fov, self.lbl_rot, self.lbl_pos, self.lbl_scale, self.lbl_status):
                 lbl.style().unpolish(lbl)
                 lbl.style().polish(lbl)
 

@@ -19,8 +19,9 @@ What we assert now:
      R = Rz(rz) · Ry(-ry) · Rx(-rx). This is Flame's actual composition
      (see memory/flame_rotation_convention.md).
 
-  3. Scale invariant — default cam_back equals h / (2 · tan(vfov/2)),
-     which is Flame's 1-unit-per-pixel native distance.
+  3. Scale invariant — default native cam_back equals h / (2 · tan(vfov/2)),
+     and scene_scale uniformly rescales world positions without changing
+     projection.
 
   4. Output shape — the dict the adapter returns contains every key the
      hook UI consumes, with the expected types.
@@ -180,8 +181,8 @@ class TestFlameEulerRoundTrip:
 
 
 class TestDefaultCamBack:
-    """Flame's native 1-unit-per-pixel scale requires camera distance
-    h / (2 · tan(vfov/2))."""
+    """Flame's native 1-unit-per-pixel scale starts from camera distance
+    h / (2 · tan(vfov/2)), then scene_scale can shrink world values."""
 
     def test_formula(self):
         # vfov=60° at h=1080 → cam_back = 1080 / (2·tan(30°)) ≈ 935.307
@@ -193,11 +194,53 @@ class TestDefaultCamBack:
         vfov_rad = np.radians(out["vfov_deg"])
         assert out["cam_back_dist"] == pytest.approx(
             default_cam_back(H, vfov_rad), rel=1e-9)
+        assert out["cam_back_native"] == pytest.approx(out["cam_back_dist"], rel=1e-12)
+        assert out["scene_scale"] == pytest.approx(1.0, rel=1e-12)
 
     def test_adapter_honours_explicit_cam_back(self, adapter_lines):
         out = solve_for_flame(
             adapter_lines[0], adapter_lines[1], W, H, 1, 5, cam_back=1234.5)
         assert out["cam_back_dist"] == pytest.approx(1234.5, rel=1e-12)
+
+    def test_scene_scale_rescales_position_and_cam_back(self, adapter_lines):
+        raw = solve_for_flame(adapter_lines[0], adapter_lines[1], W, H, 1, 5)
+        scaled = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, 1, 5, scene_scale=0.01)
+
+        np.testing.assert_allclose(
+            np.asarray(scaled["position"]),
+            np.asarray(raw["position"]) * 0.01,
+            rtol=1e-12,
+            atol=1e-9,
+        )
+        assert scaled["cam_back_native"] == pytest.approx(raw["cam_back_native"], rel=1e-12)
+        assert scaled["cam_back_dist"] == pytest.approx(raw["cam_back_dist"] * 0.01, rel=1e-12)
+        assert scaled["scene_scale"] == pytest.approx(0.01, rel=1e-12)
+
+    def test_scene_scale_preserves_origin_projection(self, adapter_lines):
+        origin_px = (0.61 * W, 0.42 * H)
+        raw = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, 1, 5, origin_px=origin_px)
+        scaled = solve_for_flame(
+            adapter_lines[0], adapter_lines[1], W, H, 1, 5,
+            origin_px=origin_px, scene_scale=0.01)
+
+        def project_world_origin(out):
+            cam_rot = np.asarray(out["cam_rot"], dtype=float)
+            cam_pos = np.asarray(out["position"], dtype=float)
+            v = cam_rot.T @ (-cam_pos)
+            ipx = v[0] / -v[2] * out["f_relative"]
+            ipy = v[1] / -v[2] * out["f_relative"]
+            aspect = W / H
+            if aspect >= 1.0:
+                return ((ipx + 1.0) * 0.5 * W,
+                        (1.0 - ipy * aspect) * 0.5 * H)
+            return (((ipx / aspect) + 1.0) * 0.5 * W,
+                    (1.0 - ipy) * 0.5 * H)
+
+        np.testing.assert_allclose(project_world_origin(raw), origin_px, atol=1e-6)
+        np.testing.assert_allclose(project_world_origin(scaled), origin_px, atol=1e-6)
+        np.testing.assert_allclose(scaled["origin_px"], raw["origin_px"], atol=1e-12)
 
 
 # =============================================================================
@@ -211,7 +254,8 @@ class TestResultShape:
     REQUIRED_KEYS = {
         "position", "rotation", "focal_mm", "film_back_mm",
         "hfov_deg", "vfov_deg", "cam_rot", "f_relative",
-        "ax1", "ax2", "origin_px", "cam_back_dist", "principal_point_px",
+        "ax1", "ax2", "origin_px", "scene_scale", "cam_back_dist",
+        "cam_back_native", "principal_point_px",
     }
 
     def test_all_keys_present(self, adapter_lines):

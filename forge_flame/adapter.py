@@ -13,9 +13,10 @@ Bridges two conventions:
       Takes Euler angles in a very specific order — R = Rz(rz) · Ry(-ry) ·
       Rx(-rx), i.e. ZYX composition with X and Y signs negated. Verified
       empirically via FBX export (see memory/flame_rotation_convention.md).
-      Takes world position in pixel-native units: 1 world unit ≈ 1 image
-      pixel, with camera distance to origin defaulting to h/(2·tan(vfov/2))
-      so a default-sized geometry renders at expected scale.
+      Takes world position in scene units. The native solve is pixel-scaled
+      (1 world unit ≈ 1 image pixel), with camera distance to origin defaulting
+      to h/(2·tan(vfov/2)); ``scene_scale`` uniformly rescales those world
+      positions to keep Action values manageable without changing projection.
 
 This module also:
   - Accepts N≥2 lines per VP. When N>2 it fits the VP via least squares
@@ -30,7 +31,8 @@ This module also:
 
 Public surface:
     solve_for_flame(vp1_lines, vp2_lines, w, h, ax1, ax2, origin_px=None,
-                    cam_back=None, vp3_lines=None, quad_mode=False) -> dict | None
+                    cam_back=None, scene_scale=1.0, vp3_lines=None,
+                    quad_mode=False) -> dict | None
 
     compute_flame_euler_zyx(cam_rot) -> (rx_deg, ry_deg, rz_deg)
     default_cam_back(height, vfov) -> float
@@ -202,14 +204,16 @@ def solve_for_flame(
     ax2: int = 5,
     origin_px: Optional[Sequence[float]] = None,
     cam_back: Optional[float] = None,
+    scene_scale: float = 1.0,
     vp3_lines: Optional[Sequence[Tuple[Tuple[float, float], Tuple[float, float]]]] = None,
     quad_mode: bool = False,
 ) -> Optional[dict]:
     """Full solve → Flame-shaped dict, with trace.
 
     Accepts the hook's existing call shape: integer axis codes, N≥2 lines
-    per VP, optional origin pixel, optional explicit cam_back distance,
-    optional 3rd VP (FromThirdVanishingPoint), optional quad mode.
+    per VP, optional origin pixel, optional explicit native cam_back distance,
+    optional scene scale, optional 3rd VP (FromThirdVanishingPoint), optional
+    quad mode.
 
     Returns ``None`` when the solver can't converge (parallel lines,
     degenerate VPs, focal² ≤ 0). Otherwise returns a dict with every key
@@ -224,9 +228,15 @@ def solve_for_flame(
         f_relative          float (solve_2vp's focal in image-plane units)
         ax1, ax2            ints (the inputs, echoed for UI convenience)
         origin_px           [x, y] pixel coords (resolved default or input)
-        cam_back_dist       float (resolved default or input)
+        scene_scale         float (uniform world-space scale)
+        cam_back_dist       float (scaled distance applied to Flame)
+        cam_back_native     float (pre-scale pixel-native distance)
         principal_point_px  [x, y] | None (only populated when vp3 was used)
     """
+    scene_scale = float(scene_scale)
+    if scene_scale <= 0.0:
+        raise ValueError("scene_scale must be > 0")
+
     trace = {
         "timestamp": time.time(),
         "inputs": {
@@ -237,6 +247,7 @@ def solve_for_flame(
             "sensor_mm": SENSOR_MM,
             "origin_px": None if origin_px is None else [float(origin_px[0]), float(origin_px[1])],
             "cam_back_requested": None if cam_back is None else float(cam_back),
+            "scene_scale": scene_scale,
             "n_vp1_lines": len(vp1_lines),
             "n_vp2_lines": len(vp2_lines),
             "n_vp3_lines": len(vp3_lines) if vp3_lines else 0,
@@ -331,10 +342,15 @@ def solve_for_flame(
     flame_euler = compute_flame_euler_zyx(cam_rot)
     trace["stages"]["flame_euler_deg"] = list(flame_euler)
 
-    # cam_back default (Flame's 1unit=1px scale).
+    # cam_back default in native pixel units, then uniformly rescale world
+    # space. Projection is invariant under this scale because camera position
+    # and helper geometry are scaled together while rotation/FOV stay fixed.
     if cam_back is None:
         cam_back = default_cam_back(h, vfov)
-    trace["inputs"]["cam_back_resolved"] = float(cam_back)
+    cam_back_native = float(cam_back)
+    cam_back_scaled = cam_back_native * scene_scale
+    trace["inputs"]["cam_back_native"] = cam_back_native
+    trace["inputs"]["cam_back_resolved"] = float(cam_back_scaled)
 
     # Origin → world position. solve_2vp already computed this via
     # compute_translation when origin_px was passed; it lives in the last
@@ -362,7 +378,7 @@ def solve_for_flame(
     # Origin in camera space: fSpy-style back-projection at perpendicular
     # depth cam_back (z_cam = -cam_back). Matches the old hook exactly.
     ray_cam = np.array([origin_ip[0] - pp[0], origin_ip[1] - pp[1], -f], dtype=float)
-    origin_in_cam = (cam_back / f) * ray_cam
+    origin_in_cam = (cam_back_scaled / f) * ray_cam
     cam_pos = -cam_rot @ origin_in_cam
 
     trace["stages"]["origin_px_resolved"] = list(origin_px_resolved)
@@ -399,7 +415,9 @@ def solve_for_flame(
         "f_relative": f,
         "ax1": ax1, "ax2": ax2,
         "origin_px": list(origin_px_resolved),
-        "cam_back_dist": float(cam_back),
+        "scene_scale": scene_scale,
+        "cam_back_dist": float(cam_back_scaled),
+        "cam_back_native": float(cam_back_native),
         # Only populated in FromThirdVanishingPoint mode (pp not at centre).
         "principal_point_px":
             _ip_to_px(pp, w, h) if vp3_tuple is not None else None,
