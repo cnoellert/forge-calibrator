@@ -30,7 +30,7 @@
   - `PyOpenColorIO` - NOT installed in forge env; sourced from Flame's bundled Python instead (version conflict risk if both installed)
 
 **Build/Test:**
-- pytest - Framework for 264 unit tests covering solver math, FBX I/O, hook parity, adapter math
+- pytest - Framework for 191 unit tests covering solver math, rotations, hook parity vs solver, image buffer / OCIO, and hook helper behaviour
 
 **Installation:**
 - rsync or cp - For syncing production code to `/opt/Autodesk/shared/python/`
@@ -110,4 +110,4 @@
 
 ---
 
-*Stack analysis: 2026-04-19*
+*Stack analysis: 2026-04-19; pytest scope updated 2026-05-12.*
