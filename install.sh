@@ -42,7 +42,6 @@ INSTALL_DIR="/opt/Autodesk/shared/python/camera_match"
 # importable alongside camera_match at runtime.
 FORGE_CORE_DEST="/opt/Autodesk/shared/python/forge_core"
 FORGE_FLAME_DEST="/opt/Autodesk/shared/python/forge_flame"
-FORGE_ENV="${FORGE_ENV:-$HOME/miniconda3/envs/forge}"
 WIRETAP_CLI="/opt/Autodesk/wiretap/tools/current/wiretap_rw_frame"
 OCIO_GLOB="/opt/Autodesk/colour_mgmt/configs/flame_configs/*/aces2.0_config/config.ocio"
 FLAME_PYOCIO_GLOB="/opt/Autodesk/python/*/lib/python3.11/site-packages/PyOpenColorIO"
@@ -61,6 +60,51 @@ ok()   { printf "  %s✓%s %s\n" "$C_OK"   "$C_END" "$*"; }
 warn() { printf "  %s!%s %s\n" "$C_WARN" "$C_END" "$*"; }
 err()  { printf "  %s✗%s %s\n" "$C_ERR"  "$C_END" "$*" >&2; }
 step() { printf "\n%s>%s %s\n" "$C_DIM" "$C_END" "$*"; }
+
+_home_for_user() {
+  local user="$1"
+  local home=""
+  if [[ -n "$user" ]]; then
+    home="$(dscl . -read "/Users/$user" NFSHomeDirectory 2>/dev/null | awk '{print $2}' || true)"
+    if [[ -z "$home" ]]; then
+      home="$(getent passwd "$user" 2>/dev/null | awk -F: '{print $6}' || true)"
+    fi
+    if [[ -z "$home" && -d "/Users/$user" ]]; then
+      home="/Users/$user"
+    fi
+  fi
+  printf "%s" "${home:-$HOME}"
+}
+
+INVOKING_USER="${SUDO_USER:-${USER:-}}"
+INVOKING_HOME="$(_home_for_user "$INVOKING_USER")"
+FORGE_ENV="${FORGE_ENV:-$INVOKING_HOME/miniconda3/envs/forge}"
+
+_resolve_conda_bin() {
+  local conda_bin=""
+  conda_bin="$(command -v conda 2>/dev/null || true)"
+  if [[ -n "$conda_bin" ]]; then
+    printf "%s" "$conda_bin"
+    return 0
+  fi
+
+  local candidate
+  for candidate in \
+    "$INVOKING_HOME/miniconda3/bin/conda" \
+    "$INVOKING_HOME/anaconda3/bin/conda" \
+    "$HOME/miniconda3/bin/conda" \
+    "$HOME/anaconda3/bin/conda"
+  do
+    if [[ -x "$candidate" ]]; then
+      printf "%s" "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+CONDA_BIN="$(_resolve_conda_bin || true)"
 
 # ---- arg parsing --------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -122,14 +166,17 @@ _create_forge_env() {
     err "cannot auto-create — $FORGE_ENV_YML not found in repo root"
     return 1
   fi
-  run "conda env create -f \"$FORGE_ENV_YML\""
+  run "\"$CONDA_BIN\" env create -f \"$FORGE_ENV_YML\""
   return $?
 }
 
-if ! command -v conda >/dev/null 2>&1; then
+if [[ -z "$CONDA_BIN" || ! -x "$CONDA_BIN" ]]; then
   err "conda not found on PATH"
   warn "install miniconda from https://docs.conda.io/projects/miniconda/"
   warn "then create the forge env: conda env create -f forge-env.yml"
+  if [[ "$INVOKING_HOME" != "$HOME" ]]; then
+    warn "also checked $INVOKING_HOME/miniconda3/bin/conda and $INVOKING_HOME/anaconda3/bin/conda"
+  fi
   PREFLIGHT_FAIL=1
 elif [[ ! -x "$FORGE_PY" ]]; then
   warn "forge env not found at $FORGE_ENV"
