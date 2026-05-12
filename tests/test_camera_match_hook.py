@@ -8,6 +8,8 @@ What we test:
     Plus the Pitfall-1 guard (item.type is plain str in action context — the
     helper MUST NOT call .get_value() on it) and the per-item exception
     swallow (defensive try/except continues iterating).
+  - _implicit_third_axis_index: overlay third-axis reference stays on the
+    positive missing-axis family verified in live Flame.
 
 What we DON'T test:
   - get_action_custom_ui_actions (NEW function, Wave 1) registration —
@@ -126,6 +128,16 @@ def _scope_helper_implemented():
 
 
 _WAVE1_SKIP_REASON = "_scope_action_camera not yet implemented (Wave 1)"
+
+
+def test_implicit_third_axis_uses_positive_missing_axis_for_negative_z_negative_y():
+    """VP1=-Z and VP2=-Y draw +X in the overlay, per 32c7bfc UAT."""
+    assert _hook_module._implicit_third_axis_index(5, 3) == 0
+
+
+def test_implicit_third_axis_keeps_default_positive_y_case():
+    """VP1=+Z and VP2=+X imply +Y, matching solver.py's documented default."""
+    assert _hook_module._implicit_third_axis_index(4, 0) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -61,6 +61,81 @@ def _ensure_forge_core_on_path():
 
 _AX_LABELS = ["+X", "-X", "+Y", "-Y", "+Z", "-Z"]
 
+
+def _axis_vector_for_index(idx):
+    """Unit vector for an axis index in _AX_LABELS order."""
+    return (
+        (1.0, 0.0, 0.0),
+        (-1.0, 0.0, 0.0),
+        (0.0, 1.0, 0.0),
+        (0.0, -1.0, 0.0),
+        (0.0, 0.0, 1.0),
+        (0.0, 0.0, -1.0),
+    )[idx]
+
+
+def _axis_index_for_vector(vec):
+    """Return the _AX_LABELS index for a signed cardinal axis vector."""
+    axis = max(range(3), key=lambda i: abs(vec[i]))
+    sign = 0 if vec[axis] >= 0.0 else 1
+    return axis * 2 + sign
+
+
+def _implicit_third_axis_index(ax1, ax2):
+    """Positive missing-axis index for the overlay's third-axis reference."""
+    families = {0, 1, 2}
+    third_family = (families - {ax1 // 2, ax2 // 2}).pop()
+    return third_family * 2
+
+
+def _safe_attr_value(obj, name):
+    """Best-effort Flame/PyAttribute value read for diagnostics."""
+    try:
+        attr = getattr(obj, name)
+    except Exception as e:
+        return {"error": f"getattr failed: {e}"}
+    try:
+        if hasattr(attr, "get_value"):
+            return attr.get_value()
+    except Exception as e:
+        return {"error": f"get_value failed: {e}"}
+    try:
+        text = repr(attr)
+    except Exception as e:
+        text = f"<repr failed: {e}>"
+    return text[:240]
+
+
+def _matching_attr_snapshot(obj, needles):
+    """Capture Flame attrs whose names match any needle, without failing apply."""
+    out = {}
+    try:
+        attrs = list(getattr(obj, "attributes", []))
+    except Exception as e:
+        return {"_attributes_error": str(e)}
+    for name in attrs:
+        lname = str(name).lower()
+        if any(n in lname for n in needles):
+            out[str(name)] = _safe_attr_value(obj, str(name))
+    return out
+
+
+def _try_set_pyattr(obj, names, value):
+    """Try several possible Flame PyAttribute names; return the one that worked."""
+    for name in names:
+        try:
+            attr = getattr(obj, name)
+        except Exception:
+            continue
+        if not hasattr(attr, "set_value"):
+            continue
+        try:
+            attr.set_value(value)
+            return name
+        except Exception:
+            continue
+    return None
+
 # Trace file — written by forge_flame.adapter.solve_for_flame on every solve,
 # read by the UI's "Open trace" affordance for post-mortem inspection.
 # Keep in sync with forge_flame.adapter.TRACE_PATH.
@@ -423,7 +498,7 @@ def _open_camera_match(clip):
             # Default to Flame-friendly: VP1 = -X, VP2 = -Y.
             self.ax1 = 1  # VP1 -> -X
             self.ax2 = 3  # VP2 -> -Y
-            self.scene_scale = 0.01
+            self.scene_scale = 1.0
 
             self._qimage = QtGui.QImage(
                 img_rgb.data, img_w, img_h, img_w * 3,
@@ -938,17 +1013,11 @@ def _open_camera_match(clip):
             """Return two unit world-axis vectors that span the VP-defined plane,
             plus the +world-direction of the missing third axis.
 
-            The third axis is always the +direction of the missing world-axis
-            letter, NOT cross(a, b). cross(a, b) is sign-flipped on anti-cyclic
-            letter pairs (X-Z, Y-X, Z-Y) — using it here would draw the
-            third-axis arrow in the OPPOSITE direction from what its
-            "+missing-letter" label downstream (line ~1040) implies. The
-            solver's own world-axis math (forge_core/solver/solver.py:
-            axis_assignment_matrix) is on a different code path and is
-            unaffected by this overlay choice.
+            History note: commit 32c7bfc verified this overlay convention in
+            Flame. The solver's own signed axis assignment is separate; the
+            preview arrow is an artist-facing +missing-axis reference.
             """
             import numpy as np
-            # Axis index // 2: 0 → X family, 1 → Y, 2 → Z
             ax_vecs = [
                 np.array([1.0, 0.0, 0.0]),  # X
                 np.array([0.0, 1.0, 0.0]),  # Y
@@ -1058,9 +1127,8 @@ def _open_camera_match(clip):
             # grid cells out so it's clearly visible against the grid.
             tip_w = self._project_world(c_offset + 3.0 * step * axis_c)
             if origin_w and tip_w:
-                third_idx = ({0,1,2} - {self.ax1 // 2, self.ax2 // 2}).pop()
-                third_pos_idx = third_idx * 2  # +X, +Y, or +Z
-                third_col = _axis_color(third_pos_idx)
+                third_idx = _implicit_third_axis_index(self.ax1, self.ax2)
+                third_col = _axis_color(third_idx)
                 pen.setColor(third_col)
                 pen.setWidth(2)
                 painter.setPen(pen)
@@ -1086,10 +1154,9 @@ def _open_camera_match(clip):
                 ])
                 painter.drawPolygon(tri)
                 # Label the out-of-plane axis
-                names = ["X","Y","Z"]
                 self._draw_label_pill(
                     painter, tip_w[0] + ux*14, tip_w[1] + uy*14,
-                    "+" + names[third_idx], third_col, primary=True)
+                    _AX_LABELS[third_idx], third_col, primary=True)
 
         def paintEvent(self, event):
             p = QtGui.QPainter(self)
@@ -1385,7 +1452,7 @@ def _open_camera_match(clip):
                 ("1.0x", 1.0),
             ):
                 self.scene_scale_combo.addItem(label, value)
-            self.scene_scale_combo.setCurrentIndex(1)
+            self.scene_scale_combo.setCurrentIndex(3)
             self.scene_scale_combo.setToolTip(
                 "Uniformly scales camera and helper-axis positions. "
                 "Projection, FOV, focal length, rotation, and origin pixel stay unchanged.")
@@ -1633,6 +1700,38 @@ def _open_camera_match(clip):
                 except Exception:
                     pass
 
+                active_camera_set_via = None
+                if action is not None:
+                    cam_name_value = _val(cam.name) if hasattr(cam, "name") else None
+                    # Flame's Camera menu has a "Result Camera" selector: the
+                    # active camera is what renders/processes the scene. The
+                    # Python API does not document a stable attribute name for
+                    # that selector, so try known/likely PyAttribute names and
+                    # fall back harmlessly when the attr is unavailable.
+                    for candidate in (cam, cam_name_value, 1, 0):
+                        active_camera_set_via = _try_set_pyattr(
+                            action,
+                            (
+                                "result_camera",
+                                "current_camera",
+                                "active_camera",
+                                "selected_camera",
+                            ),
+                            candidate,
+                        )
+                        if active_camera_set_via is not None:
+                            break
+
+                physical_camera_disabled_via = _try_set_pyattr(
+                    cam,
+                    (
+                        "physical_camera",
+                        "use_physical_camera",
+                        "physical_camera_enabled",
+                    ),
+                    False,
+                )
+
                 # Camera transform — solver now returns the full world position,
                 # computed so that world origin projects to the origin control
                 # pixel at a fixed distance along the view ray.
@@ -1703,7 +1802,18 @@ def _open_camera_match(clip):
                     "focal": cam.focal.get_value(),
                     "film_type": cam.film_type.get_value(),
                     "action_name": _val(action.name) if action else None,
+                    "camera_name": _val(cam.name) if hasattr(cam, "name") else None,
                     "created_new_action": created_new_action,
+                    "active_camera_set_via": active_camera_set_via,
+                    "physical_camera_disabled_via": physical_camera_disabled_via,
+                    "action_camera_attrs": _matching_attr_snapshot(
+                        action,
+                        ("camera", "cam", "result", "centre", "center", "physical"),
+                    ) if action is not None else {},
+                    "camera_projection_attrs": _matching_attr_snapshot(
+                        cam,
+                        ("camera", "target", "physical", "film", "fov", "focal", "interest", "distance"),
+                    ),
                     "intended": {
                         "position": result["position"],
                         "rotation": result["rotation"],
